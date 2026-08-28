@@ -194,6 +194,43 @@ transition CloseInput @ Close(input: relation<int, int>):
     int_paths = closure(input)
 )DTESSL";
 
+constexpr std::string_view core_logic_source = R"DTESSL(
+name WorkerId
+
+record Worker:
+  id: WorkerId
+  capacity: int
+
+state Scheduler initial:
+  workers: ~Worker = ~{
+    Worker{id: WorkerId(a), capacity: 2},
+    Worker{id: WorkerId(b), capacity: 1},
+    Worker{id: WorkerId(c), capacity: 3}
+  }
+  chosen: [Worker] = []
+  edges: ~(WorkerId, WorkerId) = ~{
+    (WorkerId(a), WorkerId(b)),
+    (WorkerId(b), WorkerId(c))
+  }
+  connected: bool = false
+  queue: list<WorkerId> = list[WorkerId(a), WorkerId(c)]
+  had_choice: bool = false
+  invariant:
+    E worker ~ workers: worker.capacity > 0
+
+transition Choose @ Submit(minimum: int):
+  from Scheduler
+  to Scheduler:
+    chosen = select worker ~ before.workers where worker.capacity >= minimum by lex(worker.capacity, worker.id)
+    connected = tuple(WorkerId(a), WorkerId(b)) ~ before.edges
+
+transition Clear @ Reset():
+  from Scheduler
+  to Scheduler:
+    chosen = []
+    had_choice = match before.chosen { [] -> false, [worker] -> worker.capacity > 0 }
+)DTESSL";
+
 [[noreturn]] void fail(const std::string& message) {
   std::cerr << "dtessl test failed: " << message << '\n';
   std::exit(1);
@@ -244,7 +281,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.2.2", "compiled version must be v0.2.2");
+  require(dtessl::version == "0.2.3", "compiled version must be v0.2.3");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -266,17 +303,24 @@ int main() {
               syntax_error.diagnostics.front().code == "DTESSL1002" &&
               syntax_error.diagnostics.front().range.start.line == 1,
           "language service did not return a stable located parser diagnostic");
-  constexpr std::string_view future_relation_source =
-      "name WorkerId\nstate Model initial:\n  workers: ~int = ~{}\n";
-  const dtessl::LanguageAnalysis future_relation_syntax =
-      dtessl::analyze_source(future_relation_source);
-  const std::size_t relation_operator = future_relation_source.find('~');
-  require(std::any_of(future_relation_syntax.highlights.begin(),
-                      future_relation_syntax.highlights.end(), [&](const auto& token) {
-                        return token.syntax == dtessl::SyntaxClass::Operator &&
-                               token.range.start.offset == relation_operator;
-                      }),
-          "language lexer did not preserve the upstream relation operator for tooling");
+  const dtessl::LanguageAnalysis core_language_analysis =
+      dtessl::analyze_source(core_logic_source, "test://core-logic", 3);
+  const auto has_highlight = [&](dtessl::SyntaxClass syntax, std::string_view spelling) {
+    return std::any_of(
+        core_language_analysis.highlights.begin(), core_language_analysis.highlights.end(),
+        [&](const auto& token) {
+          return token.syntax == syntax &&
+                 core_logic_source.substr(
+                     token.range.start.offset,
+                     token.range.end.offset - token.range.start.offset) == spelling;
+        });
+  };
+  require(core_language_analysis.valid() &&
+              has_highlight(dtessl::SyntaxClass::Keyword, "name") &&
+              has_highlight(dtessl::SyntaxClass::Operator, "~") &&
+              has_highlight(dtessl::SyntaxClass::Punctuation, "[") &&
+              has_highlight(dtessl::SyntaxClass::BuiltinType, "list"),
+          "core syntax did not pass production parsing and semantic highlighting");
   constexpr std::string_view semantic_error_source =
       "state Model initial:\n"
       "  value: int = 1\n"
@@ -406,6 +450,35 @@ int main() {
       }});
   roundtrip(tuple);
   roundtrip(relation);
+  const dtessl::Value worker_name(dtessl::ValueName{"WorkerId", "a"});
+  roundtrip(worker_name);
+  require(dtessl::value_text(worker_name) == "WorkerId(a)",
+          "logical name was rendered as string text");
+
+  const dtessl::Program core_logic = dtessl::parse(core_logic_source);
+  const dtessl::FeatureSet core_features = dtessl::required_features(core_logic);
+  require(core_features.contains(dtessl::LanguageFeature::LogicalNames) &&
+              core_features.contains(dtessl::LanguageFeature::DirectRelationBinding),
+          "backend negotiation omitted new core logical value semantics");
+  dtessl::Engine core_engine(core_logic);
+  const dtessl::StepResult chosen = core_engine.step(
+      dtessl::Event{"Submit", {{"minimum", dtessl::Value(std::int64_t{2})}}});
+  const dtessl::ValueVariant& chosen_value = chosen.state.at("chosen").as_variant();
+  require(chosen_value.constructor == "some" && chosen_value.payload.size() == 1U,
+          "unary relation select did not produce [Worker]");
+  require(chosen.state.at("connected").as_bool(),
+          "~(A, B) relation type or ~ membership failed");
+  const dtessl::ValueRecord& selected_worker = chosen_value.payload.front().as_record();
+  const auto selected_id = std::find_if(
+      selected_worker.fields.begin(), selected_worker.fields.end(),
+      [](const auto& field) { return field.first == "id"; });
+  require(selected_id != selected_worker.fields.end() &&
+              selected_id->second.as_name() == dtessl::ValueName{"WorkerId", "a"},
+          "named lexicographic tie-break selected the wrong worker");
+  const dtessl::StepResult cleared = core_engine.step(dtessl::Event{"Reset", {}});
+  require(cleared.state.at("chosen").as_variant().constructor == "none" &&
+              cleared.state.at("had_choice").as_bool(),
+          "[]/[value] option matching failed");
   require(relation.as_relation().rows.size() == 2 &&
               relation.as_relation().rows.front().fields.front().as_string() == "a",
           "relation rows were not deduplicated and canonically sorted");
@@ -477,6 +550,10 @@ int main() {
                                          2, 1, 'a',
                                          1, 0, 0, 0, 0, 0, 0, 0, 1}),
           "canonical relation golden bytes changed");
+  require(dtessl::encode_value(worker_name) ==
+              std::vector<std::uint8_t>({15, 8, 'W', 'o', 'r', 'k', 'e', 'r', 'I', 'd',
+                                         1, 'a'}),
+          "canonical logical name golden bytes changed");
   bool noncanonical = false;
   try {
     static_cast<void>(dtessl::decode_value(
@@ -502,6 +579,9 @@ int main() {
            std::vector<std::uint8_t>{14, 2, 2,
                                      2, 1, 'b', 1, 0, 0, 0, 0, 0, 0, 0, 2,
                                      2, 1, 'a', 1, 0, 0, 0, 0, 0, 0, 0, 1},
+           std::vector<std::uint8_t>{15, 8, 'W', 'o', 'r', 'k', 'e', 'r', 'I', 'd',
+                                     3, 'a', '-', 'b'},
+           std::vector<std::uint8_t>{15, 1, 'T'},
            std::vector<std::uint8_t>{9}}) {
     bool rejected_codec = false;
     try {
@@ -970,6 +1050,51 @@ transition Break @ Go(value: SessionId):
     nominal_error = true;
   }
   require(nominal_error, "distinct newtypes were treated as structurally interchangeable");
+
+  constexpr std::string_view name_mismatch = R"DTESSL(
+name WorkerId
+name TaskId
+
+state Broken initial:
+  id: WorkerId = WorkerId(a)
+
+transition Break @ Go(value: TaskId):
+  from Broken
+  to Broken:
+    id = value
+)DTESSL";
+  bool name_type_error = false;
+  try {
+    static_cast<void>(dtessl::parse(name_mismatch));
+  } catch (const dtessl::Error&) {
+    name_type_error = true;
+  }
+  require(name_type_error, "distinct logical name types were interchangeable");
+
+  bool invalid_name_atom = false;
+  try {
+    static_cast<void>(dtessl::Value(dtessl::ValueName{"WorkerId", "not-an-atom"}));
+  } catch (const dtessl::Error&) {
+    invalid_name_atom = true;
+  }
+  require(invalid_name_atom, "non-canonical logical name atom was accepted");
+
+  constexpr std::string_view empty_option_without_context = R"DTESSL(
+state Broken initial:
+  value: int = 0
+
+transition Break @ Go():
+  from Broken
+  to Broken:
+    value = []
+)DTESSL";
+  bool empty_option_type_error = false;
+  try {
+    static_cast<void>(dtessl::parse(empty_option_without_context));
+  } catch (const dtessl::Error&) {
+    empty_option_type_error = true;
+  }
+  require(empty_option_type_error, "[] was admitted without an expected [T] type");
 
   constexpr std::string_view invalid_relation = R"DTESSL(
 state Broken initial:

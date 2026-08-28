@@ -361,6 +361,12 @@ void repl_help() {
       << "  :reset                   rebuild the engine from edited source\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
+      << "\ncore v0.2.3 syntax:\n"
+      << "  name T / T(atom)         nominal logical names\n"
+      << "  ~T / ~(A,B) / ~{...}     finite relations and literals\n"
+      << "  item ~ relation          membership/binding in E/A/select\n"
+      << "  [T] / [] / [value]       option type, absent and present values\n"
+      << "  list[...]                explicit ordered-list literal\n"
       << "A non-command line is appended as one source line.\n";
 }
 
@@ -525,7 +531,9 @@ void usage(std::ostream& out) {
       << "  dtessl run <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
-      << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n";
+      << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
+      << "core v0.2.3: name T, T(atom), ~T, ~(A,B), ~{...}, item ~ relation,\n"
+      << "             E/A/select ... ~ ..., [T], [], [value], list[...]\n";
 }
 
 }  // namespace

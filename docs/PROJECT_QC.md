@@ -7,27 +7,29 @@ Updated: 2026-08-28, Asia/Shanghai
 - Owner: Ziang-Chen
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
-  `external/DTESSL` submodule
-- Current target: `v0.3.0`
+  `external/DTESSL` submodule (explicitly outside this integration slice)
+- Current target: integrate and gate `v0.2.3` on a DTESSL-only branch
 - Stop orders: none
 
 ## Current state
 
-**Released slice.** `v0.2.2` adds a shared language-service pipeline,
-versioned edits, structured diagnostics, production-lexer highlighting and an
-interactive REPL/editor on top of the `v0.2.1` validation foundation. Standard,
-`-Werror`, ASan/UBSan and CLI gates pass.
-This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
+**Integration candidate.** `v0.2.3` combines the compact core logical surface
+with the shared production-parser language service, versioned editor model,
+structured diagnostics, semantic highlighting and interactive REPL. The merged
+standard, `-Werror`, ASan/UBSan, installed CLI, non-interactive command and real
+PTY REPL gates pass; branch push is the remaining handoff step. This is not the
+complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
-- Allowed surface: language/compiler/simulator/tooling/docs/releases and pinned
-  ChenVM integration.
-- Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
-  universal bytecode and premature JIT.
-- Current exit gate: implement `v0.3.0` full state theory after the independent
-  validation slice remains stable.
+- Allowed surface: this DTESSL repository's parser, verifier, simulator,
+  language service, CLI/REPL, examples, tests and documentation.
+- Non-goals: `main`, tags, ChenVM/chenRT, other repositories or task threads,
+  LSP transport, ambient authority and runtime nondeterminism.
+- Current exit gate: merge the exact core commit into the tooling branch,
+  pass standard/`-Werror`/ASan+UBSan, non-interactive CLI and PTY REPL gates,
+  then commit, push and leave the worktree clean.
 
 ## Evidence matrix
 
@@ -54,18 +56,22 @@ This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.2.2` | CLI reports `v0.2.2` | pass |
-| Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 7/7; installed graph replay/plans pass | pass |
+| Version identity | Merged CMake/generated header/test at `0.2.3` | Built and installed CLI report `v0.2.3` | pass |
+| Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
+| Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
+| Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
+| Explicit list literals | `list[...]` parse and canonical rendering | Scheduler fixture contains typed logical-name list | pass |
+| Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 17/17; installed graph replay/plans pass | pass |
 | Explicit model projection | Canonical descriptor parse/print, origin digest, provenance and classified-gap checks | Scheduler projection generates checked DTESSL | pass |
 | Generated source evidence | Stable descriptor/source SHA-256 and complete nonblank-line source map | CLI check/source-map/manifest exercised | pass |
 | Typed action ports | Declared port lookup plus exact argument-type verification | Three-port serial/parallel ActionPlan fixture passes; mismatch rejects | pass |
 | Lifecycle mappings | Unique field/phase/literal checks and generated literal typecheck | string lifecycle fixture passes; int literal rejects | pass |
 | Native EventTrace replay | Bounded typed batches, empty-batch rejection and fresh-engine equality | Two-round logical state/action replay passes | pass |
 | Runtime-log exclusion | No log, receipt, snapshot or journal types/adapters in public API | Descriptor contains explicit external-runtime gap | pass |
-| Shared language pipeline | `analyze_source` runs the production lexer/parser/verifier | CLI highlight and REPL check agree with `dtessl check` fixtures | pass |
+| Shared language pipeline | `analyze_source` runs the production lexer/parser/verifier; valid core fixture asserts `name`, `~`, option and `list` spans | CLI highlight and REPL check agree with `dtessl check` fixtures | pass |
 | Editor document model | Monotonic versions, validated UTF-8 byte ranges and non-overlapping snapshot edits | Replace and stale-version tests pass | pass |
 | Located diagnostics | Lex/parse/semantic categories retain source ranges and stable codes | Parser and wrong-type assignment locations asserted | pass |
-| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and engine invalidation implemented | Scripted append/replace/undo/redo/check path passes | pass |
+| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and engine invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and two-round fancy run | pass |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
@@ -76,7 +82,7 @@ This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-There is no external blocker for the `v0.3.0` gate.
+- P0 handoff gate: record the pushed integration-branch SHA and clean status.
 
 ## Risks
 
@@ -90,10 +96,12 @@ There is no external blocker for the `v0.3.0` gate.
 
 ## Next corrective focus
 
-1. Resume `v0.3.0` typed derived data, state sets and explicit shared inputs.
-2. Preserve the permanent native Program/EventTrace-only validation boundary.
-3. Keep external projection producers separate from DTESSL verification.
-4. Reject any claim that the full language is complete until all roadmap gates
+1. Push the fully gated `v0.2.3` integration commit and verify the worktree is
+   clean and the remote branch resolves to the same exact SHA.
+2. Resume `v0.3.0` typed derived data, state sets and explicit shared inputs.
+3. Preserve the permanent native Program/EventTrace-only validation boundary.
+4. Keep external projection producers separate from DTESSL verification.
+5. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
 ## Decision log
@@ -130,7 +138,10 @@ There is no external blocker for the `v0.3.0` gate.
   generation/evidence, typed ports and native multi-round replay, with no
   runtime-log, receipt, snapshot or journal adapter; standard, `-Werror` and
   ASan/UBSan suites pass 10/10 and installed CLI evidence passes.
-- 2026-08-28: `v0.2.2` established the reusable language-service/document
-  boundary and REPL/editor/highlighting surface; standard and ASan/UBSan suites
-  pass 11/11. LSP transport, symbol indexing and incremental parsing remain a
-  later tooling gate rather than a parallel parser implementation.
+- 2026-08-28: `v0.2.3` integrates the reusable language-service/document and
+  REPL/editor/highlighting surface with logical names, compact relations,
+  bracket options and explicit lists. LSP transport, symbol indexing and
+  incremental parsing remain later tooling gates, not parallel parsers.
+- 2026-08-28: merged standard, `-Werror` and ASan/UBSan suites pass 17/17;
+  installed check/replay, non-interactive check/highlight/run/replay, legacy
+  compatibility and real PTY history/cursor/source-edit/fancy-run gates pass.

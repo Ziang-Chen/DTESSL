@@ -1,8 +1,8 @@
 # DTESSL Language Service and REPL
 
-DTESSL v0.2.2 introduces the language-workbench foundation used by the CLI
-REPL today and intended for editor/LSP adapters later. It does not implement
-the Language Server Protocol transport yet.
+DTESSL v0.2.3 integrates the language-workbench foundation with the compact
+core logical syntax. The CLI REPL uses it today and editor/LSP adapters can use
+the same API later. It does not implement Language Server Protocol transport.
 
 ## One language pipeline
 
@@ -17,9 +17,11 @@ UTF-8 source
 ```
 
 `dtessl check`, `dtessl highlight`, the REPL and the C++ language-service API
-all use this implementation. Highlighting is lexical today, but its spans are
-emitted by the same lexer that feeds the parser. No regular-expression grammar
-or editor-only parser is maintained.
+all use this implementation. Highlight spans are emitted by the production
+lexer and returned in the same analysis that runs the parser and semantic
+verifier. Acceptance tests require the complete core fixture to verify before
+its `name`, `~`, option punctuation and `list` spans count as supported. No
+regular-expression grammar or editor-only parser is maintained.
 
 ## Public API
 
@@ -104,8 +106,8 @@ The next tooling slice can add a thin JSON-RPC/LSP adapter over
 Transport code must not own a second lexer, parser, symbol table or diagnostic
 model.
 
-The lexer already reserves the upstream core spellings `name` and `~` so
-tooling can classify them while the corresponding parser/type/execution slice
-is integrated. `[]/[value]` reuse punctuation spans and explicit `list[...]`
-reuses the built-in `list` type token. The language service must follow the
-upstream language design rather than invent alternate editor syntax.
+The production parser, verifier and evaluator support `name T`/`T(atom)`,
+`~T`/`~(A,B)`/`~{...}`, `item ~ relation`, compact `E`/`A`/`select` binding,
+`[T]`/`[]`/`[value]` and `list[...]`. The same accepted source provides keyword,
+operator, punctuation and built-in spans to the language service. Future
+tooling must follow this grammar rather than invent alternate editor syntax.

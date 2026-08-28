@@ -4,8 +4,8 @@ Versions follow `vMilestone.MajorFeature.MinorFeature`. Each row is an
 acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
-`v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`, `v0.2.2`. Current release gate:
-`v0.3.0`.
+`v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
+`v0.2.3`; the next state-model gate remains `v0.3.0`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -37,7 +37,7 @@ No v1/v2 feature, adapter or solver may weaken this invariant.
 | `v0.1.3` | Exact numeric profile | Arbitrary/exact integer policy, normalized rational, deterministic arithmetic and cross-backend golden corpus |
 | `v0.2.0` | Relation and deterministic search | Relation/join/project/compose/closure, `E/A`, `select ... by lex`, static and runtime search plans, ambiguity/budget adversarial tests |
 | `v0.2.1` | Declared semantic projection | Canonical SemanticDescriptor, typed action ports, descriptor-to-DTESSL generator, source map/digests, coverage/gaps and native EventTrace replay without runtime-log adapters |
-| `v0.2.2` | Language workbench foundation | Production-lexer syntax spans, stable located diagnostics, versioned text edits/document store, interactive source editor/REPL and CLI highlighting; protocol transport remains out of scope |
+| `v0.2.3` | Core logical surface and language workbench | First-class nominal names, `~` direct relations and binding, `[T]` options, explicit list literals and multiline values, plus production-parser diagnostics/highlighting, versioned text edits and interactive REPL; protocol transport remains out of scope |
 | `v0.3.0` | Full state theory | `data/derive/invariant`, state sets, explicit shared inputs, trace/history relations, transition occurrence claims |
 | `v0.4.0` | Whole-system transition relations | Multi-component `from/to`, typed before/after patterns, independent/dependent targets, lifecycle/completion library axes, atomic commit tests |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |

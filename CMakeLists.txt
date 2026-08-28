@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.2.2)
+set(DTESSL_VERSION 0.2.3)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -81,7 +81,44 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/relations.dtessl
                    Run minimum=1)
   set_tests_properties(dtessl.cli_relation_replay PROPERTIES
-                       PASS_REGULAR_EXPRESSION "paths = relation")
+                       PASS_REGULAR_EXPRESSION "paths = ~")
+  add_test(NAME dtessl.cli_core_logic
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   replay
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_logic.dtessl
+                   Submit minimum=2)
+  set_tests_properties(dtessl.cli_core_logic PROPERTIES
+                       PASS_REGULAR_EXPRESSION "chosen = .Worker.capacity: 2, id: WorkerId\\(a\\).")
+  add_test(NAME dtessl.cli_core_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_logic.dtessl)
+  set_tests_properties(dtessl.cli_core_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.cli_core_highlight_name
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   highlight
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_logic.dtessl)
+  set_tests_properties(dtessl.cli_core_highlight_name PROPERTIES
+                       PASS_REGULAR_EXPRESSION "keyword name")
+  add_test(NAME dtessl.cli_core_highlight_relation
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   highlight
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_logic.dtessl)
+  set_tests_properties(dtessl.cli_core_highlight_relation PROPERTIES
+                       PASS_REGULAR_EXPRESSION "operator ~")
+  add_test(NAME dtessl.cli_core_highlight_option
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   highlight
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_logic.dtessl)
+  set_tests_properties(dtessl.cli_core_highlight_option PROPERTIES
+                       PASS_REGULAR_EXPRESSION "punctuation \\[")
+  add_test(NAME dtessl.cli_core_highlight_list
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   highlight
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_logic.dtessl)
+  set_tests_properties(dtessl.cli_core_highlight_list PROPERTIES
+                       PASS_REGULAR_EXPRESSION "type list")
   add_test(NAME dtessl.cli_search_plans
            COMMAND $<TARGET_FILE:dtessl_cli>
                    plans

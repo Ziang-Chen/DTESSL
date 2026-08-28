@@ -1,4 +1,4 @@
-# DTESSL v0.2.2
+# DTESSL v0.2.3
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -16,6 +16,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [Canonical Value Format v1](docs/CANONICAL_VALUE_V1.md)
 - [Exact Numeric Profile v1](docs/EXACT_NUMERIC_PROFILE_V1.md)
 - [Relation and Search Profile v1](docs/RELATION_SEARCH_V1.md)
+- [Core Logic Surface](docs/CORE_LOGIC_SYNTAX.md)
 - [SemanticDescriptor Projection v1](docs/SEMANTIC_DESCRIPTOR_V1.md)
 - [Language Service 与 REPL](docs/LANGUAGE_SERVICE.md)
 - [变更记录](CHANGELOG.md)
@@ -79,7 +80,8 @@ transition Schedule @ Submit(task: string, worker: string):
 
 ```ebnf
 program     = { type-declaration | port | state | transition } ;
-type-declaration = newtype | record | variant | enum ;
+type-declaration = name-type | newtype | record | variant | enum ;
+name-type   = "name" Name NEWLINE ;
 newtype     = "newtype" Name "=" type NEWLINE ;
 record      = "record" Name ":" INDENT { Name ":" type NEWLINE } DEDENT ;
 variant     = "variant" Name ":" INDENT
@@ -102,6 +104,8 @@ transition  = "transition" Name "@" event-pattern ":" INDENT
 event-pattern = Name "(" [ parameter { "," parameter } ] ")" ;
 parameter   = Name ":" type ;
 type        = "bool" | "int" | "rational" | "string"
+            | "[" type "]"
+            | "~" type | "~" "(" type { "," type } ")"
             | "list" "<" type ">"
             | "set" "<" type ">"
             | "map" "<" type "," type ">"
@@ -112,19 +116,25 @@ type        = "bool" | "int" | "rational" | "string"
             | "relation" "<" type { "," type } ">"
             | Name ;
 
+name-value  = Name "(" Name ")" ;
+option-value = "[" [ expression ] "]" ;
+relation-value = "~" "{" [ literal { "," literal } ] "}" ;
+list-value  = "list" "[" [ literal { "," literal } ] "]" ;
+
 expression  = literal | name | "round" | "before." Name
             | unary | binary
             | "count" "(" expression ")"
             | ( "insert" | "erase" ) "(" expression "," expression ")"
-            | "exists" Name "in" expression "where" expression
-            | ( "E" | "A" ) Name "in" expression ":" expression
-            | "select" Name "in" expression "where" expression
+            | "exists" Name ( "in" | "~" ) expression "where" expression
+            | ( "E" | "A" ) Name ( "in" | "~" ) expression ":" expression
+            | "select" Name ( "in" | "~" ) expression "where" expression
                 "by" "lex" "(" expression { "," expression } ")"
             | constructor | record-constructor | match-expression ;
 match-expression = "match" name "{"
                      pattern "->" expression
                      { "," pattern "->" expression }
                    "}" ;
+pattern     = Name [ "(" Name ")" ] | "[]" | "[" Name "]" | "_" ;
 
 action-expression = sequence { "|" sequence } ;
 sequence     = action { "," action } ;
@@ -152,6 +162,11 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 字段按字段名规范排序，所有 nominal/variant 值编码自己的类型与构造器身份。
 支持：
 
+- `name WorkerId` 定义开放的名义逻辑名称，值写作 `WorkerId(a)`；它不是 string，
+  也不是 capability 或 authority；
+- `~Worker`、`~(A,B)`、`~{...}` 和 `item ~ relation` 构成紧凑关系语法；
+- `[T]`、`[]`、`[value]` 分别表示 typed option、无值和有值，列表显式写作
+  `list[...]`；
 - 布尔运算 `and/or/not`；
 - 相等、精确数值/字符串有序比较；
 - integer/rational 的 `+`、`-`、`*`、`/`；整数除法表达式产生 rational，混合运算精确提升；
@@ -161,18 +176,19 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 - `match value { A(x) -> ..., B -> ... }`，静态拒绝遗漏构造器、重复分支、
   payload 绑定错误和不同结果类型。
 
-`none<T>()` 在表达式中显式给出空 option 的元素类型；`ok<E>(value)` 和
+`[]` 在有 `[T]` 类型上下文的位置表示空 option，`[value]` 表示有值；旧的
+`none<T>()/some(value)` 仍作为 v0 兼容输入。`ok<E>(value)` 和
 `err<T>(error)` 给出 result 的另一侧类型。初值已有声明类型上下文，因此可简写为
 `none`、`some(value)`、`ok(value)`、`err(value)`。
 
-`relation<T...>` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
+`~T`/`~(A,B,...)` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
 每行是同 arity 的 `tuple<T...>`，按 canonical tuple 顺序排序并去重。当前关系代数包括：
 
 - `project(r, column...)`、`join(left, li, right, ri)`；
 - 二元关系的 `compose`、`inverse` 和非自反传递 `closure`；
 - `union`、`intersection`、`difference`；
 - `E/A` 量词、成员关系和 `count`；
-- `select row in r where p by lex(score...)`，结果为 typed option。
+- `select row ~ r where p by lex(score...)`，结果为 typed option。
 
 选择按 score 升序；不同候选若完整 score 相同则拒绝整个 round，绝不以 hash/source
 顺序暗中决胜。无候选返回 `none`。稳定 ID 应作为 `lex` 最后一项明确写出。
@@ -209,6 +225,7 @@ build/dtessl highlight examples/scheduler.dtessl
 build/dtessl repl examples/scheduler.dtessl
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
+build/dtessl replay examples/core_logic.dtessl Submit minimum=2
 build/dtessl replay-batch examples/scheduler.dtessl \
   Submit task=task-1 worker=worker-a -- Note text=same-round
 build/dtessl descriptor-check examples/scheduler.semantic
@@ -228,7 +245,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.2.2 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.2.3 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
 下一个增量进入完整 state theory 与多组件 transition，随后扩展原生 typed EventTrace，
 最后才加入稀疏矩阵与可替换 solver backend。

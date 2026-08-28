@@ -28,6 +28,7 @@ struct ValueBag;
 struct ValueRecord;
 struct ValueVariant;
 struct ValueNewtype;
+struct ValueName;
 struct ValueTuple;
 struct ValueRelation;
 
@@ -54,6 +55,7 @@ class Value {
     Newtype,
     Tuple,
     Relation,
+    Name,
   };
 
   Value(bool value);
@@ -70,6 +72,7 @@ class Value {
   Value(ValueRecord value);
   Value(ValueVariant value);
   Value(ValueNewtype value);
+  Value(ValueName value);
   Value(ValueTuple value);
   Value(ValueRelation value);
 
@@ -87,6 +90,7 @@ class Value {
   [[nodiscard]] const ValueRecord& as_record() const;
   [[nodiscard]] const ValueVariant& as_variant() const;
   [[nodiscard]] const ValueNewtype& as_newtype() const;
+  [[nodiscard]] const ValueName& as_name() const;
   [[nodiscard]] const ValueTuple& as_tuple() const;
   [[nodiscard]] const ValueRelation& as_relation() const;
 
@@ -106,6 +110,7 @@ class Value {
   std::shared_ptr<const ValueRecord> record_value_;
   std::shared_ptr<const ValueVariant> variant_value_;
   std::shared_ptr<const ValueNewtype> newtype_value_;
+  std::shared_ptr<const ValueName> name_value_;
   std::shared_ptr<const ValueTuple> tuple_value_;
   std::shared_ptr<const ValueRelation> relation_value_;
 };
@@ -154,6 +159,14 @@ struct ValueNewtype {
   std::string type_id;
   std::vector<Value> payload;
   friend bool operator==(const ValueNewtype&, const ValueNewtype&) = default;
+};
+
+// A logical name is a nominal, canonical atom. It is neither human text nor
+// authority: WorkerId(a) and TaskId(a) are distinct values.
+struct ValueName {
+  std::string type_id;
+  std::string atom;
+  friend bool operator==(const ValueName&, const ValueName&) = default;
 };
 
 struct ValueTuple {
