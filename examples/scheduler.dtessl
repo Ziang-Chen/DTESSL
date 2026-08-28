@@ -1,0 +1,40 @@
+// DTESSL v0: one state space, two event relations, no ambient I/O.
+state Scheduler @ local initial:
+  mode: string = "Idle"
+  credits: int = 2
+  workers: set<string> = {"worker-a", "worker-b"}
+  busy: set<string> = {}
+  last_event_at: int = 0
+  invariant:
+    credits >= 0 and count(busy) <= count(workers)
+
+transition Schedule @ Submit(task: string, worker: string):
+  from Scheduler
+  to Scheduler:
+    mode = "Waiting"
+    credits = before.credits - 1
+    busy = insert(before.busy, worker)
+    last_event_at = now
+  where:
+    before.mode = "Idle"
+    and before.credits > 0
+    and exists candidate in before.workers where candidate = worker
+  do:
+    accept: $ipc.accept(task),
+    (
+      reserve: $resource.reserve(task) @ worker
+      |
+      audit: $audit.append(task) @ local
+    )
+
+transition Complete @ Done(task: string, worker: string):
+  from Scheduler
+  to Scheduler:
+    mode = "Idle"
+    credits = before.credits + 1
+    busy = erase(before.busy, worker)
+    last_event_at = now
+  where:
+    before.mode = "Waiting"
+  do:
+    finish: $ipc.complete(task) @ local

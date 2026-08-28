@@ -1,0 +1,129 @@
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace dtessl {
+
+struct StringSet {
+  std::set<std::string, std::less<>> values;
+
+  friend bool operator==(const StringSet&, const StringSet&) = default;
+};
+
+class Value {
+ public:
+  enum class Kind { Bool, Int, String, StringSet };
+
+  Value(bool value);
+  Value(std::int64_t value);
+  Value(std::string value);
+  Value(const char* value);
+  Value(StringSet value);
+
+  [[nodiscard]] Kind kind() const noexcept;
+  [[nodiscard]] bool as_bool() const;
+  [[nodiscard]] std::int64_t as_int() const;
+  [[nodiscard]] const std::string& as_string() const;
+  [[nodiscard]] const StringSet& as_string_set() const;
+
+  friend bool operator==(const Value&, const Value&) = default;
+
+ private:
+  Kind kind_;
+  bool bool_value_{false};
+  std::int64_t int_value_{0};
+  std::string string_value_;
+  StringSet set_value_;
+};
+
+struct Event {
+  std::string name;
+  std::map<std::string, Value, std::less<>> fields;
+};
+
+struct ActionCall {
+  std::string label;
+  std::string function;
+  std::vector<Value> arguments;
+  std::string context;
+
+  friend bool operator==(const ActionCall&, const ActionCall&) = default;
+};
+
+struct ActionPlan {
+  std::vector<ActionCall> calls;
+  std::vector<std::pair<std::size_t, std::size_t>> dependencies;
+
+  friend bool operator==(const ActionPlan&, const ActionPlan&) = default;
+};
+
+struct StepResult {
+  std::uint64_t tick{0};
+  std::string transition;
+  std::string from_state;
+  std::string to_state;
+  std::map<std::string, Value, std::less<>> state;
+  ActionPlan actions;
+
+  friend bool operator==(const StepResult&, const StepResult&) = default;
+};
+
+class Error : public std::runtime_error {
+ public:
+  Error(std::string message, std::size_t line = 0, std::size_t column = 0);
+
+  [[nodiscard]] std::size_t line() const noexcept { return line_; }
+  [[nodiscard]] std::size_t column() const noexcept { return column_; }
+
+ private:
+  std::size_t line_;
+  std::size_t column_;
+};
+
+class Program {
+ public:
+  struct Impl;
+
+  Program();
+  explicit Program(std::shared_ptr<const Impl> impl);
+
+  [[nodiscard]] bool empty() const noexcept;
+  [[nodiscard]] const std::shared_ptr<const Impl>& implementation() const noexcept;
+
+ private:
+  std::shared_ptr<const Impl> impl_;
+};
+
+// Parses and verifies one complete DTESSL source unit.
+[[nodiscard]] Program parse(std::string_view source);
+
+class Engine {
+ public:
+  explicit Engine(Program program);
+
+  // Executes one logical event. External calls are only described in the
+  // returned ActionPlan; this standalone engine never performs ambient I/O.
+  [[nodiscard]] StepResult step(const Event& event);
+
+  [[nodiscard]] std::string current_state() const;
+  [[nodiscard]] const std::map<std::string, Value, std::less<>>& values() const;
+
+ private:
+  Program program_;
+  std::uint64_t tick_{0};
+  std::string current_state_;
+  std::map<std::string, Value, std::less<>> values_;
+};
+
+[[nodiscard]] std::string value_text(const Value& value);
+[[nodiscard]] std::string result_text(const StepResult& result);
+
+}  // namespace dtessl
