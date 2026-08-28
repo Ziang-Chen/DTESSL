@@ -3,6 +3,7 @@
 #include "dtessl/language_service.hpp"
 #include "dtessl/scratch_pool.hpp"
 #include "dtessl/semantic_descriptor.hpp"
+#include "dtessl/solver.hpp"
 #include "dtessl/value_codec.hpp"
 #include "dtessl/version.hpp"
 
@@ -281,7 +282,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.3.3", "compiled version must be v0.3.3");
+  require(dtessl::version == "0.3.4", "compiled version must be v0.3.4");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1631,5 +1632,41 @@ procedure broken idle & inject go;
   }
   require(empty_compact_transition_rejected,
           "compact injection resolved an undefined transition name");
+
+  const dtessl::Configuration configuration{
+      {{"scheduler", "Ready"}},
+      {{"scheduler.credits", dtessl::Value(std::int64_t{2})}}};
+  const auto encoded_configuration = dtessl::encode_configuration(configuration);
+  require(dtessl::decode_configuration(encoded_configuration) == configuration,
+          "canonical Configuration codec did not round-trip");
+  dtessl::ConfigurationStore configuration_store;
+  const auto configuration_root = configuration_store.insert(configuration);
+  const auto configuration_duplicate = configuration_store.insert(configuration);
+  require(configuration_root.inserted && !configuration_duplicate.inserted &&
+              configuration_root.index == configuration_duplicate.index &&
+              configuration_store.path_to(configuration_root.index).size() == 1U,
+          "ConfigurationStore did not deduplicate an exact Configuration");
+
+  constexpr std::string_view round_dependent_claim = R"DTESSL(
+state Idle initial:
+  value: int = 0
+
+transition Stay():
+  case same (Idle) -> (Idle):
+    where:
+      true
+
+trace Model:
+  capture closed:
+    transition (Stay.same)
+
+Claim Later @ Model:
+  eventually:
+    round > 2
+)DTESSL";
+  const auto round_result =
+      dtessl::Solver(dtessl::parse(round_dependent_claim)).verify_claim("Later");
+  require(round_result.status == dtessl::ClaimSolveStatus::Inconclusive,
+          "Solver treated an unmodeled logical round as Configuration state");
   return 0;
 }

@@ -1,0 +1,3 @@
+state idle, busy;
+trans Tick: idle -> busy;
+trans Tick: busy -> idle;

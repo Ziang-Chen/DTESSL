@@ -1,0 +1,31 @@
+state A0 @ a initial:
+  token: int = 0
+
+state A1 @ a:
+  token: int = 0
+
+state B0 @ b initial:
+  token: int = 0
+
+state B1 @ b:
+  token: int = 0
+
+state C0 @ c initial:
+  token: int = 0
+
+state C1 @ c:
+  token: int = 0
+
+state D0 @ d initial:
+  token: int = 0
+
+state D1 @ d:
+  token: int = 0
+
+transition Tick():
+  case forward (A0 @ a, B0 @ b, C0 @ c, D0 @ d) -> (A1 @ a, B1 @ b, C1 @ c, D1 @ d):
+    where:
+      true
+  case backward (A1 @ a, B1 @ b, C1 @ c, D1 @ d) -> (A0 @ a, B0 @ b, C0 @ c, D0 @ d):
+    where:
+      true

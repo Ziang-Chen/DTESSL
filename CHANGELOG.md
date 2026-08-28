@@ -3,6 +3,24 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.3.4
+
+- Added `Solver` as the high-performance semantic layer between the verified
+  frontend Program and execution/exploration backends.
+- Separated static source `state` declarations from dynamic `Configuration`
+  nodes, whose canonical binary encoding contains active locations and typed
+  variable valuations.
+- Added exact content-addressed Configuration deduplication and named the
+  reachable directed transition graph `StateExpand`; witness parents remain
+  paths through that graph rather than pretending it is a tree.
+- Added dense context/state/transition/route IDs with the prior string/map
+  matcher retained as a benchmark and semantic-parity baseline.
+- Added bounded Claim counterexample search: `always` finds reachable violating
+  Configurations and `eventually` finds nonmatching deadlocks or lassos.
+  Parameterized domains and count-monitor products report `inconclusive`.
+- Added staged encoding benchmarks, four runnable Claim models, public Solver
+  result/status APIs and CLI `bench` / `verify-claim` commands.
+
 ## v0.3.3
 
 - Added semicolon-terminated, single-physical-line compact declarations for

@@ -1,12 +1,14 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
 #include "dtessl/language_service.hpp"
+#include "dtessl/solver.hpp"
 #include "dtessl/semantic_descriptor.hpp"
 #include "dtessl/version.hpp"
 #include "line_editor.hpp"
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -513,7 +516,7 @@ void repl_help() {
       << "  :reset                   rebuild legacy and procedure runtimes\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.3.3 syntax:\n"
+      << "\ncore v0.3.4 syntax:\n"
       << "  procedure/inject          persistent automaton + typed transition input\n"
       << "  replay/capture closed     transition replay + complete procedure closure\n"
       << "  name T / T(atom)         nominal logical names\n"
@@ -804,6 +807,8 @@ void usage(std::ostream& out) {
       << "  dtessl version\n"
       << "  dtessl features <program.dtessl>\n"
       << "  dtessl plans <program.dtessl>\n"
+      << "  dtessl bench <program.dtessl> <Transition> [iterations]\n"
+      << "  dtessl verify-claim <program.dtessl> <Claim> [max-depth] [max-configurations]\n"
       << "  dtessl descriptor-check <model.semantic>\n"
       << "  dtessl descriptor-generate <model.semantic>\n"
       << "  dtessl descriptor-source-map <model.semantic>\n"
@@ -821,7 +826,7 @@ void usage(std::ostream& out) {
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.3.3: compact automata, optimized selection, indexed search, causal rounds,\n"
+      << "core v0.3.4: Solver/StateExpand, compact automata, indexed search, causal rounds,\n"
       << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
 }
 
@@ -950,6 +955,92 @@ int main(int argc, char** argv) {
                   << '\n';
       }
       return 0;
+    }
+    if (command == "bench") {
+      if (argc < 4 || argc > 5) {
+        throw dtessl::Error(
+            "usage: dtessl bench <program.dtessl> <Transition> [iterations]");
+      }
+      std::uint64_t iterations = 10000U;
+      if (argc == 5) {
+        const std::string_view text = argv[4];
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(),
+                                            iterations);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+            iterations == 0U) {
+          throw dtessl::Error("benchmark iterations must be a positive integer");
+        }
+      }
+      struct Measurement {
+        std::chrono::nanoseconds elapsed;
+        std::map<std::string, std::string, std::less<>> states;
+        std::map<std::string, dtessl::Value, std::less<>> values;
+      };
+      const auto measure = [&](dtessl::SolverEncoding encoding) {
+        dtessl::Engine engine(program, encoding);
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t iteration = 0; iteration < iterations; ++iteration) {
+          static_cast<void>(engine.step_transition(
+              dtessl::TransitionInput{argv[3], {}}));
+        }
+        const auto stop = std::chrono::steady_clock::now();
+        return Measurement{std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               stop - start),
+                           engine.current_states(), engine.values()};
+      };
+      const Measurement reference =
+          measure(dtessl::SolverEncoding::ReferenceStrings);
+      const Measurement dense = measure(dtessl::SolverEncoding::DenseIds);
+      if (reference.states != dense.states || reference.values != dense.values) {
+        throw dtessl::Error("dense encoding diverged from reference encoding");
+      }
+      const double reference_ns =
+          static_cast<double>(reference.elapsed.count()) / static_cast<double>(iterations);
+      const double dense_ns =
+          static_cast<double>(dense.elapsed.count()) / static_cast<double>(iterations);
+      std::cout << std::fixed << std::setprecision(2)
+                << "iterations " << iterations << '\n'
+                << "reference-string-map ns/step " << reference_ns << '\n'
+                << "dense-id-table ns/step " << dense_ns << '\n'
+                << "speedup " << (dense_ns == 0.0 ? 0.0 : reference_ns / dense_ns)
+                << "x\n"
+                << "semantic-parity yes\n";
+      return 0;
+    }
+    if (command == "verify-claim") {
+      if (argc < 4 || argc > 6) {
+        throw dtessl::Error(
+            "usage: dtessl verify-claim <program.dtessl> <Claim> [max-depth] [max-configurations]");
+      }
+      dtessl::SolverLimits limits;
+      const auto parse_limit = [&](int argument, std::size_t& target,
+                                   std::string_view description) {
+        if (argc <= argument) return;
+        const std::string_view text = argv[argument];
+        const auto parsed =
+            std::from_chars(text.data(), text.data() + text.size(), target);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+            target == 0U) {
+          throw dtessl::Error(std::string(description) + " must be a positive integer");
+        }
+      };
+      parse_limit(4, limits.max_depth, "max-depth");
+      parse_limit(5, limits.max_configurations, "max-configurations");
+      const dtessl::ClaimSolveResult verified =
+          dtessl::Solver(program).verify_claim(argv[3], limits);
+      std::cout << dtessl::claim_solve_status_name(verified.status)
+                << " claim=" << verified.claim
+                << " configurations=" << verified.explored_configurations
+                << " edges=" << verified.explored_edges
+                << " depth=" << verified.max_depth_reached << '\n'
+                << verified.detail << '\n';
+      for (const dtessl::CounterexampleFrame& frame : verified.counterexample) {
+        std::cout << "counterexample depth=" << frame.depth
+                  << " configuration=" << frame.configuration_digest;
+        if (!frame.transition.empty()) std::cout << " via=" << frame.transition;
+        std::cout << '\n';
+      }
+      return verified.status == dtessl::ClaimSolveStatus::Counterexample ? 3 : 0;
     }
     if (command == "check") {
       if (argc != 3) throw dtessl::Error("check does not accept event arguments");

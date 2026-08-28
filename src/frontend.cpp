@@ -1,6 +1,7 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
 #include "dtessl/language_service.hpp"
+#include "dtessl/solver.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -407,9 +408,17 @@ struct Field {
   std::size_t column{0};
 };
 
+using ContextId = std::size_t;
+using StateId = std::size_t;
+using TransitionId = std::size_t;
+using RouteId = std::size_t;
+constexpr std::size_t invalid_dense_id = std::numeric_limits<std::size_t>::max();
+
 struct State {
   std::string name;
   std::string context;
+  ContextId context_id{invalid_dense_id};
+  StateId state_id{invalid_dense_id};
   bool initial{false};
   std::vector<Field> fields;
   std::vector<ExprPtr> invariants;
@@ -464,6 +473,8 @@ struct StateBinding {
   std::string context;
   std::size_t line{0};
   std::size_t column{0};
+  ContextId context_id{invalid_dense_id};
+  StateId state_id{invalid_dense_id};
 };
 
 struct TransitionTarget {
@@ -1129,6 +1140,11 @@ struct RouteStateIndexBucket {
   std::map<std::vector<std::string>, std::vector<std::size_t>> routes;
 };
 
+struct DenseRouteStateIndexBucket {
+  std::vector<ContextId> contexts;
+  std::map<std::vector<StateId>, std::vector<RouteId>> routes;
+};
+
 struct Program::Impl {
   TypeRegistry types;
   FunctionRegistry functions;
@@ -1138,10 +1154,15 @@ struct Program::Impl {
   std::vector<TraceDeclaration> traces;
   std::vector<ClaimDeclaration> claims;
   std::map<std::string, ProcedureDeclaration, std::less<>> procedures;
-  std::map<std::string, std::size_t, std::less<>> transition_index;
-  std::map<std::string, std::vector<std::size_t>, std::less<>> event_index;
+  std::map<std::string, ContextId, std::less<>> context_index;
+  std::vector<std::string> context_names;
+  std::map<std::string, StateId, std::less<>> state_index;
+  std::vector<std::size_t> state_positions_by_id;
+  std::map<std::string, TransitionId, std::less<>> transition_index;
+  std::map<std::string, std::vector<TransitionId>, std::less<>> event_index;
   std::map<std::string, std::vector<RouteStateIndexBucket>, std::less<>>
       route_state_index;
+  std::vector<std::vector<DenseRouteStateIndexBucket>> dense_route_state_index;
 };
 
 namespace {
@@ -2773,12 +2794,26 @@ std::shared_ptr<Program::Impl> Parser::program() {
 }
 
 const State& find_state(const Program::Impl& program, std::string_view name) {
+  if (!program.state_index.empty()) {
+    const auto indexed = program.state_index.find(name);
+    if (indexed == program.state_index.end()) {
+      throw Error("unknown state '" + std::string(name) + "'");
+    }
+    return program.states.at(program.state_positions_by_id.at(indexed->second));
+  }
   const auto found = std::find_if(program.states.begin(), program.states.end(),
                                   [&](const State& state) { return state.name == name; });
   if (found == program.states.end()) {
     throw Error("unknown state '" + std::string(name) + "'");
   }
   return *found;
+}
+
+const State& find_state(const Program::Impl& program, StateId state_id) {
+  if (state_id >= program.state_positions_by_id.size()) {
+    throw Error("invalid encoded StateId");
+  }
+  return program.states.at(program.state_positions_by_id[state_id]);
 }
 
 DataType value_type(const Value& value) {
@@ -3741,12 +3776,39 @@ void verify_program(Program::Impl& program) {
                   program.states.front().line, program.states.front().column);
     }
   }
+  program.context_index.clear();
+  program.context_names.clear();
+  for (const auto& [context, count] : states_per_context) {
+    static_cast<void>(count);
+    const ContextId id = program.context_names.size();
+    program.context_index.emplace(context, id);
+    program.context_names.push_back(context);
+  }
+  program.state_index.clear();
+  program.state_positions_by_id.clear();
+  for (const State& state : program.states) {
+    program.state_index.emplace(state.name, invalid_dense_id);
+  }
+  StateId next_state_id = 0;
+  for (auto& [name, id] : program.state_index) {
+    static_cast<void>(name);
+    id = next_state_id++;
+  }
+  program.state_positions_by_id.resize(program.states.size());
+  for (std::size_t position = 0; position < program.states.size(); ++position) {
+    State& state = program.states[position];
+    state.context_id = program.context_index.at(state.context);
+    state.state_id = program.state_index.at(state.name);
+    program.state_positions_by_id[state.state_id] = position;
+  }
   for (auto& [name, procedure] : program.procedures) {
     static_cast<void>(name);
     std::set<std::string, std::less<>> contexts;
     for (StateBinding& binding : procedure.initial_states) {
       const State& state = find_state(program, binding.state);
       if (binding.context.empty()) binding.context = state.context;
+      binding.context_id = state.context_id;
+      binding.state_id = state.state_id;
       if (binding.context != state.context) {
         throw Error("procedure initial state '" + state.name + "' belongs to @" +
                         state.context + ", not @" + binding.context,
@@ -3862,6 +3924,8 @@ void verify_program(Program::Impl& program) {
       for (StateBinding& binding : *sources) {
         const State& source = find_state(program, binding.state);
         if (binding.context.empty()) binding.context = source.context;
+        binding.context_id = source.context_id;
+        binding.state_id = source.state_id;
         if (binding.context != source.context) {
           throw Error("state '" + source.name + "' belongs to @" + source.context +
                           ", not @" + binding.context,
@@ -3884,6 +3948,8 @@ void verify_program(Program::Impl& program) {
       for (TransitionTarget& target : *targets) {
         const State& state = find_state(program, target.binding.state);
         if (target.binding.context.empty()) target.binding.context = state.context;
+        target.binding.context_id = state.context_id;
+        target.binding.state_id = state.state_id;
         if (target.binding.context != state.context) {
           throw Error("state '" + state.name + "' belongs to @" + state.context +
                           ", not @" + target.binding.context,
@@ -4069,6 +4135,8 @@ void verify_program(Program::Impl& program) {
   program.transition_index.clear();
   program.event_index.clear();
   program.route_state_index.clear();
+  program.dense_route_state_index.clear();
+  program.dense_route_state_index.resize(program.transitions.size());
   for (std::size_t index = 0; index < program.transitions.size(); ++index) {
     const Transition& transition = program.transitions[index];
     program.transition_index.emplace(transition.name, index);
@@ -4099,6 +4167,30 @@ void verify_program(Program::Impl& program) {
         bucket = std::prev(buckets.end());
       }
       bucket->routes[states].push_back(route_index);
+
+      std::vector<std::pair<ContextId, StateId>> dense_signature;
+      for (const StateBinding& binding : *sources[route_index]) {
+        dense_signature.emplace_back(binding.context_id, binding.state_id);
+      }
+      std::sort(dense_signature.begin(), dense_signature.end());
+      std::vector<ContextId> dense_contexts;
+      std::vector<StateId> dense_states;
+      for (const auto& [context_id, state_id] : dense_signature) {
+        dense_contexts.push_back(context_id);
+        dense_states.push_back(state_id);
+      }
+      auto& dense_buckets = program.dense_route_state_index[index];
+      auto dense_bucket = std::find_if(
+          dense_buckets.begin(), dense_buckets.end(),
+          [&](const DenseRouteStateIndexBucket& item) {
+            return item.contexts == dense_contexts;
+          });
+      if (dense_bucket == dense_buckets.end()) {
+        dense_buckets.push_back(
+            DenseRouteStateIndexBucket{std::move(dense_contexts), {}});
+        dense_bucket = std::prev(dense_buckets.end());
+      }
+      dense_bucket->routes[dense_states].push_back(route_index);
     }
   }
   for (const State& state : program.states) {
@@ -5252,6 +5344,7 @@ Program parse(std::string_view source) {
 }
 
 #include "runtime.cpp"
+#include "solver.cpp"
 std::string value_text(const Value& value) {
   switch (value.kind()) {
     case Value::Kind::Bool: return value.as_bool() ? "true" : "false";

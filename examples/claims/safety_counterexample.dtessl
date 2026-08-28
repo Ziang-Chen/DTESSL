@@ -1,0 +1,18 @@
+state Safe @ system initial:
+  bad: bool = false
+
+state Failed @ system:
+  bad: bool = true
+
+transition Break():
+  case enter (Safe @ system) -> (Failed @ system):
+    where:
+      true
+
+trace Model:
+  capture closed:
+    transition (Break.enter)
+
+Claim NoFailure @ Model:
+  always:
+    not bad

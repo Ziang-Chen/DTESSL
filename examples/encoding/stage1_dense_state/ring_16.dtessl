@@ -1,0 +1,17 @@
+state s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15;
+trans Advance: s0 -> s1;
+trans Advance: s1 -> s2;
+trans Advance: s2 -> s3;
+trans Advance: s3 -> s4;
+trans Advance: s4 -> s5;
+trans Advance: s5 -> s6;
+trans Advance: s6 -> s7;
+trans Advance: s7 -> s8;
+trans Advance: s8 -> s9;
+trans Advance: s9 -> s10;
+trans Advance: s10 -> s11;
+trans Advance: s11 -> s12;
+trans Advance: s12 -> s13;
+trans Advance: s13 -> s14;
+trans Advance: s14 -> s15;
+trans Advance: s15 -> s0;

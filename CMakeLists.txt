@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.3.3)
+set(DTESSL_VERSION 0.3.4)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -14,11 +14,14 @@ add_library(dtessl
   src/runtime.cpp
   src/language_service.cpp
   src/semantic_descriptor.cpp
+  src/configuration.cpp
+  src/solver.cpp
   src/value_codec.cpp)
-# runtime.cpp is included once by frontend.cpp while the typed AST is private.
-# Listing it as header-only keeps the frontend/runtime boundary visible to IDEs
-# without compiling a second copy of the implementation.
-set_source_files_properties(src/runtime.cpp PROPERTIES HEADER_FILE_ONLY TRUE)
+# runtime.cpp and solver.cpp are included once by frontend.cpp while the typed
+# AST is private. Listing them as header-only keeps all three boundaries visible
+# to IDEs without compiling a second implementation copy.
+set_source_files_properties(src/runtime.cpp src/solver.cpp
+                            PROPERTIES HEADER_FILE_ONLY TRUE)
 configure_file(include/dtessl/version.hpp.in
                generated/dtessl/version.hpp
                @ONLY)
@@ -239,4 +242,32 @@ if(DTESSL_BUILD_TESTS)
                    -DCLI=$<TARGET_FILE:dtessl_cli>
                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/procedure_replay.dtessl
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/repl_procedure_smoke.cmake)
+  add_test(NAME dtessl.solver_safety_counterexample
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/claims/safety_counterexample.dtessl
+                   NoFailure)
+  set_tests_properties(dtessl.solver_safety_counterexample PROPERTIES
+                       WILL_FAIL TRUE)
+  add_test(NAME dtessl.solver_safety_verified
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/claims/safety_verified.dtessl
+                   NoFailure)
+  set_tests_properties(dtessl.solver_safety_verified PROPERTIES
+                       PASS_REGULAR_EXPRESSION "verified claim=NoFailure configurations=2")
+  add_test(NAME dtessl.solver_eventually_counterexample
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/claims/eventually_counterexample.dtessl
+                   Completes)
+  set_tests_properties(dtessl.solver_eventually_counterexample PROPERTIES
+                       WILL_FAIL TRUE)
+  add_test(NAME dtessl.solver_eventually_verified
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/claims/eventually_verified.dtessl
+                   Completes)
+  set_tests_properties(dtessl.solver_eventually_verified PROPERTIES
+                       PASS_REGULAR_EXPRESSION "verified claim=Completes configurations=2")
 endif()

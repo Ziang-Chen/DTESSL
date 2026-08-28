@@ -3,13 +3,24 @@
 // All Engine/RuntimeContext round, dispatch, replay and capture behavior lives
 // here; parsing and verification remain in frontend.cpp.
 
-Engine::Engine(Program program) : Engine(std::move(program), {}) {}
+Engine::Engine(Program program)
+    : Engine(std::move(program), {}, SolverEncoding::DenseIds) {}
+
+Engine::Engine(Program program, SolverEncoding encoding)
+    : Engine(std::move(program), {}, encoding) {}
 
 Engine::Engine(Program program,
                std::map<std::string, std::string, std::less<>> initial_states)
-    : program_(std::move(program)) {
+    : Engine(std::move(program), std::move(initial_states),
+             SolverEncoding::DenseIds) {}
+
+Engine::Engine(Program program,
+               std::map<std::string, std::string, std::less<>> initial_states,
+               SolverEncoding encoding)
+    : program_(std::move(program)), encoding_(encoding) {
   if (program_.empty()) throw Error("cannot construct an engine from an empty program");
   const Program::Impl& implementation = *program_.implementation();
+  active_state_ids_.assign(implementation.context_names.size(), invalid_dense_id);
   FunctionScope function_scope(implementation.functions);
   const std::size_t initial_count = static_cast<std::size_t>(std::count_if(
       implementation.states.begin(), implementation.states.end(),
@@ -17,6 +28,7 @@ Engine::Engine(Program program,
   for (const State& state : implementation.states) {
     if (!state.initial) continue;
     active_states_.emplace(state.context, state.name);
+    active_state_ids_.at(state.context_id) = state.state_id;
     for (const auto& [field, value] : initial_values(state)) {
       values_.emplace(initial_count == 1U ? field : state_key(state.context, field), value);
     }
@@ -31,6 +43,7 @@ Engine::Engine(Program program,
       values_.erase(initial_count == 1U ? field.name : state_key(context, field.name));
     }
     active_states_.insert_or_assign(context, state_name);
+    active_state_ids_.at(state.context_id) = state.state_id;
     for (const auto& [field, value] : initial_values(state)) {
       values_.insert_or_assign(initial_count == 1U ? field : state_key(context, field), value);
     }
@@ -54,7 +67,8 @@ Engine::Engine(Program program,
   }
 }
 
-Engine Engine::from_procedure(Program program, std::string_view procedure_name) {
+Engine Engine::from_procedure(Program program, std::string_view procedure_name,
+                              SolverEncoding encoding) {
   if (program.empty()) throw Error("cannot start a procedure from an empty program");
   const auto& procedures = program.implementation()->procedures;
   const auto found = procedures.find(procedure_name);
@@ -66,7 +80,7 @@ Engine Engine::from_procedure(Program program, std::string_view procedure_name) 
     initial_states.emplace(binding.context, binding.state);
   }
   const std::string initial_context = found->second.initial_context;
-  Engine result(std::move(program), std::move(initial_states));
+  Engine result(std::move(program), std::move(initial_states), encoding);
   result.initial_context_ = initial_context;
   return result;
 }
@@ -133,6 +147,7 @@ ParallelStepResult Engine::step_inputs_at(
     const std::set<std::string, std::less<>>* write_set;
     std::map<std::string, Value, std::less<>> writes;
     std::map<std::string, std::string, std::less<>> targets;
+    std::vector<std::pair<ContextId, StateId>> dense_targets;
     ActionPlan actions;
     std::set<std::string, std::less<>> causal_predecessors;
     std::string optimization_scope;
@@ -184,40 +199,67 @@ ParallelStepResult Engine::step_inputs_at(
         const std::set<std::string, std::less<>>* reads;
         const std::set<std::string, std::less<>>* writes;
       };
-      std::vector<Route> routes;
-      routes.push_back(Route{&transition.from, &transition.case_name, &transition.to,
-                             &transition.condition, &transition.action,
-                             &transition.reads, &transition.writes});
-      for (const TransitionAlternative& alternative : transition.alternatives) {
-        routes.push_back(Route{&alternative.from, &alternative.name, &alternative.to,
-                               &alternative.condition, &alternative.action,
-                               &alternative.reads, &alternative.writes});
-      }
+      const auto route_at = [&](RouteId route_id) {
+        if (route_id == 0U) {
+          return Route{&transition.from, &transition.case_name, &transition.to,
+                       &transition.condition, &transition.action,
+                       &transition.reads, &transition.writes};
+        }
+        const TransitionAlternative& alternative =
+            transition.alternatives.at(route_id - 1U);
+        return Route{&alternative.from, &alternative.name, &alternative.to,
+                     &alternative.condition, &alternative.action,
+                     &alternative.reads, &alternative.writes};
+      };
       validate_event(transition, event, program.types);
-      std::vector<std::size_t> candidate_routes;
-      for (const RouteStateIndexBucket& bucket :
-           program.route_state_index.at(transition.name)) {
-        std::vector<std::string> signature;
-        signature.reserve(bucket.contexts.size());
-        bool complete = true;
-        for (const std::string& context : bucket.contexts) {
-          const auto active = active_states_.find(context);
-          if (active == active_states_.end()) {
-            complete = false;
-            break;
+      std::vector<RouteId> candidate_routes;
+      if (encoding_ == SolverEncoding::DenseIds) {
+        for (const DenseRouteStateIndexBucket& bucket :
+             program.dense_route_state_index.at(candidate_index)) {
+          std::vector<StateId> signature;
+          signature.reserve(bucket.contexts.size());
+          bool complete = true;
+          for (const ContextId context_id : bucket.contexts) {
+            const StateId active = active_state_ids_.at(context_id);
+            if (active == invalid_dense_id) {
+              complete = false;
+              break;
+            }
+            signature.push_back(active);
           }
-          signature.push_back(active->second);
+          if (!complete) continue;
+          const auto indexed_routes = bucket.routes.find(signature);
+          if (indexed_routes != bucket.routes.end()) {
+            candidate_routes.insert(candidate_routes.end(),
+                                    indexed_routes->second.begin(),
+                                    indexed_routes->second.end());
+          }
         }
-        if (!complete) continue;
-        const auto indexed_routes = bucket.routes.find(signature);
-        if (indexed_routes != bucket.routes.end()) {
-          candidate_routes.insert(candidate_routes.end(),
-                                  indexed_routes->second.begin(),
-                                  indexed_routes->second.end());
+      } else {
+        for (const RouteStateIndexBucket& bucket :
+             program.route_state_index.at(transition.name)) {
+          std::vector<std::string> signature;
+          signature.reserve(bucket.contexts.size());
+          bool complete = true;
+          for (const std::string& context : bucket.contexts) {
+            const auto active = active_states_.find(context);
+            if (active == active_states_.end()) {
+              complete = false;
+              break;
+            }
+            signature.push_back(active->second);
+          }
+          if (!complete) continue;
+          const auto indexed_routes = bucket.routes.find(signature);
+          if (indexed_routes != bucket.routes.end()) {
+            candidate_routes.insert(candidate_routes.end(),
+                                    indexed_routes->second.begin(),
+                                    indexed_routes->second.end());
+          }
         }
       }
-      for (const std::size_t route_index : candidate_routes) {
-        const Route& route = routes.at(route_index);
+      for (const RouteId route_index : candidate_routes) {
+        const Route route = route_at(route_index);
         Environment environment{values_, &event, {}, round_id - 1U};
         if (evaluate(*route.condition, environment).as_bool()) {
           enabled.push_back(Enabled{&transition, route.case_name, route.from, route.to,
@@ -235,7 +277,7 @@ ParallelStepResult Engine::step_inputs_at(
       const State& source = find_state(program, candidate.from->front().state);
       Environment environment{values_, &event, {}, round_id - 1U};
       Prepared decision{&transition, candidate.case_name, candidate.from, candidate.to,
-                        candidate.reads, candidate.writes, {}, {}, {}, {}, {}, {}};
+                        candidate.reads, candidate.writes, {}, {}, {}, {}, {}, {}, {}};
       for (const std::string& field : *candidate.reads) {
         const auto writers = last_writers_.find(field);
         if (writers != last_writers_.end()) {
@@ -247,8 +289,9 @@ ParallelStepResult Engine::step_inputs_at(
         const State& target_state = find_state(program, target.binding.state);
         const bool single_context = active_states_.size() == 1U;
         decision.targets.emplace(target.binding.context, target.binding.state);
-        const auto active = active_states_.find(target.binding.context);
-        if (active == active_states_.end() || active->second != target.binding.state) {
+        decision.dense_targets.emplace_back(target.binding.context_id,
+                                            target.binding.state_id);
+        if (active_state_ids_.at(target.binding.context_id) != target.binding.state_id) {
           for (const auto& [field, value] : initial_values(target_state)) {
             decision.writes.insert_or_assign(
                 single_context ? field : state_key(target.binding.context, field), value);
@@ -361,19 +404,24 @@ ParallelStepResult Engine::step_inputs_at(
     prepared.push_back(std::move(candidates[selected_index]));
   }
 
-  std::map<std::string, std::string, std::less<>> next_active = active_states_;
+  std::vector<StateId> next_active_ids = active_state_ids_;
+  std::vector<StateId> round_targets(active_state_ids_.size(), invalid_dense_id);
   for (const Prepared& decision : prepared) {
-    for (const auto& [context, target] : decision.targets) {
-      const auto [found, inserted] = next_active.insert_or_assign(context, target);
-      static_cast<void>(found);
-      static_cast<void>(inserted);
-      for (const Prepared& other : prepared) {
-        const auto conflicting = other.targets.find(context);
-        if (conflicting != other.targets.end() && conflicting->second != target) {
-          throw Error("parallel transitions choose different states for @" + context);
-        }
+    for (const auto [context_id, state_id] : decision.dense_targets) {
+      StateId& selected = round_targets.at(context_id);
+      if (selected != invalid_dense_id && selected != state_id) {
+        throw Error("parallel transitions choose different states for @" +
+                    program.context_names.at(context_id));
       }
+      selected = state_id;
+      next_active_ids.at(context_id) = state_id;
     }
+  }
+  std::map<std::string, std::string, std::less<>> next_active = active_states_;
+  for (ContextId context_id = 0; context_id < round_targets.size(); ++context_id) {
+    if (round_targets[context_id] == invalid_dense_id) continue;
+    next_active.insert_or_assign(program.context_names.at(context_id),
+                                 find_state(program, round_targets[context_id]).name);
   }
   std::map<std::string, Value, std::less<>> next = values_;
   for (const auto& [context, target_state] : next_active) {
@@ -471,6 +519,7 @@ ParallelStepResult Engine::step_inputs_at(
 
   round_ = round_id;
   active_states_ = std::move(next_active);
+  active_state_ids_ = std::move(next_active_ids);
   values_ = std::move(next);
 
   for (auto& [name, trace] : captured_traces_) {

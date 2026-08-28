@@ -1,0 +1,29 @@
+state Waiting @ system initial:
+  done: bool = false
+
+state StillWaiting @ system:
+  done: bool = false
+
+state Complete @ system:
+  done: bool = true
+
+transition Wait():
+  case forward (Waiting @ system) -> (StillWaiting @ system):
+    where:
+      true
+  case backward (StillWaiting @ system) -> (Waiting @ system):
+    where:
+      true
+
+transition Finish():
+  case finish (Waiting @ system) -> (Complete @ system):
+    where:
+      true
+
+trace Model:
+  capture closed:
+    transition (Wait.forward, Wait.backward, Finish.finish)
+
+Claim Completes @ Model:
+  eventually:
+    done

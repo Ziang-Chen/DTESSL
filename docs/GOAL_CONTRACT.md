@@ -65,10 +65,14 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.3.3 compact-automaton boundary
+## Current v0.3.4 Solver boundary
 
 - Work is restricted to the DTESSL repository and the
   `codex/compact-automaton-v0-3-3` branch.
+- The built-in `Solver` is the sole high-performance semantic layer between the
+  verified frontend Program and runtime/exploration backends. Static `state`
+  declarations are not search nodes: dynamic `Configuration` nodes and
+  transition edges form the `StateExpand` graph.
 - Compact syntax is a source-level AST and direct lowering only. It cannot
   create a second semantic pipeline or bypass typing, deterministic search,
   procedure isolation, causal RoundId, capture or replay checks.

@@ -8,8 +8,8 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.3.3` compact automaton AST over the merged
-  runtime/optimizer and procedure REPL baseline
+- Current target: validate the `v0.3.4` built-in Solver and StateExpand over the
+  merged compact-automaton/runtime baseline
 - Stop orders: none
 
 ## Current state
@@ -29,6 +29,12 @@ The `v0.3.3` compact AST candidate is now implemented on that merged baseline.
 Standard, `-Werror`, and ASan/UBSan configurations each pass 31/31 tests,
 including compact check/trace integration, production highlighting and
 same-line rejection.
+
+The `v0.3.4` candidate separates static state declarations from canonical
+dynamic Configurations, gives the reachable transition graph the stable name
+`StateExpand`, adds dense-ID/reference parity benchmarks and searches bounded
+safety/eventuality counterexamples through the independent Solver layer.
+Standard, `-Werror`, and ASan/UBSan configurations each pass 35/35 tests.
 
 ## Current goal contract
 
@@ -65,7 +71,9 @@ same-line rejection.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.3.3` | Built CLI reports `v0.3.3` | pass |
+| Version identity | CMake/generated header target `0.3.4` | Built CLI reports `v0.3.4` | pass |
+| Solver semantic seam | Public Solver owns Configuration expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
+| StateExpand graph | Canonical Configuration codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Configuration digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
 | Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |

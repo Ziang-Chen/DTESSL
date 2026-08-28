@@ -1,0 +1,5 @@
+state s0, s1, s2, s3;
+trans Advance: s0 -> s1;
+trans Advance: s1 -> s2;
+trans Advance: s2 -> s3;
+trans Advance: s3 -> s0;

@@ -20,16 +20,23 @@ provider any authority.
 ## Three boundaries
 
 ```text
-source -> typed canonical module -> projection backend -> artifact/result
-                                      |
-decision ActionPlan ----------------> external host adapter
+source -> frontend -> typed canonical module -> Solver -> projection backend
+                                                   |              |
+                                                   |              +-> artifact/result
+                                                   +-> StateExpand / counterexample
+
+decision ActionPlan ----------------------------------> external host adapter
 ```
 
 1. A frontend owns parsing, name resolution, typing, canonicalization and core
    verification.
-2. A projection backend consumes only a versioned canonical module. Projection
-   kinds are typed: execute, monitor, explore and formal export.
-3. An external host adapter may consume typed action calls. DTESSL does not
+2. The built-in Solver owns deterministic transition selection, dynamic
+   Configuration expansion, the StateExpand graph and Claim counterexample
+   search. It performs no physical effect.
+3. A projection backend consumes only a versioned canonical module and Solver
+   products. Projection kinds are typed: execute, monitor, explore and formal
+   export.
+4. An external host adapter may consume typed action calls. DTESSL does not
    ingest its runtime logs, results or receipts, and the adapter cannot redefine
    state-transition semantics.
 

@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.3.3` state/trace slice.
+- **Implemented**: accepted and executed through the `v0.3.4` Solver slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.

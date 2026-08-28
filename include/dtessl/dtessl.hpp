@@ -392,17 +392,27 @@ class Program {
 // Parses and verifies one complete DTESSL source unit.
 [[nodiscard]] Program parse(std::string_view source);
 
+// Transition selection strategy owned by the semantic Solver. ReferenceStrings
+// is a correctness/benchmark baseline; DenseIds is the production encoding.
+enum class SolverEncoding { ReferenceStrings, DenseIds };
+
 class Engine {
  public:
   explicit Engine(Program program);
+  Engine(Program program, SolverEncoding encoding);
   Engine(Program program,
          std::map<std::string, std::string, std::less<>> initial_states);
+  Engine(Program program,
+         std::map<std::string, std::string, std::less<>> initial_states,
+         SolverEncoding encoding);
 
   // A procedure is only a named Engine entry configuration. It supplies the
   // initial orthogonal states and lexical entry context; all later progress is
   // still selected by the program's global transition engine.
   [[nodiscard]] static Engine from_procedure(Program program,
-                                             std::string_view procedure_name);
+                                             std::string_view procedure_name,
+                                             SolverEncoding encoding =
+                                                 SolverEncoding::DenseIds);
 
   // Executes one logical event. External calls are only described in the
   // returned ActionPlan; this standalone engine never performs ambient I/O.
@@ -440,8 +450,10 @@ class Engine {
       const std::vector<std::pair<Event, std::string>>& inputs,
       std::uint64_t round_id);
   Program program_;
+  SolverEncoding encoding_{SolverEncoding::DenseIds};
   std::string initial_context_;
   std::uint64_t round_{0};
+  std::vector<std::size_t> active_state_ids_;
   std::map<std::string, std::string, std::less<>> active_states_;
   std::map<std::string, Value, std::less<>> values_;
   std::map<std::string, std::set<std::string, std::less<>>, std::less<>> last_writers_;

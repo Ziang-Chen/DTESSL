@@ -1,4 +1,4 @@
-# DTESSL v0.3.3
+# DTESSL v0.3.4
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -371,6 +371,8 @@ build/dtessl check examples/scheduler.dtessl
 build/dtessl version
 build/dtessl features examples/scheduler.dtessl
 build/dtessl plans examples/relations.dtessl
+build/dtessl bench examples/encoding/stage1_dense_state/ring_32.dtessl Advance 10000
+build/dtessl verify-claim examples/claims/safety_counterexample.dtessl NoFailure
 build/dtessl highlight examples/scheduler.dtessl
 build/dtessl repl examples/scheduler.dtessl
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
@@ -395,8 +397,11 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.3.3 仍不包含 matrix、概率或
-非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
+为了逐层闭合语言核心，v0.3.4 仍不包含 matrix、概率或
+非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
+插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
+它按 transition 展开动态 `Configuration`，形成 `StateExpand`，并搜索 Claim 反例；
+它不是 SMT/SAT 产品名称，也不执行 ActionPlan。
 下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
 与可替换 solver backend。
 它们应继续服从同一条边界：

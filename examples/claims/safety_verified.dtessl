@@ -1,0 +1,21 @@
+state Left @ system initial:
+  bad: bool = false
+
+state Right @ system:
+  bad: bool = false
+
+transition Tick():
+  case right (Left @ system) -> (Right @ system):
+    where:
+      true
+  case left (Right @ system) -> (Left @ system):
+    where:
+      true
+
+trace Model:
+  capture closed:
+    transition (Tick.right, Tick.left)
+
+Claim NoFailure @ Model:
+  always:
+    not bad
