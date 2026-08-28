@@ -1,4 +1,4 @@
-# DTESSL v0.0.2
+# DTESSL v0.0.3
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -12,6 +12,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [Goal contract](docs/GOAL_CONTRACT.md)
 - [项目 QA/QC](docs/PROJECT_QC.md)
 - [研究依据与项目推论](docs/REFERENCES.md)
+- [Backend 与 Provider 接入边界](docs/BACKENDS.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
@@ -137,6 +138,7 @@ cmake -S . -B build -DDTESSL_BUILD_TESTS=ON
 cmake --build build --target dtessl_cli dtessl_tests -j
 build/dtessl check examples/scheduler.dtessl
 build/dtessl version
+build/dtessl features examples/scheduler.dtessl
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay-batch examples/scheduler.dtessl \

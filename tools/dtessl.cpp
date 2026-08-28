@@ -1,4 +1,5 @@
 #include "dtessl/dtessl.hpp"
+#include "dtessl/backend.hpp"
 #include "dtessl/version.hpp"
 
 #include <charconv>
@@ -66,6 +67,7 @@ void usage(std::ostream& out) {
   out << "DTESSL (戴特赛尔) - Discrete-Time Event System Simulation Language\n\n"
       << "usage:\n"
       << "  dtessl version\n"
+      << "  dtessl features <program.dtessl>\n"
       << "  dtessl check <program.dtessl>\n"
       << "  dtessl run <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
@@ -92,6 +94,13 @@ int main(int argc, char** argv) {
       return 2;
     }
     const dtessl::Program program = dtessl::parse(read_file(argv[2]));
+    if (command == "features") {
+      if (argc != 3) throw dtessl::Error("features does not accept event arguments");
+      for (const dtessl::LanguageFeature feature : dtessl::required_features(program)) {
+        std::cout << dtessl::feature_name(feature) << '\n';
+      }
+      return 0;
+    }
     if (command == "check") {
       if (argc != 3) throw dtessl::Error("check does not accept event arguments");
       std::cout << "ok\n";

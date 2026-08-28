@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.0.2)
+set(DTESSL_VERSION 0.0.3)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -42,4 +42,10 @@ if(DTESSL_BUILD_TESTS)
                    Note text=same-round)
   set_tests_properties(dtessl.cli_parallel_replay PROPERTIES
                        PASS_REGULAR_EXPRESSION "replay ok")
+  add_test(NAME dtessl.cli_features
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   features
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.dtessl)
+  set_tests_properties(dtessl.cli_features PROPERTIES
+                       PASS_REGULAR_EXPRESSION "parallel-event-bag")
 endif()

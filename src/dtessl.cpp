@@ -1,9 +1,11 @@
 #include "dtessl/dtessl.hpp"
+#include "dtessl/backend.hpp"
 
 #include <algorithm>
 #include <charconv>
 #include <cctype>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -1590,6 +1592,94 @@ std::string result_text(const StepResult& result) {
   }
   out << "}\n";
   return out.str();
+}
+
+namespace {
+
+void collect_features(const ExprPtr& expr, FeatureSet& features) {
+  if (!expr) return;
+  switch (expr->kind) {
+    case Expr::Kind::Exists: features.insert(LanguageFeature::ExistentialSearch); break;
+    case Expr::Kind::SetInsert:
+    case Expr::Kind::SetErase: features.insert(LanguageFeature::PureSetUpdate); break;
+    case Expr::Kind::Literal:
+    case Expr::Kind::Name:
+    case Expr::Kind::Unary:
+    case Expr::Kind::Binary:
+    case Expr::Kind::Count: break;
+  }
+  collect_features(expr->left, features);
+  collect_features(expr->right, features);
+  collect_features(expr->third, features);
+}
+
+void collect_action_features(const std::shared_ptr<ActionExpr>& action,
+                             FeatureSet& features) {
+  if (!action) return;
+  features.insert(LanguageFeature::ActionDag);
+  for (const ExprPtr& argument : action->arguments) collect_features(argument, features);
+  for (const auto& child : action->children) collect_action_features(child, features);
+}
+
+}  // namespace
+
+FeatureSet required_features(const Program& program) {
+  if (program.empty()) throw Error("cannot inspect features of an empty program");
+  FeatureSet result{LanguageFeature::TypedState, LanguageFeature::ParallelEventBag};
+  const Program::Impl& implementation = *program.implementation();
+  for (const State& state : implementation.states) {
+    for (const Field& field : state.fields) {
+      if (field.type == DataType::StringSet) result.insert(LanguageFeature::FiniteStringSet);
+      if (field.merge == Field::Merge::Equal) result.insert(LanguageFeature::EqualMerge);
+      if (field.merge == Field::Merge::Union) result.insert(LanguageFeature::UnionMerge);
+    }
+    for (const ExprPtr& invariant : state.invariants) collect_features(invariant, result);
+  }
+  for (const Transition& transition : implementation.transitions) {
+    collect_features(transition.condition, result);
+    for (const Assignment& assignment : transition.assignments) {
+      collect_features(assignment.value, result);
+    }
+    collect_action_features(transition.action, result);
+  }
+  return result;
+}
+
+BackendCompatibility negotiate_backend(const Program& program,
+                                       const BackendDescriptor& backend,
+                                       Projection projection) {
+  BackendCompatibility result;
+  result.required = required_features(program);
+  result.projection_supported = backend.projections.contains(projection);
+  std::set_difference(result.required.begin(), result.required.end(),
+                      backend.features.begin(), backend.features.end(),
+                      std::inserter(result.missing, result.missing.end()));
+  result.compatible = result.projection_supported && result.missing.empty();
+  return result;
+}
+
+std::string_view feature_name(LanguageFeature feature) noexcept {
+  switch (feature) {
+    case LanguageFeature::TypedState: return "typed-state";
+    case LanguageFeature::FiniteStringSet: return "finite-string-set";
+    case LanguageFeature::ExistentialSearch: return "existential-search";
+    case LanguageFeature::PureSetUpdate: return "pure-set-update";
+    case LanguageFeature::ActionDag: return "action-dag";
+    case LanguageFeature::ParallelEventBag: return "parallel-event-bag";
+    case LanguageFeature::EqualMerge: return "equal-merge";
+    case LanguageFeature::UnionMerge: return "union-merge";
+  }
+  return "unknown";
+}
+
+std::string_view projection_name(Projection projection) noexcept {
+  switch (projection) {
+    case Projection::Execute: return "execute";
+    case Projection::Monitor: return "monitor";
+    case Projection::Explore: return "explore";
+    case Projection::FormalExport: return "formal-export";
+  }
+  return "unknown";
 }
 
 }  // namespace dtessl

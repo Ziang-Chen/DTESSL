@@ -1,4 +1,5 @@
 #include "dtessl/dtessl.hpp"
+#include "dtessl/backend.hpp"
 #include "dtessl/scratch_pool.hpp"
 #include "dtessl/version.hpp"
 
@@ -79,8 +80,30 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.0.2", "compiled version must be v0.0.2");
+  require(dtessl::version == "0.0.3", "compiled version must be v0.0.3");
   const dtessl::Program program = dtessl::parse(source);
+  const dtessl::FeatureSet features = dtessl::required_features(program);
+  require(features.contains(dtessl::LanguageFeature::ParallelEventBag) &&
+              features.contains(dtessl::LanguageFeature::UnionMerge) &&
+              features.contains(dtessl::LanguageFeature::ActionDag),
+          "program feature discovery is incomplete");
+  dtessl::BackendDescriptor vm_backend{
+      {"chen", "vm", 1},
+      {dtessl::Projection::Execute},
+      features};
+  vm_backend.features.erase(dtessl::LanguageFeature::UnionMerge);
+  const dtessl::BackendCompatibility missing =
+      dtessl::negotiate_backend(program, vm_backend, dtessl::Projection::Execute);
+  require(!missing.compatible &&
+              missing.missing == dtessl::FeatureSet{dtessl::LanguageFeature::UnionMerge},
+          "backend negotiation must report typed missing features");
+  vm_backend.features.insert(dtessl::LanguageFeature::UnionMerge);
+  require(dtessl::negotiate_backend(program, vm_backend, dtessl::Projection::Execute).compatible,
+          "a backend supporting every required feature must be accepted");
+  const dtessl::BackendCompatibility wrong_projection =
+      dtessl::negotiate_backend(program, vm_backend, dtessl::Projection::Monitor);
+  require(!wrong_projection.compatible && !wrong_projection.projection_supported,
+          "a backend must explicitly support the requested projection");
   dtessl::Event submit{"Submit", {{"task", dtessl::Value("task-1")},
                                     {"worker", dtessl::Value("worker-a")}}};
 

@@ -3,6 +3,15 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.0.3
+
+- Typed execution/monitor/exploration/formal-export projection identifiers.
+- Typed language feature discovery from verified programs.
+- Backend descriptors and deterministic compatibility negotiation.
+- Explicit rejection of unsupported projections and missing features without
+  exposing the private parser AST.
+- CLI feature inspection for VM and provider integration diagnostics.
+
 ## v0.0.2
 
 - Canonical event-bag ordering for parallel rounds.
