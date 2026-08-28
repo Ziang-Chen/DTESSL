@@ -25,6 +25,11 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   event schema and routed to persistent logical state in the language
   RuntimeContext; execution must select the asserted path without bypassing
   normal guards.
+- Golden correction: the transition-occurrence replay spelling above is now a
+  temporary v0 diagnostic/assertion surface, not the stable replay contract.
+  Stable replay consumes a complete procedure plus typed context-injection
+  history and recomputes the transition DAG. Capture filters must close into a
+  complete replayable procedure rather than expose a partial trace as replay.
 - Added procedure-aware capture filters and immutable per-RoundId procedure
   frames, including idle rounds, with exact public lookup by procedure and
   RoundId.

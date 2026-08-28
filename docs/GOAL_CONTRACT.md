@@ -77,9 +77,17 @@ The project is complete only when all of the following are evidenced:
   It owns no transitions, events, trace or execution steps; after explicit
   startup, the language RuntimeContext persists its isolated typed state and
   the global transition engine handles later typed occurrences.
-- Named replay routes `Transition.case(...) @ Procedure` occurrences through
-  that RuntimeContext. RoundId is derived from the dynamic causal DAG layer,
-  while per-procedure revision is a distinct state-version counter.
+- Golden replay consumes a complete procedure artifact: initial/checkpoint
+  state plus admitted typed context injections. Transition paths and the
+  dynamic DAG are recomputed evidence, not replay commands.
+- Capture of a procedure is complete. A capture filter is only a seed for
+  automatic causal/data closure into a complete replayable procedure; a lossy
+  projection cannot be labelled replayable.
+- A quiescent procedure may accept later typed context through a local
+  `when` (static state topology) plus `where` (dynamic value/relation)
+  admission rule. Injection never directly mutates state.
+- RoundId is derived from the dynamic causal DAG layer, while per-procedure
+  revision is a distinct state-version counter.
 - Completion requires parser/verifier/runtime/CLI evidence plus standard,
   `-Werror` and ASan/UBSan gates, followed by a scoped commit and push.
 - This slice does not authorize changes to `main`, tags, chenRT, ChenVM or any

@@ -13,11 +13,13 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**State/trace candidate.** `v0.3.0` adds orthogonal `@context` state axes,
-path-local `case` rewrites, native trace capture and finite-prefix claims while
-retaining the v0.2.3 language workbench. Standard, `-Werror` and ASan/UBSan
-evidence passes 21/21 in each configuration; scoped commit/push is pending. This is not the complete
-DTESSL design in `LANGUAGE_DESIGN.md`.
+**Semantic correction required.** The current `v0.3.0` implementation passes
+21/21 standard, `-Werror` and ASan/UBSan suites, but its source replay still
+accepts asserted `Transition.case(...) @ Procedure` occurrences. That form is
+useful as derived evidence, yet violates the fixed golden rule that replay
+consumes complete procedures and typed context-injection history. The branch is
+not a release candidate until procedure replay, quiescent injection and capture
+closure replace that temporary surface.
 
 ## Current goal contract
 
@@ -77,6 +79,9 @@ DTESSL design in `LANGUAGE_DESIGN.md`.
 | Procedure entry boundary | Parser accepts only initial context/state configuration; each replay occurrence must explicitly name its target procedure | Explicit Engine startup and named replay both dispatch through global transitions | pass |
 | Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle procedure frame remains queryable at the next global RoundId | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
+| Golden procedure replay | Replay must consume complete procedure state/checkpoint plus typed context-injection history; transitions are recomputed | Current source syntax still accepts transition occurrences | missing |
+| Quiescent context injection | Procedure-local typed injection with static `when` and dynamic `where`, without direct state mutation | Design fixed; parser/runtime absent | missing |
+| Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Current capture remains a projection with frames | missing |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
@@ -162,3 +167,8 @@ DTESSL design in `LANGUAGE_DESIGN.md`.
 - 2026-08-28: RoundId is the shared dynamic-DAG layer, not a per-procedure
   counter. Procedure revision is separate, and captured procedures retain an
   immutable frame at every global RoundId, including idle frames.
+- 2026-08-28: owner golden correction: procedure is the automaton instance;
+  replay replays complete procedures and context injections, never transition
+  commands. Capture filters must close automatically into complete replayable
+  procedures. Quiescent procedures resume only through typed `when`/`where`
+  context injection.

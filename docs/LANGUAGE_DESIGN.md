@@ -9,6 +9,67 @@ Status labels used below:
 
 ## 1. Semantic center
 
+### Golden procedure/replay/capture principles
+
+These rules override any earlier v0 experimental syntax or implementation:
+
+1. A `procedure` is one persistent automaton instance built from DTESSL
+   `state` and `transition` definitions. It is not a workflow script, trace or
+   transition list.
+2. Replay replays a procedure: its initial configuration, typed context
+   injections and resulting logical history. Transition occurrences and the
+   dynamic DAG are recomputed evidence, never authoritative replay input.
+3. Capture either selects complete procedures or accepts a state/transition/
+   procedure filter as a seed. The language must compute causal and data
+   dependency closure and emit a complete replayable procedure artifact. A
+   partial projection may not claim to be replayable.
+4. A procedure begins with initial states plus initial typed context. When its
+   automaton reaches quiescence, later typed context may be injected through a
+   procedure-local admission rule. `when` matches the static state topology;
+   `where` checks dynamic values and relations. Injection does not directly
+   mutate state or choose a transition.
+5. The language RuntimeContext owns procedure instances, state, revisions,
+   pending injections and causal frontiers. Different procedures are isolated
+   at `ProcedureId / Context / StateField`; safe shared storage is a later,
+   explicit distributed-state model.
+
+The core runtime closure is therefore:
+
+```text
+inject typed context
+  -> search enabled transitions inside each procedure
+  -> choose a deterministic conflict-free set
+  -> commit one causal-DAG round
+  -> repeat until quiescent
+  -> await the next admitted context injection
+```
+
+All transition nodes in one DAG layer share a `RoundId`. Procedure revision is
+only a local state version. Runtime traversal order cannot create logical time.
+
+A candidate compact injection surface is:
+
+```dtessl
+procedure Session @ system:
+  initial (Idle @ workflow) with initialContext
+
+  inject Resume(input: ResumeContext):
+    when (Waiting @ workflow)
+    where:
+      input.session = session.id
+```
+
+`inject` declares what typed context may resume a quiescent procedure; it is not
+an imperative step. The exact context declaration/construction syntax remains
+to be frozen with the typed context model.
+
+Filter closure starts from selected states, transition paths, procedures and
+time bounds, then walks backward over predecessor edges, state reads, context
+injections and required initial/snapshot state. The result carries the program
+digest, procedure identity, complete initial or checkpoint state, injection
+sequence, RoundIds, occurrence IDs and predecessor edges. Failure to close a
+dependency is a hard `not replayable` result, not a silent coverage gap.
+
 ### Permanent system boundary (2026-08-28)
 
 DTESSL is not a model extractor or universal log engine. It accepts DTESSL
@@ -20,10 +81,11 @@ receipts, effect suppression and reconcile are outside DTESSL. Generated mirrors
 must remain distinguishable from independent assurance models for the lifetime
 of the language.
 
-DTESSL models one discrete simulation round as a relation over an event bag:
+DTESSL models one discrete simulation round as a relation over typed context
+available to procedure instances:
 
 ```text
-(BeforeState, Bag<Event>, ExplicitContext)
+(RuntimeContextBefore, Bag<ContextInjection>)
   -> DecisionSet(AfterState, ActionDAGs, Claims, Observations)
 ```
 

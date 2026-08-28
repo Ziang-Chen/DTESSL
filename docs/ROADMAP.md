@@ -24,6 +24,14 @@ This is a long-term product boundary, independent of the current milestone:
 
 No v1/v2 feature, adapter or solver may weaken this invariant.
 
+Procedure replay is also permanent: a procedure is the persistent automaton
+instance; replay consumes complete procedure state/checkpoint and typed context
+injections, then recomputes transitions. Transition lists are evidence, not
+commands. A capture filter must be closed over causal/data dependencies into a
+complete replayable procedure or fail as not replayable. Quiescent procedures
+resume only through typed procedure-local context injection admitted by static
+`when` state topology and dynamic `where` predicates.
+
 ## Milestone 0 — semantic foundation
 
 | Version | Feature slice | Required acceptance evidence |

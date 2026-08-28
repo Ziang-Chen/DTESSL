@@ -202,6 +202,12 @@ round，`|` 分隔同 round occurrence。同 round 的跨 procedure transition �
 `Claim` 对闭合 trace 返回 `satisfied/violated`；开放 trace 在没有反例或见证时返回
 `pending`。有 causal gap 的 projected trace 不得给出肯定的 `satisfied`。
 
+> Golden 语义修正：上述 `Transition.case(...) @ Procedure` 是当前 v0.3
+> 实验性输入，后续只作为重放后的 path assertion/派生证据。正式 replay
+> 的对象是完整 procedure：initial/checkpoint state + typed context injection history；
+> transition DAG 必须由语言搜索重新生成。capture filter 也必须自动做因果/数据闭包，
+> 产出可独立重放的 procedure，不能把残缺投影冒充 replay artifact。
+
 `procedure P @ context` 只命名一个 RuntimeContext 中的 logical instance 入口：`@ context` 是 initial context，
 `initial (...)` 是正交状态轴的 initial state 组合。它没有 transition、event、replay、
 capture 或步骤正文。启动后，active states、typed values、revision 和 causal frontier 在语言
