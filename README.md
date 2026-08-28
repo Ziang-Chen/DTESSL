@@ -1,4 +1,4 @@
-# DTESSL v0.1.3
+# DTESSL v0.2.0
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -15,6 +15,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [Backend 与 Provider 接入边界](docs/BACKENDS.md)
 - [Canonical Value Format v1](docs/CANONICAL_VALUE_V1.md)
 - [Exact Numeric Profile v1](docs/EXACT_NUMERIC_PROFILE_V1.md)
+- [Relation and Search Profile v1](docs/RELATION_SEARCH_V1.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
@@ -100,6 +101,8 @@ type        = "bool" | "int" | "rational" | "string"
             | "bag" "<" type ">"
             | "option" "<" type ">"
             | "result" "<" type "," type ">"
+            | "tuple" "<" type { "," type } ">"
+            | "relation" "<" type { "," type } ">"
             | Name ;
 
 expression  = literal | name | "round" | "before." Name
@@ -107,6 +110,9 @@ expression  = literal | name | "round" | "before." Name
             | "count" "(" expression ")"
             | ( "insert" | "erase" ) "(" expression "," expression ")"
             | "exists" Name "in" expression "where" expression
+            | ( "E" | "A" ) Name "in" expression ":" expression
+            | "select" Name "in" expression "where" expression
+                "by" "lex" "(" expression { "," expression } ")"
             | constructor | record-constructor | match-expression ;
 match-expression = "match" name "{"
                      pattern "->" expression
@@ -152,6 +158,18 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `err<T>(error)` 给出 result 的另一侧类型。初值已有声明类型上下文，因此可简写为
 `none`、`some(value)`、`ok(value)`、`err(value)`。
 
+`relation<T...>` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
+每行是同 arity 的 `tuple<T...>`，按 canonical tuple 顺序排序并去重。当前关系代数包括：
+
+- `project(r, column...)`、`join(left, li, right, ri)`；
+- 二元关系的 `compose`、`inverse` 和非自反传递 `closure`；
+- `union`、`intersection`、`difference`；
+- `E/A` 量词、成员关系和 `count`；
+- `select row in r where p by lex(score...)`，结果为 typed option。
+
+选择按 score 升序；不同候选若完整 score 相同则拒绝整个 round，绝不以 hash/source
+顺序暗中决胜。无候选返回 `none`。稳定 ID 应作为 `lex` 最后一项明确写出。
+
 集合按字典序枚举，因此相同输入得到相同搜索、状态文本和动作 DAG。`exists` 当前只返回
 真假，不把候选绑定泄漏到 `do`；需要选择候选的动态搜索会在后续增加显式、可重放的
 `select`，而不会偷偷依赖哈希表顺序。
@@ -177,6 +195,7 @@ cmake --build build --target dtessl_cli dtessl_tests -j
 build/dtessl check examples/scheduler.dtessl
 build/dtessl version
 build/dtessl features examples/scheduler.dtessl
+build/dtessl plans examples/relations.dtessl
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay-batch examples/scheduler.dtessl \
@@ -186,9 +205,9 @@ ctest --test-dir build --output-on-failure
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.1.3 仍不包含 relation/matrix、候选选择、概率或
+为了逐层闭合语言核心，v0.2.0 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
-下一个增量进入 relation 与显式 `select ... by`、多事件 trace/receipt replay，
-最后才加入稀疏矩阵与可替换搜索后端。
+下一个增量进入完整 state theory 与多组件 transition，随后是 receipt replay，
+最后才加入稀疏矩阵与可替换 solver backend。
 它们应继续服从同一条边界：
 transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。

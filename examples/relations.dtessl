@@ -1,0 +1,19 @@
+state Graph initial:
+  edges: relation<string, string> = relation{("a", "b"), ("b", "c"), ("c", "d")}
+  weights: relation<string, int> = relation{("a", 2), ("b", 1), ("c", 1), ("d", 3)}
+  paths: relation<string, string> = relation{}
+  joined: relation<string, string, string, int> = relation{}
+  chosen: option<tuple<string, int>> = none
+  all_acyclic: bool = false
+  invariant:
+    tuple("a", "b") in edges
+
+transition Analyze @ Run(minimum: int):
+  from Graph
+  to Graph:
+    paths = closure(before.edges)
+    joined = join(before.edges, 1, before.weights, 0)
+    chosen = select row in before.weights where row.1 >= minimum by lex(row.1, row.0)
+    all_acyclic = A edge in before.edges: edge.0 != edge.1
+  where:
+    E edge in before.edges: edge.0 = "a"

@@ -7,6 +7,10 @@ verification backends without encoding a particular VM into the language. This
 document fixes the integration direction while deliberately leaving artifact
 encoding unfrozen until `CanonicalModule` exists.
 
+Adapters may live out of tree and consume DTESSL as an installed CMake package,
+linked library or pinned submodule. ChenVM is one such consumer, not a privileged
+semantic target. The same negotiation rules apply to every backend domain/name.
+
 ## Three boundaries
 
 ```text
@@ -36,6 +40,12 @@ derives the features actually used by a verified program.
 
 The result returns a typed missing-feature set. There is no generic
 `compile("target")`, `invoke("operation")` or string attribute bag.
+
+Since `v0.2.0`, `search_plans(program)` also exposes bounded summaries for
+quantifiers, relation algebra and deterministic selection. A summary names the
+typed operation, row/work limits, determinism and ambiguity policy. It is
+diagnostic/negotiation data, not the private expression tree and not yet the
+CanonicalModule lowering interface.
 
 ```cpp
 dtessl::BackendDescriptor chen_vm{

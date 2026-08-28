@@ -74,6 +74,7 @@ void usage(std::ostream& out) {
       << "usage:\n"
       << "  dtessl version\n"
       << "  dtessl features <program.dtessl>\n"
+      << "  dtessl plans <program.dtessl>\n"
       << "  dtessl check <program.dtessl>\n"
       << "  dtessl run <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
@@ -104,6 +105,17 @@ int main(int argc, char** argv) {
       if (argc != 3) throw dtessl::Error("features does not accept event arguments");
       for (const dtessl::LanguageFeature feature : dtessl::required_features(program)) {
         std::cout << dtessl::feature_name(feature) << '\n';
+      }
+      return 0;
+    }
+    if (command == "plans") {
+      if (argc != 3) throw dtessl::Error("plans does not accept event arguments");
+      for (const dtessl::SearchPlanSummary& plan : dtessl::search_plans(program)) {
+        std::cout << plan.operation << " rows=" << plan.max_rows
+                  << " work=" << plan.max_work
+                  << " deterministic=" << (plan.deterministic ? "yes" : "no")
+                  << " ambiguity=" << (plan.rejects_ambiguous_score ? "reject" : "n/a")
+                  << '\n';
       }
       return 0;
     }

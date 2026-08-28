@@ -22,6 +22,8 @@ enum class Tag : std::uint8_t {
   Newtype = 10,
   BigInt = 11,
   Rational = 12,
+  Tuple = 13,
+  Relation = 14,
 };
 
 void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
@@ -195,6 +197,39 @@ class Decoder {
         wrapped.payload.push_back(value(depth + 1U));
         return Value(std::move(wrapped));
       }
+      case Tag::Tuple: {
+        const std::size_t count = collection_count();
+        if (count == 0) throw Error("canonical tuple must not be empty");
+        ValueTuple tuple;
+        tuple.fields.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+          tuple.fields.push_back(value(depth + 1U));
+        }
+        return Value(std::move(tuple));
+      }
+      case Tag::Relation: {
+        const std::size_t arity = collection_count();
+        if (arity == 0 || arity > relation_arity_limit) {
+          throw Error("canonical relation arity is invalid");
+        }
+        const std::size_t count = collection_count();
+        if (count > relation_row_limit) throw Error("canonical relation exceeds row budget");
+        ValueRelation relation{arity, {}};
+        relation.rows.reserve(count);
+        for (std::size_t row_index = 0; row_index < count; ++row_index) {
+          ValueTuple row;
+          row.fields.reserve(arity);
+          for (std::size_t column = 0; column < arity; ++column) {
+            row.fields.push_back(value(depth + 1U));
+          }
+          if (!relation.rows.empty() &&
+              canonical_compare(Value(relation.rows.back()), Value(row)) >= 0) {
+            throw Error("canonical relation rows are not strictly sorted");
+          }
+          relation.rows.push_back(std::move(row));
+        }
+        return Value(std::move(relation));
+      }
     }
     throw Error("unknown canonical value tag");
   }
@@ -363,6 +398,32 @@ void encode_into(const Value& value, std::vector<std::uint8_t>& output,
       output.push_back(static_cast<std::uint8_t>(Tag::Newtype));
       append_string(output, value.as_newtype().type_id);
       encode_into(value.as_newtype().payload.front(), output, limits, depth + 1U);
+      break;
+    case Value::Kind::Tuple:
+      output.push_back(static_cast<std::uint8_t>(Tag::Tuple));
+      if (value.as_tuple().fields.empty() ||
+          value.as_tuple().fields.size() > limits.max_set_items) {
+        throw Error("canonical tuple has invalid arity");
+      }
+      append_varuint(output, value.as_tuple().fields.size());
+      for (const Value& field : value.as_tuple().fields) {
+        encode_into(field, output, limits, depth + 1U);
+      }
+      break;
+    case Value::Kind::Relation:
+      output.push_back(static_cast<std::uint8_t>(Tag::Relation));
+      if (value.as_relation().arity == 0 ||
+          value.as_relation().arity > limits.max_set_items ||
+          value.as_relation().rows.size() > limits.max_set_items) {
+        throw Error("canonical relation exceeds limit");
+      }
+      append_varuint(output, value.as_relation().arity);
+      append_varuint(output, value.as_relation().rows.size());
+      for (const ValueTuple& row : value.as_relation().rows) {
+        for (const Value& field : row.fields) {
+          encode_into(field, output, limits, depth + 1U);
+        }
+      }
       break;
   }
   if (output.size() > limits.max_bytes) throw Error("canonical value exceeds byte limit");

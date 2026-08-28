@@ -4,7 +4,7 @@ Versions follow `vMilestone.MajorFeature.MinorFeature`. Each row is an
 acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
-`v0.1.2`, `v0.1.3`. Current release gate: `v0.2.0`.
+`v0.1.2`, `v0.1.3`, `v0.2.0`. Current release gate: `v0.3.0`.
 
 ## Milestone 0 — semantic foundation
 
@@ -39,7 +39,7 @@ canonical AST, even if advanced domain theories remain libraries or exporters.
 | `v1.3.0` | Distributed/resource dialect | Message/fault schedules, leases/credits/conservation/backpressure and deterministic provider facts |
 | `v1.4.0` | Security and memory dialect | actsFor/rights/labels/declassification, RegionRef/ownership/HB/consistency claims and adversarial corpus |
 | `v1.5.0` | Tooling | Formatter, incremental compiler cache, stable diagnostics, LSP navigation/completion and syntax migration tool |
-| `v1.6.0` | chenRT/ChenVM adapters | Typed host interface injection, package embedding, trace exchange and reference/fallback parity without shared bytecode |
+| `v1.6.0` | chenRT/ChenVM and external adapters | Typed host interface injection, package embedding, trace exchange and reference/fallback parity for ChenVM and out-of-tree VM/provider implementations without shared bytecode |
 
 ## Milestone 2 — four projections from one typed AST
 

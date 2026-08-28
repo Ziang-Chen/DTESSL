@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.1.3)
+set(DTESSL_VERSION 0.2.0)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -65,4 +65,17 @@ if(DTESSL_BUILD_TESTS)
                    Add delta=2)
   set_tests_properties(dtessl.cli_exact_numeric_replay PROPERTIES
                        PASS_REGULAR_EXPRESSION "18446744073709551617")
+  add_test(NAME dtessl.cli_relation_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   replay
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/relations.dtessl
+                   Run minimum=1)
+  set_tests_properties(dtessl.cli_relation_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "paths = relation")
+  add_test(NAME dtessl.cli_search_plans
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   plans
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/relations.dtessl)
+  set_tests_properties(dtessl.cli_search_plans PROPERTIES
+                       PASS_REGULAR_EXPRESSION "select-by-lex.*ambiguity=reject")
 endif()

@@ -4,6 +4,7 @@
 #include "dtessl/value_codec.hpp"
 #include "dtessl/version.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <set>
@@ -137,6 +138,60 @@ transition DivideZero @ Zero():
     ratio = before.ratio / 0
 )DTESSL";
 
+constexpr std::string_view relation_source = R"DTESSL(
+state Graph initial:
+  edges: relation<string, string> = relation{("a", "b"), ("b", "c"), ("c", "d")}
+  other: relation<string, string> = relation{("d", "e")}
+  weights: relation<string, int> = relation{("a", 2), ("b", 1), ("c", 1), ("d", 3)}
+  empty: relation<string> = relation{}
+  reversed: relation<string, string> = relation{}
+  paths: relation<string, string> = relation{}
+  projected: relation<string> = relation{}
+  joined: relation<string, string, string, int> = relation{}
+  composed: relation<string, string> = relation{}
+  united: relation<string, string> = relation{}
+  common: relation<string, string> = relation{}
+  remaining: relation<string, string> = relation{}
+  int_paths: relation<int, int> = relation{}
+  chosen: option<tuple<string, int>> = none
+  universal: bool = false
+  existential: bool = false
+  empty_all: bool = false
+  empty_any: bool = true
+  invariant:
+    tuple("a", "b") in edges
+
+transition AnalyzeGraph @ Analyze(minimum: int):
+  from Graph
+  to Graph:
+    reversed = inverse(before.edges)
+    paths = closure(before.edges)
+    projected = project(before.edges, 0)
+    joined = join(before.edges, 1, before.weights, 0)
+    composed = compose(before.edges, before.edges)
+    united = union(before.edges, before.other)
+    common = intersection(before.edges, before.other)
+    remaining = difference(before.edges, before.other)
+    chosen = select row in before.weights where row.1 >= minimum by lex(row.1, row.0)
+    universal = A edge in before.edges: edge.0 != edge.1
+    existential = E edge in before.edges: edge.0 = "a"
+    empty_all = A item in before.empty: item.0 = "impossible"
+    empty_any = E item in before.empty: item.0 = "impossible"
+  where:
+    (A edge in before.edges: edge.0 != edge.1)
+    and (E edge in before.edges: edge.0 = "a")
+
+transition AmbiguousChoice @ Pick():
+  from Graph
+  to Graph:
+    chosen = select row in before.weights where row.1 >= 0 by lex(row.1)
+
+transition CloseInput @ Close(input: relation<int, int>):
+  from Graph
+  to Graph:
+    int_paths = closure(input)
+)DTESSL";
+
 [[noreturn]] void fail(const std::string& message) {
   std::cerr << "dtessl test failed: " << message << '\n';
   std::exit(1);
@@ -149,7 +204,7 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.1.3", "compiled version must be v0.1.3");
+  require(dtessl::version == "0.2.0", "compiled version must be v0.2.0");
   const auto roundtrip = [](const dtessl::Value& value) {
     const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
     require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
@@ -233,6 +288,32 @@ int main() {
   roundtrip(dtessl::Value(huge));
   roundtrip(dtessl::Value(-huge));
   roundtrip(dtessl::Value(half));
+  const dtessl::Value tuple(dtessl::ValueTuple{
+      {dtessl::Value("edge"), dtessl::Value(std::int64_t{7})}});
+  const dtessl::Value relation(dtessl::ValueRelation{
+      2,
+      {
+          dtessl::ValueTuple{{dtessl::Value("b"), dtessl::Value(std::int64_t{2})}},
+          dtessl::ValueTuple{{dtessl::Value("a"), dtessl::Value(std::int64_t{1})}},
+          dtessl::ValueTuple{{dtessl::Value("a"), dtessl::Value(std::int64_t{1})}},
+      }});
+  roundtrip(tuple);
+  roundtrip(relation);
+  require(relation.as_relation().rows.size() == 2 &&
+              relation.as_relation().rows.front().fields.front().as_string() == "a",
+          "relation rows were not deduplicated and canonically sorted");
+  dtessl::ValueRelation oversized_relation{1, {}};
+  for (std::size_t index = 0; index <= dtessl::relation_row_limit; ++index) {
+    oversized_relation.rows.push_back(
+        dtessl::ValueTuple{{dtessl::Value(static_cast<std::int64_t>(index))}});
+  }
+  bool row_limit_error = false;
+  try {
+    static_cast<void>(dtessl::Value(std::move(oversized_relation)));
+  } catch (const dtessl::Error&) {
+    row_limit_error = true;
+  }
+  require(row_limit_error, "relation row limit was not enforced");
   require(record.as_record().fields.front().first == "active",
           "record fields were not canonically sorted");
   require(generic_set.as_set().values.front().as_int() == 1,
@@ -277,6 +358,18 @@ int main() {
                                          1, 0, 0, 0, 0, 0, 0, 0, 1,
                                          1, 0, 0, 0, 0, 0, 0, 0, 2}),
           "canonical rational golden bytes changed");
+  require(dtessl::encode_value(tuple) ==
+              std::vector<std::uint8_t>({13, 2,
+                                         2, 4, 'e', 'd', 'g', 'e',
+                                         1, 0, 0, 0, 0, 0, 0, 0, 7}),
+          "canonical tuple golden bytes changed");
+  require(dtessl::encode_value(dtessl::Value(dtessl::ValueRelation{
+              2, {dtessl::ValueTuple{{dtessl::Value("a"),
+                                      dtessl::Value(std::int64_t{1})}}}})) ==
+              std::vector<std::uint8_t>({14, 2, 1,
+                                         2, 1, 'a',
+                                         1, 0, 0, 0, 0, 0, 0, 0, 1}),
+          "canonical relation golden bytes changed");
   bool noncanonical = false;
   try {
     static_cast<void>(dtessl::decode_value(
@@ -296,6 +389,12 @@ int main() {
            std::vector<std::uint8_t>{12,
                                      1, 0, 0, 0, 0, 0, 0, 0, 2,
                                      1, 0, 0, 0, 0, 0, 0, 0, 4},
+           std::vector<std::uint8_t>{13, 0},
+           std::vector<std::uint8_t>{14, 65, 0},
+           std::vector<std::uint8_t>{14, 1, 0x81, 0x20},
+           std::vector<std::uint8_t>{14, 2, 2,
+                                     2, 1, 'b', 1, 0, 0, 0, 0, 0, 0, 0, 2,
+                                     2, 1, 'a', 1, 0, 0, 0, 0, 0, 0, 0, 1},
            std::vector<std::uint8_t>{9}}) {
     bool rejected_codec = false;
     try {
@@ -481,6 +580,77 @@ int main() {
               divide_zero.values().at("ratio").as_rational().text() == "1/3",
           "division by zero must reject the round without committing state");
 
+  const dtessl::Program relation_program = dtessl::parse(relation_source);
+  const dtessl::FeatureSet relation_features = dtessl::required_features(relation_program);
+  require(relation_features.contains(dtessl::LanguageFeature::RelationAlgebra) &&
+              relation_features.contains(dtessl::LanguageFeature::UniversalSearch) &&
+              relation_features.contains(dtessl::LanguageFeature::DeterministicSelect),
+          "relation/search feature discovery is incomplete");
+  const std::vector<dtessl::SearchPlanSummary> plans = dtessl::search_plans(relation_program);
+  require(std::any_of(plans.begin(), plans.end(), [](const auto& plan) {
+            return plan.operation == "select-by-lex" && plan.deterministic &&
+                   plan.rejects_ambiguous_score &&
+                   plan.max_rows == dtessl::relation_row_limit;
+          }) &&
+              std::any_of(plans.begin(), plans.end(), [](const auto& plan) {
+                return plan.operation == "closure" &&
+                       plan.max_work == dtessl::relation_work_limit;
+              }),
+          "static search plan summaries lost determinism or budget metadata");
+  dtessl::Engine graph(relation_program);
+  const dtessl::StepResult analyzed = graph.step(
+      dtessl::Event{"Analyze", {{"minimum", dtessl::Value(std::int64_t{1})}}});
+  require(analyzed.state.at("reversed").as_relation().rows.size() == 3 &&
+              analyzed.state.at("paths").as_relation().rows.size() == 6 &&
+              analyzed.state.at("projected").as_relation().rows.size() == 3 &&
+              analyzed.state.at("joined").as_relation().rows.size() == 3 &&
+              analyzed.state.at("composed").as_relation().rows.size() == 2,
+          "relation project/join/compose/inverse/closure result is wrong");
+  require(analyzed.state.at("united").as_relation().rows.size() == 4 &&
+              analyzed.state.at("common").as_relation().rows.empty() &&
+              analyzed.state.at("remaining").as_relation().rows.size() == 3,
+          "relation union/intersection/difference result is wrong");
+  const dtessl::ValueVariant& selected = analyzed.state.at("chosen").as_variant();
+  require(selected.constructor == "some" &&
+              selected.payload.front().as_tuple().fields.front().as_string() == "b" &&
+              analyzed.state.at("universal").as_bool() &&
+              analyzed.state.at("existential").as_bool() &&
+              analyzed.state.at("empty_all").as_bool() &&
+              !analyzed.state.at("empty_any").as_bool(),
+          "E/A or deterministic lex selection result is wrong");
+
+  dtessl::Engine no_candidate(relation_program);
+  const dtessl::StepResult none_selected = no_candidate.step(
+      dtessl::Event{"Analyze", {{"minimum", dtessl::Value(std::int64_t{99})}}});
+  require(none_selected.state.at("chosen").as_variant().constructor == "none",
+          "select with no candidate must return typed none");
+
+  dtessl::Engine ambiguous(relation_program);
+  bool ambiguity_error = false;
+  try {
+    static_cast<void>(ambiguous.step(dtessl::Event{"Pick", {}}));
+  } catch (const dtessl::Error&) {
+    ambiguity_error = true;
+  }
+  require(ambiguity_error && ambiguous.current_round() == 0,
+          "ambiguous lex score must reject the round without implicit tie-breaking");
+
+  dtessl::ValueRelation long_chain{2, {}};
+  for (std::int64_t index = 0; index < 1001; ++index) {
+    long_chain.rows.push_back(dtessl::ValueTuple{
+        {dtessl::Value(index), dtessl::Value(index + 1)}});
+  }
+  dtessl::Engine bounded_search(relation_program);
+  bool budget_error = false;
+  try {
+    static_cast<void>(bounded_search.step(
+        dtessl::Event{"Close", {{"input", dtessl::Value(std::move(long_chain))}}}));
+  } catch (const dtessl::Error&) {
+    budget_error = true;
+  }
+  require(budget_error && bounded_search.current_round() == 0,
+          "relation work budget must reject expansion without committing state");
+
   dtessl::ScratchPool pool(64, 128);
   struct Pair {
     std::int64_t first;
@@ -553,5 +723,23 @@ transition Break @ Go(value: SessionId):
     nominal_error = true;
   }
   require(nominal_error, "distinct newtypes were treated as structurally interchangeable");
+
+  constexpr std::string_view invalid_relation = R"DTESSL(
+state Broken initial:
+  edges: relation<string, int> = relation{("a", 1)}
+  projected: relation<string> = relation{}
+
+transition Break @ Go():
+  from Broken
+  to Broken:
+    projected = project(before.edges, 0, 0)
+)DTESSL";
+  bool relation_type_error = false;
+  try {
+    static_cast<void>(dtessl::parse(invalid_relation));
+  } catch (const dtessl::Error&) {
+    relation_type_error = true;
+  }
+  require(relation_type_error, "relation verifier accepted duplicate project columns");
   return 0;
 }

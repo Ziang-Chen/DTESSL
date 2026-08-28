@@ -14,6 +14,10 @@
 
 namespace dtessl {
 
+inline constexpr std::size_t relation_arity_limit = 64;
+inline constexpr std::size_t relation_row_limit = 4096;
+inline constexpr std::size_t relation_work_limit = 1'000'000;
+
 class Value;
 struct ValueList;
 struct ValueSet;
@@ -22,6 +26,8 @@ struct ValueBag;
 struct ValueRecord;
 struct ValueVariant;
 struct ValueNewtype;
+struct ValueTuple;
+struct ValueRelation;
 
 struct StringSet {
   std::set<std::string, std::less<>> values;
@@ -44,6 +50,8 @@ class Value {
     Record,
     Variant,
     Newtype,
+    Tuple,
+    Relation,
   };
 
   Value(bool value);
@@ -60,6 +68,8 @@ class Value {
   Value(ValueRecord value);
   Value(ValueVariant value);
   Value(ValueNewtype value);
+  Value(ValueTuple value);
+  Value(ValueRelation value);
 
   [[nodiscard]] Kind kind() const noexcept;
   [[nodiscard]] bool as_bool() const;
@@ -75,6 +85,8 @@ class Value {
   [[nodiscard]] const ValueRecord& as_record() const;
   [[nodiscard]] const ValueVariant& as_variant() const;
   [[nodiscard]] const ValueNewtype& as_newtype() const;
+  [[nodiscard]] const ValueTuple& as_tuple() const;
+  [[nodiscard]] const ValueRelation& as_relation() const;
 
   friend bool operator==(const Value& left, const Value& right);
 
@@ -92,6 +104,8 @@ class Value {
   std::shared_ptr<const ValueRecord> record_value_;
   std::shared_ptr<const ValueVariant> variant_value_;
   std::shared_ptr<const ValueNewtype> newtype_value_;
+  std::shared_ptr<const ValueTuple> tuple_value_;
+  std::shared_ptr<const ValueRelation> relation_value_;
 };
 
 // Total canonical order used by generic sets, maps, bags and codecs. It is a
@@ -138,6 +152,17 @@ struct ValueNewtype {
   std::string type_id;
   std::vector<Value> payload;
   friend bool operator==(const ValueNewtype&, const ValueNewtype&) = default;
+};
+
+struct ValueTuple {
+  std::vector<Value> fields;
+  friend bool operator==(const ValueTuple&, const ValueTuple&) = default;
+};
+
+struct ValueRelation {
+  std::size_t arity{0};
+  std::vector<ValueTuple> rows;
+  friend bool operator==(const ValueRelation&, const ValueRelation&) = default;
 };
 
 struct Event {

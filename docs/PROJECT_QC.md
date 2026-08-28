@@ -8,15 +8,15 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule
-- Current target: `v0.2.0`
+- Current target: `v0.3.0`
 - Stop orders: none
 
 ## Current state
 
-**Released slice.** `v0.1.3` exact integers/rationals passed standard,
-`-Werror`, ASan/UBSan, install, malformed-input and CLI replay gates. This is
-not the complete DTESSL design described in `LANGUAGE_DESIGN.md`; the next gate
-is `v0.2.0` relation and deterministic search.
+**Released slice.** `v0.2.0` canonical relations, algebra, `E/A`, deterministic
+selection and bounded plans pass standard, `-Werror`, ASan/UBSan and installed
+CLI gates. The next gate is `v0.3.0`; this is not the complete DTESSL design
+described in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
@@ -25,8 +25,8 @@ is `v0.2.0` relation and deterministic search.
   ChenVM integration.
 - Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
   universal bytecode and premature JIT.
-- Current exit gate: publish `v0.2.0` finite relation algebra, `E/A`, explicit
-  deterministic selection and bounded static/runtime search plans.
+- Current exit gate: implement `v0.3.0` full state theory: typed derived data,
+  invariants, state sets, explicit shared inputs and trace/history relations.
 
 ## Evidence matrix
 
@@ -47,10 +47,14 @@ is `v0.2.0` relation and deterministic search.
 | Exact numeric profile | Big-int identities, signed small-domain differential test, normalized rational arithmetic and golden bytes | Exact numeric CLI replay passes | pass |
 | Deterministic action DAG | Dependency assertions and replay equality | CLI output shows serial fan-out | pass |
 | Relation predicate baseline | `exists`, membership and set updates tested | Unknown worker disables transition | pass |
+| Canonical n-ary relation | Tuple/relation roundtrip, golden bytes, sort/dedup and malformed-order rejection | Graph fixture renders canonical rows | pass |
+| Relation algebra | Project/join/compose/inverse/closure/union/intersection/difference assertions | Graph CLI replay exercises join and closure | pass |
+| Deterministic search | E/A empty/non-empty semantics, typed select, ambiguity/no-candidate tests | Graph chooses `b` only with explicit unique lex score | pass |
+| Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.1.3` | Release tag and installed CLI smoke | pass |
-| Full relation/search design | Specification exists | Implementation absent | missing |
+| Version identity | CMake/generated header/CLI/test at `0.2.0` | Installed CLI reports `v0.2.0` | pass |
+| Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 7/7; installed graph replay/plans pass | pass |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
 | Typed host receipts/replay | Call plan baseline exists | Receipt protocol absent | missing |
 | Four AST projections | Architecture specified | Implementations absent | missing |
@@ -58,13 +62,12 @@ is `v0.2.0` relation and deterministic search.
 ## Gaps and blockers
 
 - P0 gap: source AST is currently internal and has no canonical serialized form.
-- P0 gap: `exists` is boolean-only; no selected binding or relation algebra.
 - P0 gap: replay is one event and recomputes rather than consuming recorded
   receipts.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-There is no external blocker for the `v0.2.0` gate.
+There is no external blocker for the `v0.3.0` gate.
 
 ## Risks
 
@@ -78,9 +81,10 @@ There is no external blocker for the `v0.2.0` gate.
 
 ## Next corrective focus
 
-1. Define a canonical n-ary relation value and typed relation schema.
-2. Implement deterministic project/join/compose/closure and `E/A`.
-3. Add explicit `select ... by lex` with ambiguity and budget rejection.
+1. Implement `v0.3.0` typed derived data, state sets and explicit shared inputs.
+2. Add trace/history relations without introducing ambient mutable globals.
+3. Preserve the out-of-tree VM/backend and host-provider boundaries while the
+   canonical module and receipt protocol are developed.
 4. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
@@ -107,3 +111,7 @@ There is no external blocker for the `v0.2.0` gate.
 - 2026-08-28: `v0.1.3` released arbitrary exact integers, normalized rationals,
   frozen numeric/canonical profiles and deterministic budget failures; standard,
   `-Werror` and ASan/UBSan suites pass with five tests each.
+- 2026-08-28: `v0.2.0` released first-class finite relations, algebra, compact
+  quantifiers, explicit lex selection and bounded plan metadata; standard,
+  `-Werror` and ASan/UBSan suites pass with seven tests and installed CLI replay
+  and plan inspection pass.

@@ -3,6 +3,25 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.2.0
+
+- First-class typed `tuple<T...>` and finite `relation<T...>` values with
+  canonical row ordering, duplicate elimination, arity/row limits and additive
+  canonical codec tags.
+- Deterministic project, equijoin, binary composition, inverse, transitive
+  closure, union, intersection and difference.
+- Compact `E/A` quantifiers over sets and relations with standard empty-domain
+  semantics.
+- `select row in relation where predicate by lex(score...)` returning a typed
+  option; equal complete scores for distinct rows are rejected as ambiguous.
+- Typed static search-plan summaries expose operation, determinism, ambiguity
+  policy, row bound and work bound without exposing the private AST.
+- `dtessl plans` renders those summaries for backend/scheduler diagnostics.
+- One-million-work and 4096-row deterministic runtime budgets; failure rejects
+  the candidate round without logical state commit.
+- Graph-model CLI replay, full algebra assertions, no-candidate/ambiguity/budget
+  adversarial tests and canonical malformed-order corpus.
+
 ## v0.1.3
 
 - Deterministic signed arbitrary-precision `int` with bounded source/runtime

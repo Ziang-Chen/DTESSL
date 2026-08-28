@@ -33,6 +33,8 @@ not the future canonical module format.
 | `0a` | newtype | type identity followed by exactly one canonical value |
 | `0b` | big integer | sign byte, magnitude-byte count, minimal unsigned big-endian magnitude |
 | `0c` | rational | canonical integer numerator followed by canonical positive integer denominator |
+| `0d` | tuple | positive arity followed by that many canonical values |
+| `0e` | relation | positive arity, row count, then strictly tuple-sorted row fields |
 
 Unknown tags are invalid.
 
@@ -48,6 +50,8 @@ SessionId("x")    0a 09 53 65 73 73 69 6f 6e 49 64 02 01 78
 Phase.Running     09 05 50 68 61 73 65 07 52 75 6e 6e 69 6e 67 00
 9223372036854775808  0b 00 08 80 00 00 00 00 00 00 00
 1/2               0c 01 00 00 00 00 00 00 00 01 01 00 00 00 00 00 00 00 02
+("edge", 7)       0d 02 02 04 65 64 67 65 01 00 00 00 00 00 00 00 07
+{("a", 1)}        0e 02 01 02 01 61 01 00 00 00 00 00 00 00 01
 ```
 
 ## Canonicality
