@@ -1,4 +1,4 @@
-# DTESSL v0.0.3
+# DTESSL v0.1.0
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -13,6 +13,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [项目 QA/QC](docs/PROJECT_QC.md)
 - [研究依据与项目推论](docs/REFERENCES.md)
 - [Backend 与 Provider 接入边界](docs/BACKENDS.md)
+- [Canonical Value Format v1](docs/CANONICAL_VALUE_V1.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环

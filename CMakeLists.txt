@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.0.3)
+set(DTESSL_VERSION 0.1.0)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -8,7 +8,9 @@ endif()
 
 option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 
-add_library(dtessl src/dtessl.cpp)
+add_library(dtessl
+  src/dtessl.cpp
+  src/value_codec.cpp)
 configure_file(include/dtessl/version.hpp.in
                generated/dtessl/version.hpp
                @ONLY)

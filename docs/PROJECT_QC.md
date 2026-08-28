@@ -8,14 +8,13 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule
-- Current target: `v0.0.3`
+- Current target: `v0.1.0`
 - Stop orders: none
 
 ## Current state
 
-**Candidate.** The typed backend discovery seam is implemented and locally
-verified. It is not the complete DTESSL design described in
-`LANGUAGE_DESIGN.md`.
+**Candidate.** Canonical Value Format v1 is implemented and locally verified.
+It is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
@@ -24,8 +23,8 @@ verified. It is not the complete DTESSL design described in
   ChenVM integration.
 - Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
   universal bytecode and premature JIT.
-- Current exit gate: publish a clean, self-reporting `v0.0.3` with typed feature
-  discovery and backend projection negotiation, without exposing private AST.
+- Current exit gate: publish a clean, self-reporting `v0.1.0` with bounded,
+  injective canonical encoding for every currently executable value kind.
 
 ## Evidence matrix
 
@@ -39,11 +38,12 @@ verified. It is not the complete DTESSL design described in
 | Causal predecessor trace | Prior-writer and merged-multiwriter assertions | Output is inspectable; full trace file absent | candidate |
 | Backend feature discovery | Program-derived feature set and CLI inspection tests | Example program inspected | pass |
 | Backend rejection | Missing feature and unsupported projection tests | Real VM adapter absent | candidate |
+| Canonical value codec | Roundtrip/re-encode, golden bytes and malformed-input tests | Backend consumption not yet implemented | candidate |
 | Deterministic action DAG | Dependency assertions and replay equality | CLI output shows serial fan-out | pass |
 | Relation predicate baseline | `exists`, membership and set updates tested | Unknown worker disables transition | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.0.3` | Tag not yet published | candidate |
+| Version identity | CMake/generated header/CLI/test at `0.1.0` | Tag not yet published | candidate |
 | Full relation/search design | Specification exists | Implementation absent | missing |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
 | Typed host receipts/replay | Call plan baseline exists | Receipt protocol absent | missing |
@@ -75,9 +75,8 @@ There is no external blocker for the `v0.0.1` gate.
 
 ## Next corrective focus
 
-1. Close and tag `v0.0.3`.
-2. Begin `v0.1.0` with canonical typed values and a golden codec before adding
-   more surface sugar.
+1. Close and tag `v0.1.0`.
+2. Begin `v0.1.1` recursive generic finite collections.
 3. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
@@ -93,3 +92,5 @@ There is no external blocker for the `v0.0.1` gate.
   parallel rounds before stabilizing the next slice.
 - 2026-08-28: `v0.0.2` released with canonical event bags, typed merge and
   causal predecessor evidence.
+- 2026-08-28: `v0.0.3` released with typed feature/projection negotiation and no
+  private AST exposure.

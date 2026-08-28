@@ -1,6 +1,7 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
 #include "dtessl/scratch_pool.hpp"
+#include "dtessl/value_codec.hpp"
 #include "dtessl/version.hpp"
 
 #include <cstdlib>
@@ -80,7 +81,53 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.0.3", "compiled version must be v0.0.3");
+  require(dtessl::version == "0.1.0", "compiled version must be v0.1.0");
+  const auto roundtrip = [](const dtessl::Value& value) {
+    const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
+    require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
+    require(dtessl::encode_value(dtessl::decode_value(encoded)) == encoded,
+            "canonical value re-encoding changed bytes");
+  };
+  roundtrip(dtessl::Value(false));
+  roundtrip(dtessl::Value(std::int64_t{-42}));
+  roundtrip(dtessl::Value("hello"));
+  roundtrip(dtessl::Value(dtessl::StringSet{{"alpha", "beta"}}));
+  require(dtessl::encode_value(dtessl::Value(std::int64_t{42})) ==
+              std::vector<std::uint8_t>({1, 0, 0, 0, 0, 0, 0, 0, 42}),
+          "canonical int golden bytes changed");
+  require(dtessl::encode_value(dtessl::Value(dtessl::StringSet{{"a", "b"}})) ==
+              std::vector<std::uint8_t>({3, 2, 1, 'a', 1, 'b'}),
+          "canonical set golden bytes changed");
+  bool noncanonical = false;
+  try {
+    static_cast<void>(dtessl::decode_value(
+        std::vector<std::uint8_t>({3, 2, 1, 'b', 1, 'a'})));
+  } catch (const dtessl::Error&) {
+    noncanonical = true;
+  }
+  require(noncanonical, "decoder must reject unsorted set encodings");
+  for (const std::vector<std::uint8_t>& malformed : {
+           std::vector<std::uint8_t>{2, 0x80, 0x00},
+           std::vector<std::uint8_t>{0, 1, 0},
+           std::vector<std::uint8_t>{2, 4, 'a'},
+           std::vector<std::uint8_t>{9}}) {
+    bool rejected_codec = false;
+    try {
+      static_cast<void>(dtessl::decode_value(malformed));
+    } catch (const dtessl::Error&) {
+      rejected_codec = true;
+    }
+    require(rejected_codec, "decoder accepted malformed canonical bytes");
+  }
+  bool limited = false;
+  try {
+    static_cast<void>(dtessl::decode_value(
+        std::vector<std::uint8_t>{2, 2, 'o', 'k'},
+        dtessl::ValueCodecLimits{4, 1, 1}));
+  } catch (const dtessl::Error&) {
+    limited = true;
+  }
+  require(limited, "decoder ignored configured value limits");
   const dtessl::Program program = dtessl::parse(source);
   const dtessl::FeatureSet features = dtessl::required_features(program);
   require(features.contains(dtessl::LanguageFeature::ParallelEventBag) &&

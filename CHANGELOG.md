@@ -3,6 +3,14 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.1.0
+
+- Canonical value format v1 for bool, int64, string and `set<string>`.
+- Minimal unsigned length encoding, sorted-set enforcement and full-input
+  consumption.
+- Explicit decoder limits for total bytes, string bytes and set cardinality.
+- Roundtrip, byte-golden and hostile-input tests.
+
 ## v0.0.3
 
 - Typed execution/monitor/exploration/formal-export projection identifiers.
