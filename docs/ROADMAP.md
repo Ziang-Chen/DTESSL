@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; current state/trace candidate: `v0.3.0`.
+`v0.2.3`; current procedure/runtime candidate: `v0.3.1`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -25,12 +25,13 @@ This is a long-term product boundary, independent of the current milestone:
 No v1/v2 feature, adapter or solver may weaken this invariant.
 
 Procedure replay is also permanent: a procedure is the persistent automaton
-instance; replay consumes complete procedure state/checkpoint and typed context
-injections, then recomputes transitions. Transition lists are evidence, not
-commands. A capture filter must be closed over causal/data dependencies into a
-complete replayable procedure or fail as not replayable. Quiescent procedures
-resume only through typed procedure-local context injection admitted by static
-`when` state topology and dynamic `where` predicates.
+instance; replay consumes complete procedure state/checkpoint and typed
+transition-occurrence injections, then recomputes selected cases. Case lists
+are evidence, not commands. A capture filter must be closed over causal/data
+dependencies into a complete replayable procedure or fail as not replayable.
+Quiescent procedures resume only when a typed TransitionId occurrence is added
+to their pending set; static state topology and dynamic `where` remain runtime
+search, not procedure-local admission syntax.
 
 ## Milestone 0 — semantic foundation
 
@@ -47,6 +48,7 @@ resume only through typed procedure-local context injection admitted by static
 | `v0.2.1` | Declared semantic projection | Canonical SemanticDescriptor, typed action ports, descriptor-to-DTESSL generator, source map/digests, coverage/gaps and native EventTrace replay without runtime-log adapters |
 | `v0.2.3` | Core logical surface and language workbench | First-class nominal names, `~` direct relations and binding, `[T]` options, explicit list literals and multiline values, plus production-parser diagnostics/highlighting, versioned text edits and interactive REPL; protocol transport remains out of scope |
 | `v0.3.0` | Composite state and native trace | Orthogonal `@context` axes, `case (source-set)->(target-set)`, exact/set/wildcard source patterns, compact contextual updates, path-local guard/ActionPlan, isolated persistent procedure instances and typed `inject` admission, complete initial-state procedure artifacts, causal-DAG RoundId, input replay plus derived-path search replay, conservative closed-capture closure and finite-prefix claims |
+| `v0.3.1` | Procedure/runtime execution closure | Frontend/runtime source split, procedure-only initial state/context, exact TransitionId occurrence injection, TransitionId/event and active-state-signature indexes, runtime-selected `where`/case, unchanged causal-DAG RoundId and replay assertions that never force a path |
 | `v0.4.0` | Derived/shared state theory | `data/derive/invariant`, explicit shared inputs, richer typed before/after destructuring, lifecycle/completion library axes and state-data dependency checks |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |

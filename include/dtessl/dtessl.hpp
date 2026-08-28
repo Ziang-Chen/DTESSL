@@ -187,6 +187,16 @@ struct Event {
   friend bool operator==(const Event&, const Event&) = default;
 };
 
+// A typed occurrence addressed by TransitionId. A procedure injection adds
+// this occurrence to the language runtime's pending set; it does not choose a
+// case or call an external search engine.
+struct TransitionInput {
+  std::string transition;
+  std::map<std::string, Value, std::less<>> fields;
+
+  friend bool operator==(const TransitionInput&, const TransitionInput&) = default;
+};
+
 struct ActionCall {
   std::string label;
   std::string function;
@@ -255,7 +265,7 @@ struct EventTrace {
 // layer. It is input to logical replay; selected transitions are output.
 struct ProcedureInjection {
   std::uint64_t round{0};
-  Event context;
+  TransitionInput transition;
 
   friend bool operator==(const ProcedureInjection&, const ProcedureInjection&) = default;
 };
@@ -403,6 +413,11 @@ class Engine {
   // RoundId may jump over layers in which this Engine's procedure was idle.
   [[nodiscard]] ParallelStepResult step_parallel_at(
       const std::vector<Event>& events, std::uint64_t round_id);
+  [[nodiscard]] StepResult step_transition(const TransitionInput& transition);
+  [[nodiscard]] ParallelStepResult step_transitions(
+      const std::vector<TransitionInput>& transitions);
+  [[nodiscard]] ParallelStepResult step_transitions_at(
+      const std::vector<TransitionInput>& transitions, std::uint64_t round_id);
 
   [[nodiscard]] std::string current_state() const;
   [[nodiscard]] const std::map<std::string, std::string, std::less<>>&
@@ -416,6 +431,9 @@ class Engine {
       std::string_view trace_name, bool close = false) const;
 
  private:
+  [[nodiscard]] ParallelStepResult step_inputs_at(
+      const std::vector<std::pair<Event, std::string>>& inputs,
+      std::uint64_t round_id);
   Program program_;
   std::string initial_context_;
   std::uint64_t round_{0};
@@ -438,9 +456,9 @@ class RuntimeContext {
 
   void start(std::string_view procedure);
   [[nodiscard]] ParallelStepResult inject(
-      const std::vector<std::pair<std::string, Event>>& contexts);
+      const std::vector<std::pair<std::string, TransitionInput>>& transitions);
   [[nodiscard]] ParallelStepResult inject_at(
-      const std::vector<std::pair<std::string, Event>>& contexts,
+      const std::vector<std::pair<std::string, TransitionInput>>& transitions,
       std::uint64_t round_id);
   [[nodiscard]] std::uint64_t current_round() const noexcept;
   [[nodiscard]] ProcedureArtifact artifact(std::string_view procedure) const;

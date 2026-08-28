@@ -1,4 +1,4 @@
-# DTESSL v0.3.0
+# DTESSL v0.3.1
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -101,7 +101,7 @@ state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
 field       = Name ":" type "=" literal [ "merge" ( "equal" | "union" ) ] NEWLINE ;
 invariant   = "invariant" ":" INDENT expression DEDENT ;
 
-transition  = "transition" Name "@" event-pattern ":" INDENT
+transition  = "transition" Name [ "@" Name ] "(" [ parameter { "," parameter } ] ")" ":" INDENT
                 case { case }
               DEDENT ;
 case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
@@ -117,10 +117,6 @@ exact-state-set = "(" state-binding { "," state-binding } ")" ;
 state-binding = Name [ "@" Name ] ;
 procedure   = "procedure" Name "@" Name ":" INDENT
                 "initial" exact-state-set NEWLINE
-                { "inject" event-pattern ":" INDENT
-                    [ "when" exact-state-set NEWLINE ]
-                    [ "where" ":" INDENT expression DEDENT ]
-                  DEDENT }
               DEDENT ;
 trace       = "trace" Name [ "@" Name ] ":" INDENT
                 [ "replay" ":" INDENT replay-round { replay-round } DEDENT ]
@@ -128,8 +124,9 @@ trace       = "trace" Name [ "@" Name ] ":" INDENT
                     INDENT { capture-filter } DEDENT ]
               DEDENT ;
 replay-round = replay-occurrence { "|" replay-occurrence } NEWLINE ;
-replay-occurrence = ( event-name | qualified-transition-name )
-                    "(" [ literal { "," literal } ] ")" "@" Name ;
+replay-occurrence = "inject" Name
+                    "(" [ literal { "," literal } ] ")" "@" Name
+                    [ "->" qualified-name ] ;
 capture-filter = "state" "(" [ state-binding { "," state-binding } ] ")" NEWLINE
                | "transition" "(" [ qualified-name { "," qualified-name } ] ")" NEWLINE
                | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE ;
@@ -137,7 +134,6 @@ claim       = "Claim" Name "@" Name ":" INDENT
                 ( ( "always" | "eventually" ) ":" INDENT expression DEDENT
                 | "count" Name "<=" integer NEWLINE )
               DEDENT ;
-event-pattern = Name "(" [ parameter { "," parameter } ] ")" ;
 parameter   = Name ":" type ;
 type        = "bool" | "int" | "rational" | "string"
             | "[" type "]"
@@ -192,16 +188,20 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
 `set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
 
-`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。正式 replay
-输入是 `Event(...) @ Procedure` typed context injection；一行就是一个 1-based causal round，
-`|` 分隔同 round injection。同 round 的跨 procedure decision 共享同一 RoundId，运行器的
-遍历顺序不能产生时间顺序。引擎在 procedure 的 `inject` 规则上先用 `when` 检查静态状态组合、
-再用 `where` 检查动态值，然后重新搜索 transition、验证不变量并生成 ActionPlan。
+`transition Dispatch(task: Task)` 同时定义可注入的消息/transition 类型；不再需要另一套
+Event 名。旧式 `transition Dispatch @ Tick(task: Task)` 暂时保留给普通 Event API 兼容，
+但 procedure 的 `inject` 始终按 `Dispatch` 这个 TransitionId 寻址。
 
-`Transition.caseName(...) @ Procedure` 仍是正式支持的搜索 replay 简写：参数按该 transition
-的 event schema 构造 typed context，同时断言搜索结果包含该 path。它只验证派生结果，绝不
-强制状态跳转。例如 `Tick() @ Run` 只 replay 输入；`Dispatch.ready() @ Run` replay 同一
-输入并检查 `Dispatch.ready` 被搜索出来。动态
+`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。正式 replay
+输入是 `inject Transition(...) @ Procedure` typed transition occurrence；一行就是一个
+1-based causal round，`|` 分隔同 round injection。同 round 的跨 procedure decision 共享
+同一 RoundId，运行器的遍历顺序不能产生时间顺序。`inject` 只把 occurrence 加入语言
+RuntimeContext 的待处理集合，不执行外部搜索，也不指定 case。后端先按 TransitionId 定位
+transition family，再按活动状态签名定位候选 case，最后计算 `where`、验证不变量并生成 ActionPlan。
+
+可选的 `-> Transition.caseName` 是搜索 replay 断言。它只验证派生结果，绝不强制状态
+跳转。例如 `inject Dispatch(task) @ Run -> Dispatch.ready` 注入 `Dispatch` occurrence，
+并检查后端搜索出了 `Dispatch.ready`。动态
 `capture closed/projected` 的 canonical AST 是 `CaptureFilter{states, transitions, procedures}`。
 捕获 procedure 会为每个全局 RoundId 保留不可变帧，包括该 procedure 本 round 空闲时的帧；
 公共 API 可按 `(trace, procedure, RoundId)` 精确访问。capture 只观察 DTESSL RuntimeContext
@@ -209,12 +209,12 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `Claim` 对闭合 trace 返回 `satisfied/violated`；开放 trace 在没有反例或见证时返回
 `pending`。有 causal gap 的 projected trace 不得给出肯定的 `satisfied`。
 
-`procedure P @ context` 只命名一个 RuntimeContext 中的 logical instance 入口：`@ context` 是 initial context，
-`initial (...)` 是正交状态轴的 initial state 组合。`inject Event(fields...)` 声明允许唤醒
-静止实例的 typed context；`when` 是静态状态组合，`where` 是动态值谓词，二者都不修改状态。
-procedure 没有 transition、replay、capture 或步骤正文。启动后，active states、typed values、
-revision、injection history 和 causal frontier 在语言 RuntimeContext 中持续存在，后续
-occurrence 仍由全局 transition engine 自动匹配与推进；
+`procedure P @ context` 只命名一个 RuntimeContext 中的 logical instance 入口：`@ context`
+是 initial context，`initial (...)` 是正交状态轴的 initial state 组合。创建实例即启动语言
+自己的搜索循环；初始没有待处理 transition 时立即静止。外部或另一个 procedure 后续用
+`inject Transition(...) @ P` 增加 occurrence，循环再次运行。procedure 本身没有 transition、
+replay、capture 或步骤正文。active states、typed values、revision、injection history 和
+causal frontier 均由语言 RuntimeContext 持续保存；
 `trace` 只是独立的测试/判定投影，不是 procedure 的步骤容器。`function` 是非递归、纯、总的
 typed expression 封装；只能读取
 参数，不能观察 `before`/`round`，不能修改状态或生成 ActionPlan。
@@ -322,7 +322,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.3.0 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.3.1 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
 下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
 与可替换 solver backend。

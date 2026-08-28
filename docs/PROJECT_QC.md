@@ -8,18 +8,17 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: gate `v0.3.0` composite state and native trace on a DTESSL-only branch
+- Current target: gate `v0.3.1` procedure/runtime split and indexed transition search on a DTESSL-only branch
 - Stop orders: none
 
 ## Current state
 
-**Complete.** The `v0.3.0` implementation now has two explicit, non-confused
-replay capabilities: typed context replay from complete initial-state procedure
-artifacts, and derived-path search assertions. Procedure-local `inject`
-admission and conservative closed-capture closure are implemented. Standard,
-`-Werror` and ASan/UBSan suites pass 22/22. Implementation commit `d18845b` is
-pushed on `codex/composite-trace-claims-v0-3-0`; this QC closeout commit records
-the final handoff and clean-tree evidence.
+**Candidate.** The `v0.3.1` implementation separates source parsing/verification
+from backend execution, removes procedure-local admission syntax, injects exact
+typed TransitionId occurrences, and indexes both transition identity and static
+active-state signatures before dynamic `where` evaluation. Standard,
+`-Werror` and ASan/UBSan suites pass 23/23. The scoped commit and pushed-SHA
+evidence remain before closeout.
 
 ## Current goal contract
 
@@ -56,7 +55,7 @@ the final handoff and clean-tree evidence.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.3.0` | Built CLI reports `v0.3.0` | pass |
+| Version identity | CMake/generated header target `0.3.1` | Built CLI reports `v0.3.1` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
 | Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
 | Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
@@ -76,12 +75,14 @@ the final handoff and clean-tree evidence.
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
-| Procedure entry boundary | Parser accepts initial context/state plus typed admission rules; no transition or ordered steps may be nested | Explicit Engine startup and RuntimeContext dispatch both use global transitions | pass |
+| Procedure entry boundary | Parser accepts only initial context/state; no transition, admission rule or ordered steps may be nested | RuntimeContext startup is immediately quiescent with an empty pending set | pass |
 | Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle procedure frame remains queryable at the next global RoundId | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
-| Golden procedure replay | Replay consumes declared initial configuration plus typed context-injection history; transitions are recomputed | Public `ProcedureArtifact` replay is run twice and compared; wrong path expectation rejects | pass |
+| Golden procedure replay | Replay consumes declared initial configuration plus typed transition-occurrence history; cases are recomputed | Public `ProcedureArtifact` replay is run twice and compared; wrong path expectation rejects | pass |
 | Search replay | A named transition path may be asserted only as derived evidence, never forced | `Transition.case(...) @ Procedure` and explicit `SearchExpectation` both re-enter ordinary search | pass |
-| Quiescent context injection | Procedure-local typed injection with static `when` and dynamic `where`, without direct state mutation | Parser/verifier/runtime exercise event-schema equality and dynamic admission | pass |
+| Transition occurrence injection | Exact TransitionId plus typed fields are appended to a started procedure; no direct state mutation or case selection | Same Event family is ambiguous through legacy dispatch but exact TransitionId injection selects only its own family | pass |
+| Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
+| Frontend/runtime source split | Lexing/parsing/type verification live in `src/frontend.cpp`; round/procedure/replay/search execution lives in `src/runtime.cpp` | One public parser and one runtime semantics remain; standard suite passes | pass |
 | Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Closed path/state seed retains whole matching procedure; projected capture emits no artifact | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
@@ -92,26 +93,25 @@ the final handoff and clean-tree evidence.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-- P0 handoff gate: record the pushed integration-branch SHA and clean status.
+- P0 handoff gate: record the pushed implementation SHA and clean status.
 
 ## Risks
 
 - Scope: implementing all domain dialects inside the core would bloat the
   language. The P0/P1/P2 split is mandatory.
-- Verification: C++ implementation is still concentrated in one source file;
-  refactoring must follow semantic tests, not precede them.
+- Verification: frontend and runtime intentionally share one private translation
+  unit while the typed AST remains internal; a future canonical AST can make
+  them independently compiled without exposing a second IR.
 - Validation: syntax remains candidate until exercised on at least one
   non-trivial user model.
 - Release: DTESSL tags and ChenVM submodule updates must remain ordered.
 
 ## Next corrective focus
 
-1. Finish standard, `-Werror` and ASan/UBSan gates for `v0.3.0`, then push the
-   scoped branch and verify its exact SHA.
-2. Resume typed derived data and explicit shared inputs as the next slice.
-3. Preserve the permanent native Program/EventTrace-only validation boundary.
-4. Keep external projection producers separate from DTESSL verification.
-5. Reject any claim that the full language is complete until all roadmap gates
+1. Resume typed derived data and explicit shared inputs as the next slice.
+2. Preserve the permanent native Program/EventTrace-only validation boundary.
+3. Keep external projection producers separate from DTESSL verification.
+4. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
 ## Decision log
@@ -178,3 +178,11 @@ the final handoff and clean-tree evidence.
   Procedure` is a derived-path assertion. RuntimeContext owns persistent
   instances and complete initial-state artifacts; closed filters conservatively
   retain whole-procedure closure, while projected traces are non-replayable.
+- 2026-08-28: `v0.3.1` corrects injection to an extra typed transition
+  occurrence addressed by TransitionId. A procedure contains only initial
+  context/state, starts DTESSL's own search loop and is quiescent when no
+  occurrence is pending; there is no external search-library call or
+  procedure-local admission rule.
+- 2026-08-28: backend search now resolves TransitionId/event family and the
+  current active-state signature through indexes before evaluating dynamic
+  `where`. Replay's optional case name is an assertion, never a forced path.

@@ -281,7 +281,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.3.0", "compiled version must be v0.3.0");
+  require(dtessl::version == "0.3.1", "compiled version must be v0.3.1");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -775,6 +775,12 @@ int main() {
           "relation/search feature discovery is incomplete");
   const std::vector<dtessl::SearchPlanSummary> plans = dtessl::search_plans(relation_program);
   require(std::any_of(plans.begin(), plans.end(), [](const auto& plan) {
+            return plan.operation == "transition-id-index" && plan.deterministic;
+          }) &&
+              std::any_of(plans.begin(), plans.end(), [](const auto& plan) {
+                return plan.operation == "state-signature-index" && plan.deterministic;
+              }) &&
+              std::any_of(plans.begin(), plans.end(), [](const auto& plan) {
             return plan.operation == "select-by-lex" && plan.deterministic &&
                    plan.rejects_ambiguous_score &&
                    plan.max_rows == dtessl::relation_row_limit;
@@ -1102,7 +1108,7 @@ state Retrying @ process:
 state Running @ process:
   started: bool = true
 
-transition Dispatch @ Tick():
+transition Dispatch():
   case ready (Idle @ scheduler, {Ready, Retrying} @ process) -> (Busy @ scheduler, Running @ process):
     where:
       positive(scheduler.credits)
@@ -1118,12 +1124,10 @@ transition BreakInvariant @ Break():
 
 procedure RetryEntry @ system:
   initial (Idle @ scheduler, Retrying @ process)
-  inject Tick():
-    when (Idle @ scheduler, Retrying @ process)
 
 trace Happy:
   replay:
-    Tick() @ RetryEntry
+    inject Dispatch() @ RetryEntry -> Dispatch.ready
   capture closed:
     state (Busy @ scheduler, Running @ process)
     transition (Dispatch.ready)
@@ -1170,13 +1174,14 @@ Claim OneDispatch @ Happy:
               procedure_engine.current_states().at("process") == "Retrying",
           "procedure did not supply only its declared Engine entry configuration");
   const dtessl::StepResult procedure_step =
-      procedure_engine.step(dtessl::Event{"Tick", {}});
+      procedure_engine.step_transition(dtessl::TransitionInput{"Dispatch", {}});
   require(procedure_step.transition == "Dispatch.ready" &&
               procedure_engine.current_states().at("scheduler") == "Busy" &&
               procedure_engine.current_states().at("process") == "Running",
           "global transition engine did not advance a procedure entry");
   dtessl::Engine composite_engine(composite_program);
-  const dtessl::StepResult composite_step = composite_engine.step(dtessl::Event{"Tick", {}});
+  const dtessl::StepResult composite_step =
+      composite_engine.step_transition(dtessl::TransitionInput{"Dispatch", {}});
   require(composite_step.active_states.at("scheduler") == "Busy" &&
               composite_step.active_states.at("process") == "Running" &&
               composite_step.transition == "Dispatch.ready" &&
@@ -1214,22 +1219,14 @@ transition Add @ Increment(delta: int):
 
 procedure SessionA @ alpha:
   initial (Counter @ counter)
-  inject Increment(delta: int):
-    when (Counter @ counter)
-    where:
-      delta > 0
 
 procedure SessionB @ beta:
   initial (Counter @ counter)
-  inject Increment(delta: int):
-    when (Counter @ counter)
-    where:
-      delta > 0
 
 trace Interleaved:
   replay:
-    Add.stay(1) @ SessionA | Add.stay(2) @ SessionB
-    Add.stay(3) @ SessionA
+    inject Add(1) @ SessionA -> Add.stay | inject Add(2) @ SessionB -> Add.stay
+    inject Add(3) @ SessionA -> Add.stay
   capture closed:
     procedure (SessionA, SessionB)
 
@@ -1284,6 +1281,45 @@ Claim Persisted @ Interleaved:
   }
   require(search_mismatch,
           "search replay accepted an expected path that the engine did not derive");
+
+  constexpr std::string_view indexed_transition_injection = R"DTESSL(
+state Ready @ lane initial:
+  value: int = 0
+
+transition ChooseLeft @ Choose(value: int):
+  case stay (Ready @ lane) -> (Ready @ lane):
+    set:
+      value = value @ lane
+
+transition ChooseRight @ Choose(value: int):
+  case stay (Ready @ lane) -> (Ready @ lane):
+    set:
+      value = value + 100 @ lane
+
+procedure Indexed @ system:
+  initial (Ready @ lane)
+)DTESSL";
+  const dtessl::Program indexed_program = dtessl::parse(indexed_transition_injection);
+  bool open_event_ambiguous = false;
+  try {
+    dtessl::Engine open(indexed_program);
+    static_cast<void>(open.step(dtessl::Event{
+        "Choose", {{"value", dtessl::Value(std::int64_t{7})}}}));
+  } catch (const dtessl::Error&) {
+    open_event_ambiguous = true;
+  }
+  dtessl::RuntimeContext indexed_runtime(indexed_program);
+  indexed_runtime.start("Indexed");
+  require(indexed_runtime.current_round() == 0U &&
+              indexed_runtime.artifact("Indexed").injections.empty(),
+          "procedure startup must quiesce without inventing a transition occurrence");
+  const dtessl::ParallelStepResult indexed_step = indexed_runtime.inject({
+      {"Indexed", dtessl::TransitionInput{
+                      "ChooseLeft", {{"value", dtessl::Value(std::int64_t{7})}}}}});
+  require(open_event_ambiguous && indexed_step.transitions.size() == 1U &&
+              indexed_step.transitions.front().transition == "ChooseLeft.stay" &&
+              indexed_step.state.at("value").as_int() == 7,
+          "TransitionId injection did not bypass unrelated event families");
   const auto persistent_claims =
       dtessl::evaluate_named_trace(persistent_program, "Interleaved");
   require(persistent_claims.size() == 1U &&

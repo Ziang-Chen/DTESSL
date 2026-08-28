@@ -3,6 +3,27 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.3.1
+
+- Split the implementation into `src/frontend.cpp` for lexing, parsing,
+  typing and verification, and `src/runtime.cpp` for execution, procedure
+  persistence, round semantics, replay, capture and search.
+- Reduced `procedure` to exactly its initial context and initial orthogonal
+  state combination. Starting a procedure enters DTESSL's runtime loop; an
+  empty pending set is quiescence.
+- Made `inject Transition(fields...) @ Procedure` a typed occurrence addressed
+  by TransitionId. It adds work to the target procedure and never invokes an
+  external search library, mutates state directly or selects a case.
+- Made `transition Name(fields...)` the primary declaration form and retained
+  `transition Name @ EventName(fields...)` only for the legacy open Event API.
+- Added exact TransitionId/event-family dispatch indexes and an
+  active-state-signature path index. Dynamic `where` evaluation now runs only
+  for statically eligible indexed paths.
+- Added optional replay assertion `-> Transition.case`; the backend still
+  derives the selected case and rejects mismatches.
+- Preserved one shared causal-DAG RoundId for all simultaneous injections,
+  isolated per-procedure revisions and atomic all-procedure round commit.
+
 ## v0.3.0
 
 - Added orthogonal typed state axes: every `@context` has exactly one initial

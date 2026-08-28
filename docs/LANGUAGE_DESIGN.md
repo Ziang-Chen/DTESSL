@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.3.0` state/trace slice.
+- **Implemented**: accepted and executed through the `v0.3.1` state/trace slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -23,11 +23,10 @@ These rules override any earlier v0 experimental syntax or implementation:
    procedure filter as a seed. The language must compute causal and data
    dependency closure and emit a complete replayable procedure artifact. A
    partial projection may not claim to be replayable.
-4. A procedure begins with initial states plus initial typed context. When its
-   automaton reaches quiescence, later typed context may be injected through a
-   procedure-local admission rule. `when` matches the static state topology;
-   `where` checks dynamic values and relations. Injection does not directly
-   mutate state or choose a transition.
+4. A procedure begins with initial states plus initial context and immediately
+   enters the language runtime's search loop. An empty pending set is
+   quiescence. `inject Transition(...) @ Procedure` later adds one typed
+   transition occurrence; it neither mutates state nor chooses a case.
 5. The language RuntimeContext owns procedure instances, state, revisions,
    pending injections and causal frontiers. Different procedures are isolated
    at `ProcedureId / Context / StateField`; safe shared storage is a later,
@@ -36,12 +35,14 @@ These rules override any earlier v0 experimental syntax or implementation:
 The core runtime closure is therefore:
 
 ```text
-inject typed context
-  -> search enabled transitions inside each procedure
+inject typed transition occurrence
+  -> TransitionId index
+  -> active-state-signature case index
+  -> evaluate dynamic where predicates
   -> choose a deterministic conflict-free set
   -> commit one causal-DAG round
   -> repeat until quiescent
-  -> await the next admitted context injection
+  -> await the next transition injection
 ```
 
 All transition nodes in one DAG layer share a `RoundId`. Procedure revision is
@@ -50,20 +51,24 @@ only a local state version. Runtime traversal order cannot create logical time.
 The implemented minimal injection surface is:
 
 ```dtessl
+transition Resume(session: SessionId):
+  case waiting (Waiting @ workflow) -> (Active @ workflow):
+    where:
+      session = workflow.owner
+
 procedure Session @ system:
   initial (Idle @ workflow)
 
-  inject Resume(session: SessionId):
-    when (Waiting @ workflow)
-    where:
-      session = workflow.owner
+trace ResumeExample:
+  replay:
+    inject Resume(SessionId(a)) @ Session -> Resume.waiting
 ```
 
-`inject` declares what typed context may resume a quiescent procedure; it is not
-an imperative step. Its parameters must exactly match an event schema used by a
-global transition. `when` is topology and `where` is a typed dynamic admission
-predicate. The admitted context is consumed as one event occurrence; the engine,
-not the replay source, selects the unique transition path.
+The transition declaration is the message schema. `inject` creates a typed
+occurrence addressed by TransitionId and places it in the target procedure's
+pending set. Static case topology and dynamic `where` are the admission/search
+rules. The engine, not the replay source, selects the unique path. The optional
+arrow is only a derived-path assertion.
 
 The v0.3 native closure is deliberately conservative: a selected state or path
 first identifies its owning procedure instances, then capture retains each
@@ -86,11 +91,11 @@ receipts, effect suppression and reconcile are outside DTESSL. Generated mirrors
 must remain distinguishable from independent assurance models for the lifetime
 of the language.
 
-DTESSL models one discrete simulation round as a relation over typed context
-available to procedure instances:
+DTESSL models one discrete simulation round as a relation over typed transition
+occurrences delivered to procedure instances:
 
 ```text
-(RuntimeContextBefore, Bag<ContextInjection>)
+(RuntimeContextBefore, Bag<ProcedureId x TransitionInput>)
   -> DecisionSet(AfterState, ActionDAGs, Claims, Observations)
 ```
 
@@ -368,17 +373,19 @@ DTESSL inputs.
 
 - `procedure P @ context: initial (...)` declares one persistent automaton
   instance entry: an initial context identity and finite initial state
-  combination. Its `inject Event(fields...)` rules admit typed context with
-  static `when` topology plus dynamic `where` predicates. It contains no
-  transitions, replay, capture or ordered steps.
+  combination. It contains no nested transition, injection rule, replay,
+  capture or ordered steps. Starting it enters DTESSL's own search loop; with
+  no pending occurrence the instance is simply quiescent.
 - A procedure is not a trace. The language RuntimeContext owns persistent
   procedure instances, injection history, state, local revisions and causal
   frontier.
-- `trace T @ root: replay:` primarily lists `Event(...) @ Procedure` typed
-  context injections. The engine checks the procedure admission rule and
-  searches the global transition set. `Transition.case(...) @ Procedure` is
-  also retained as search replay: it derives the same event input and asserts
-  that the named path was selected. The assertion never commands a jump.
+- `trace T @ root: replay:` primarily lists
+  `inject Transition(...) @ Procedure` typed transition occurrences. The
+  runtime uses the TransitionId and active-state signature indexes, then
+  evaluates the indexed paths' dynamic `where` predicates. An optional
+  `-> Transition.case` asserts the path derived by that search; it never
+  commands a jump. Legacy `Transition.case(...) @ Procedure` remains accepted
+  as an equivalent search assertion during v0 migration.
 - One replay source line is one 1-based discrete round and `|` joins
   simultaneous transition occurrences.
 - RoundId is a causal-DAG layer shared by all simultaneous occurrences, never a

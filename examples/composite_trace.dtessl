@@ -21,7 +21,7 @@ state ProcessRetrying @ process:
 state ProcessRunning @ process:
   started: bool = true
 
-transition Dispatch @ Tick():
+transition Dispatch():
   case ready (SchedulerIdle @ scheduler, {ProcessReady, ProcessRetrying} @ process) -> (SchedulerBusy @ scheduler, ProcessRunning @ process):
     where:
       hasCredits(scheduler.credits)
@@ -31,12 +31,10 @@ transition Dispatch @ Tick():
 
 procedure DispatchRun @ system:
   initial (SchedulerIdle @ scheduler, ProcessRetrying @ process)
-  inject Tick():
-    when (SchedulerIdle @ scheduler, ProcessRetrying @ process)
 
 trace Happy:
   replay:
-    Tick() @ DispatchRun
+    inject Dispatch() @ DispatchRun -> Dispatch.ready
   capture closed:
     state (SchedulerBusy @ scheduler, ProcessRunning @ process)
     transition (Dispatch.ready)

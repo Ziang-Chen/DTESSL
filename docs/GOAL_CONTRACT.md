@@ -65,27 +65,28 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.3.0 state/trace boundary
+## Current v0.3.1 procedure/runtime boundary
 
 - Work is restricted to the DTESSL repository and the
-  `codex/composite-trace-claims-v0-3-0` branch.
-- The slice must preserve the v0.2.3 logical/workbench surface while adding
-  atomic orthogonal state sets, path-local transition cases, native trace
-  capture, finite-prefix claim evaluation, pure helper functions and procedure
-  entry configurations.
-- A procedure contains an initial context identity, initial state combination
-  and typed context-admission rules. It owns no transitions, trace or ordered
-  execution steps; after startup, the language RuntimeContext persists its
-  isolated state and the global transition engine handles admitted occurrences.
+  `codex/frontend-runtime-split-v0-3-1` branch.
+- The slice preserves the v0.3.0 state/trace semantics while separating the
+  source frontend from runtime execution and making transition-occurrence
+  injection explicit.
+- A procedure contains only an initial context identity and initial state
+  combination. It owns no nested transition, admission rule, trace or ordered
+  execution steps. Starting it creates a persistent isolated instance and
+  enters DTESSL's transition-search loop; an empty pending set is quiescence.
 - Golden replay consumes a complete procedure artifact: initial/checkpoint
-  state plus admitted typed context injections. Transition paths and the
+  state plus typed transition-occurrence injections. Transition paths and the
   dynamic DAG are recomputed evidence, not replay commands.
 - Capture of a procedure is complete. A capture filter is only a seed for
   automatic causal/data closure into a complete replayable procedure; a lossy
   projection cannot be labelled replayable.
-- A quiescent procedure may accept later typed context through a local
-  `when` (static state topology) plus `where` (dynamic value/relation)
-  admission rule. Injection never directly mutates state.
+- A quiescent procedure resumes when
+  `inject Transition(fields...) @ Procedure` adds an occurrence to its pending
+  set. The runtime selects candidates by exact TransitionId and active-state
+  signature, then evaluates dynamic `where`; injection never chooses a case or
+  directly mutates state.
 - RoundId is derived from the dynamic causal DAG layer, while per-procedure
   revision is a distinct state-version counter.
 - Completion requires parser/verifier/runtime/CLI evidence plus standard,

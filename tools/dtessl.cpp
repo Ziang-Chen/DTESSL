@@ -364,7 +364,7 @@ void repl_help() {
       << "  :reset                   rebuild the engine from edited source\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.3.0 syntax:\n"
+      << "\ncore v0.3.1 syntax:\n"
       << "  name T / T(atom)         nominal logical names\n"
       << "  ~T / ~(A,B) / ~{...}     finite relations and literals\n"
       << "  item ~ relation          membership/binding in E/A/select\n"
@@ -576,7 +576,7 @@ void usage(std::ostream& out) {
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.3.0: case (state-set) -> (state-set), path-local where/set/do,\n"
+      << "core v0.3.1: TransitionId inject, indexed state-case search, causal rounds,\n"
       << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
 }
 

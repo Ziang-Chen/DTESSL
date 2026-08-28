@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.3.0)
+set(DTESSL_VERSION 0.3.1)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -10,10 +10,15 @@ option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 
 add_library(dtessl
   src/exact_numeric.cpp
-  src/dtessl.cpp
+  src/frontend.cpp
+  src/runtime.cpp
   src/language_service.cpp
   src/semantic_descriptor.cpp
   src/value_codec.cpp)
+# runtime.cpp is included once by frontend.cpp while the typed AST is private.
+# Listing it as header-only keeps the frontend/runtime boundary visible to IDEs
+# without compiling a second copy of the implementation.
+set_source_files_properties(src/runtime.cpp PROPERTIES HEADER_FILE_ONLY TRUE)
 configure_file(include/dtessl/version.hpp.in
                generated/dtessl/version.hpp
                @ONLY)
@@ -125,6 +130,12 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/relations.dtessl)
   set_tests_properties(dtessl.cli_search_plans PROPERTIES
                        PASS_REGULAR_EXPRESSION "select-by-lex.*ambiguity=reject")
+  add_test(NAME dtessl.cli_transition_search_indexes
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   plans
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/composite_trace.dtessl)
+  set_tests_properties(dtessl.cli_transition_search_indexes PROPERTIES
+                       PASS_REGULAR_EXPRESSION "transition-id-index")
   add_test(NAME dtessl.semantic_descriptor_check
            COMMAND $<TARGET_FILE:dtessl_cli>
                    descriptor-check
