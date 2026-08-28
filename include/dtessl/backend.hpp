@@ -25,6 +25,9 @@ enum class LanguageFeature {
   ParallelEventBag,
   EqualMerge,
   UnionMerge,
+  AlgebraicDataTypes,
+  NominalTypes,
+  ExhaustiveMatch,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

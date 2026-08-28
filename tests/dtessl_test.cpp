@@ -12,6 +12,21 @@
 namespace {
 
 constexpr std::string_view source = R"DTESSL(
+newtype SessionId = string
+
+record Session:
+  id: SessionId
+  owner: string
+  active: bool
+
+variant Decision:
+  Accepted(Session)
+  Rejected(string)
+
+enum Phase:
+  Idle
+  Running
+
 state Scheduler @ local initial:
   mode: string = "Idle"
   credits: int = 2
@@ -26,6 +41,11 @@ state Scheduler @ local initial:
   weights: map<string, int> = {"a": 1, "b": 2}
   inventory: bag<string> = bag{"cpu": 2, "gpu": 1}
   nested: list<set<int>> = [{2, 1}, {4, 3}]
+  session: Session = Session{id: SessionId("session-0"), owner: "root", active: true}
+  decision: Decision = Decision.Rejected("not-decided")
+  phase: Phase = Phase.Idle
+  maybe_priority: option<int> = none
+  outcome: result<int, string> = ok(0)
   invariant:
     credits >= 0 and count(workers) = 2 and count(busy) <= count(workers)
     and count(numbers) >= 2 and count(queue) = 2 and count(weights) = 2
@@ -79,6 +99,27 @@ transition AddNumber @ Number(value: int):
   from Scheduler
   to Scheduler:
     numbers = insert(before.numbers, value)
+
+transition Decide @ Classify(value: int):
+  from Scheduler
+  to Scheduler:
+    session = Session{id: SessionId("session-1"), owner: "alice", active: true}
+    decision = Decision.Accepted(Session{id: SessionId("session-1"), owner: "alice", active: true})
+    phase = Phase.Running
+    maybe_priority = some(value)
+    outcome = ok<string>(value)
+    note = match before.decision { Decision.Accepted(found) -> found.owner, Decision.Rejected(reason) -> reason }
+  where:
+    match before.maybe_priority { none -> true, some(current) -> current >= 0 }
+
+transition RejectDecision @ Reject(reason: string):
+  from Scheduler
+  to Scheduler:
+    decision = Decision.Rejected(reason)
+    phase = Phase.Idle
+    maybe_priority = none<int>()
+    outcome = err<int>(reason)
+    note = match before.decision { Accepted(found) -> found.owner, Rejected(previous) -> previous }
 )DTESSL";
 
 [[noreturn]] void fail(const std::string& message) {
@@ -93,7 +134,7 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.1.1", "compiled version must be v0.1.1");
+  require(dtessl::version == "0.1.2", "compiled version must be v0.1.2");
   const auto roundtrip = [](const dtessl::Value& value) {
     const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
     require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
@@ -121,6 +162,19 @@ int main() {
   roundtrip(generic_list);
   roundtrip(generic_map);
   roundtrip(generic_bag);
+  const dtessl::Value record(dtessl::ValueRecord{
+      "Session", {{"owner", dtessl::Value("alice")},
+                  {"active", dtessl::Value(true)},
+                  {"id", dtessl::Value(dtessl::ValueNewtype{
+                             "SessionId", {dtessl::Value("session-1")}})}}});
+  const dtessl::Value variant(
+      dtessl::ValueVariant{"Decision", "Accepted", {record}});
+  const dtessl::Value enumeration(dtessl::ValueVariant{"Phase", "Running", {}});
+  roundtrip(record);
+  roundtrip(variant);
+  roundtrip(enumeration);
+  require(record.as_record().fields.front().first == "active",
+          "record fields were not canonically sorted");
   require(generic_set.as_set().values.front().as_int() == 1,
           "generic set did not canonicalize element order");
   require(generic_bag.as_bag().entries.front().second == 5,
@@ -145,6 +199,15 @@ int main() {
   require(dtessl::encode_value(dtessl::Value(dtessl::StringSet{{"a", "b"}})) ==
               std::vector<std::uint8_t>({3, 2, 1, 'a', 1, 'b'}),
           "canonical set golden bytes changed");
+  require(dtessl::encode_value(dtessl::Value(
+              dtessl::ValueNewtype{"SessionId", {dtessl::Value("x")}})) ==
+              std::vector<std::uint8_t>({10, 9, 'S', 'e', 's', 's', 'i', 'o', 'n', 'I', 'd',
+                                         2, 1, 'x'}),
+          "canonical newtype golden bytes changed");
+  require(dtessl::encode_value(enumeration) ==
+              std::vector<std::uint8_t>({9, 5, 'P', 'h', 'a', 's', 'e', 7,
+                                         'R', 'u', 'n', 'n', 'i', 'n', 'g', 0}),
+          "canonical enum golden bytes changed");
   bool noncanonical = false;
   try {
     static_cast<void>(dtessl::decode_value(
@@ -157,6 +220,9 @@ int main() {
            std::vector<std::uint8_t>{2, 0x80, 0x00},
            std::vector<std::uint8_t>{0, 1, 0},
            std::vector<std::uint8_t>{2, 4, 'a'},
+           std::vector<std::uint8_t>{8, 1, 'T', 2, 1, 'b', 0, 0, 1, 'a', 0, 0},
+           std::vector<std::uint8_t>{9, 1, 'T', 1, 'C', 2},
+           std::vector<std::uint8_t>{10, 1, 'T'},
            std::vector<std::uint8_t>{9}}) {
     bool rejected_codec = false;
     try {
@@ -299,6 +365,31 @@ int main() {
               numbers.state.at("nested").as_list().values.size() == 2,
           "generic collection initial values were not preserved");
 
+  dtessl::Engine algebraic(program);
+  const dtessl::StepResult classified = algebraic.step(
+      dtessl::Event{"Classify", {{"value", dtessl::Value(std::int64_t{7})}}});
+  require(classified.state.at("session").as_record().type_id == "Session" &&
+              classified.state.at("session").as_record().fields.at(2).second.as_string() ==
+                  "alice",
+          "record construction or canonical field projection failed");
+  require(classified.state.at("decision").as_variant().constructor == "Accepted" &&
+              classified.state.at("phase").as_variant().constructor == "Running",
+          "variant or enum construction failed");
+  require(classified.state.at("maybe_priority").as_variant().type_id == "option<int>" &&
+              classified.state.at("maybe_priority").as_variant().payload.front().as_int() == 7,
+          "option construction lost its canonical type identity");
+  require(classified.state.at("outcome").as_variant().type_id == "result<int,string>" &&
+              classified.state.at("note").as_string() == "not-decided",
+          "result construction or exhaustive match execution failed");
+  const dtessl::StepResult rejected_decision = algebraic.step(
+      dtessl::Event{"Reject", {{"reason", dtessl::Value("policy")}}});
+  require(rejected_decision.state.at("note").as_string() == "alice" &&
+              rejected_decision.state.at("maybe_priority").as_variant().constructor == "none" &&
+              rejected_decision.state.at("maybe_priority").as_variant().type_id == "option<int>" &&
+              rejected_decision.state.at("outcome").as_variant().constructor == "err" &&
+              rejected_decision.state.at("outcome").as_variant().payload.front().as_string() == "policy",
+          "payload match, typed none, or err construction failed");
+
   dtessl::ScratchPool pool(64, 128);
   struct Pair {
     std::int64_t first;
@@ -329,5 +420,47 @@ transition Break @ Value(value: string):
     type_error = true;
   }
   require(type_error, "the verifier must reject a statically wrong assignment");
+
+  constexpr std::string_view non_exhaustive = R"DTESSL(
+variant Choice:
+  Yes(int)
+  No
+
+state Broken initial:
+  choice: Choice = Choice.No
+  value: int = 0
+
+transition Break @ Go():
+  from Broken
+  to Broken:
+    value = match before.choice { Yes(found) -> found }
+)DTESSL";
+  bool match_error = false;
+  try {
+    static_cast<void>(dtessl::parse(non_exhaustive));
+  } catch (const dtessl::Error&) {
+    match_error = true;
+  }
+  require(match_error, "the verifier accepted a non-exhaustive variant match");
+
+  constexpr std::string_view nominal_mismatch = R"DTESSL(
+newtype UserId = string
+newtype SessionId = string
+
+state Broken initial:
+  id: UserId = UserId("u")
+
+transition Break @ Go(value: SessionId):
+  from Broken
+  to Broken:
+    id = value
+)DTESSL";
+  bool nominal_error = false;
+  try {
+    static_cast<void>(dtessl::parse(nominal_mismatch));
+  } catch (const dtessl::Error&) {
+    nominal_error = true;
+  }
+  require(nominal_error, "distinct newtypes were treated as structurally interchangeable");
   return 0;
 }

@@ -3,8 +3,8 @@
 Versions follow `vMilestone.MajorFeature.MinorFeature`. Each row is an
 acceptance slice, not merely a calendar label.
 
-Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`. Current release
-gate: `v0.1.1`.
+Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
+`v0.1.2`. Current release gate: `v0.1.3`.
 
 ## Milestone 0 — semantic foundation
 
@@ -15,7 +15,7 @@ gate: `v0.1.1`.
 | `v0.0.3` | Backend seam | Canonical-module placeholder contract, typed backend feature negotiation and interpreter/VM/provider rejection tests without freezing the private AST |
 | `v0.1.0` | Canonical value codec | Bounded canonical codec for foundation values, minimal encodings, golden bytes and hostile-input corpus |
 | `v0.1.1` | Generic finite collections | `list/set/map/bag<T>`, recursive typed values, canonical ordering and collection-budget tests |
-| `v0.1.2` | Algebraic/nominal values | Records, variants, enums, newtypes, option/result and schema-aware canonical field/constructor IDs |
+| `v0.1.2` | Algebraic/nominal values | Records, variants, enums, newtypes, option/result, exhaustive matching and schema-aware canonical field/constructor IDs |
 | `v0.1.3` | Exact numeric profile | Arbitrary/exact integer policy, normalized rational, deterministic arithmetic and cross-backend golden corpus |
 | `v0.2.0` | Relation and deterministic search | Relation/join/project/compose/closure, `E/A`, `select ... by lex`, static and runtime search plans, ambiguity/budget adversarial tests |
 | `v0.3.0` | Full state theory | `data/derive/invariant`, state sets, explicit shared inputs, trace/history relations, transition occurrence claims |

@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed by `v0.0.1`.
+- **Implemented**: accepted and executed by the current `v0.1.2` candidate.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -114,6 +114,12 @@ shared input topology: Relation<Node, Node>
 - records, variants, enums and nominal `newtype`.
 - opaque `ObjectRef<T>`, `VersionRef<T>`, `RegionRef<T>` and `Binding<K>` values
   that models cannot fabricate from strings or bytes.
+
+The `v0.1.2` slice implements records, zero/unary-payload variants, enums,
+newtypes, option/result, field projection and exhaustive expression matching.
+Nominal values carry a canonical type identity; records canonicalize field
+order. Package-qualified schema identities and schema migration remain part of
+CanonicalModule rather than being guessed from source formatting.
 
 ### Relation and search algebra
 

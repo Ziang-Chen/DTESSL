@@ -1,4 +1,4 @@
-# DTESSL v0.1.1
+# DTESSL v0.1.2
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -18,8 +18,9 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 
 ## v0 的闭环
 
-一个程序由两类定义组成：
+一个程序由三类定义组成：
 
+- `record / variant / enum / newtype` 定义代数与名义领域类型；
 - `state` 定义一个有类型的状态空间、初值、上下文和不变量；
 - `transition` 定义一次事件能够引起的整体变化，以及变化后建议宿主执行的调用 DAG。
 
@@ -39,9 +40,15 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 
 ## 最小语法
 
-```text
+```dtessl
+newtype TaskId = string
+
+variant Mode:
+  Idle
+  Assigned(TaskId)
+
 state Scheduler @ local initial:
-  mode: string = "Idle"
+  mode: Mode = Mode.Idle
   credits: int = 2
   workers: set<string> = {"worker-a", "worker-b"}
   invariant:
@@ -50,7 +57,7 @@ state Scheduler @ local initial:
 transition Schedule @ Submit(task: string, worker: string):
   from Scheduler
   to Scheduler:
-    mode = "Waiting"
+    mode = Mode.Assigned(TaskId(task))
     credits = before.credits - 1
   where:
     before.mode = "Idle"
@@ -63,7 +70,14 @@ transition Schedule @ Submit(task: string, worker: string):
 核心词法和文法骨架如下；缩进构成块，Tab 非法，`//` 开始行注释。
 
 ```ebnf
-program     = { state | transition } ;
+program     = { type-declaration | state | transition } ;
+type-declaration = newtype | record | variant | enum ;
+newtype     = "newtype" Name "=" type NEWLINE ;
+record      = "record" Name ":" INDENT { Name ":" type NEWLINE } DEDENT ;
+variant     = "variant" Name ":" INDENT
+                { Name [ "(" type ")" ] NEWLINE }
+              DEDENT ;
+enum        = "enum" Name ":" INDENT { Name NEWLINE } DEDENT ;
 state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
                 { field | invariant }
               DEDENT ;
@@ -82,13 +96,21 @@ type        = "bool" | "int" | "string"
             | "list" "<" type ">"
             | "set" "<" type ">"
             | "map" "<" type "," type ">"
-            | "bag" "<" type ">" ;
+            | "bag" "<" type ">"
+            | "option" "<" type ">"
+            | "result" "<" type "," type ">"
+            | Name ;
 
 expression  = literal | name | "round" | "before." Name
             | unary | binary
             | "count" "(" expression ")"
             | ( "insert" | "erase" ) "(" expression "," expression ")"
-            | "exists" Name "in" expression "where" expression ;
+            | "exists" Name "in" expression "where" expression
+            | constructor | record-constructor | match-expression ;
+match-expression = "match" name "{"
+                     pattern "->" expression
+                     { "," pattern "->" expression }
+                   "}" ;
 
 action-expression = sequence { "|" sequence } ;
 sequence     = action { "," action } ;
@@ -110,8 +132,10 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 
 ## 值、谓词与搜索
 
-当前有精确的 `bool`、有符号 64 位 `int`、UTF-8 `string`，以及可递归组合的
-`list<T>/set<T>/map<K,V>/bag<T>`。集合、map key 与 bag item 使用规范值顺序。
+当前有精确的 `bool`、有符号 64 位 `int`、UTF-8 `string`，可递归组合的
+`list<T>/set<T>/map<K,V>/bag<T>/option<T>/result<T,E>`，以及 `record`、
+`variant`、`enum`、`newtype`。集合、map key 与 bag item 使用规范值顺序；record
+字段按字段名规范排序，所有 nominal/variant 值编码自己的类型与构造器身份。
 支持：
 
 - 布尔运算 `and/or/not`；
@@ -119,6 +143,13 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 - 整数 `+/-`，溢出即失败；
 - `x in set`、`count(set)` 和纯函数式 `insert(set, x)/erase(set, x)`；
 - 有限、确定性枚举的 `exists x in set where predicate`。
+- record 构造与字段投影、variant/enum 构造、名义 newtype 构造；
+- `match value { A(x) -> ..., B -> ... }`，静态拒绝遗漏构造器、重复分支、
+  payload 绑定错误和不同结果类型。
+
+`none<T>()` 在表达式中显式给出空 option 的元素类型；`ok<E>(value)` 和
+`err<T>(error)` 给出 result 的另一侧类型。初值已有声明类型上下文，因此可简写为
+`none`、`some(value)`、`ok(value)`、`err(value)`。
 
 集合按字典序枚举，因此相同输入得到相同搜索、状态文本和动作 DAG。`exists` 当前只返回
 真假，不把候选绑定泄漏到 `do`；需要选择候选的动态搜索会在后续增加显式、可重放的
@@ -154,8 +185,9 @@ ctest --test-dir build --output-on-failure
 
 ## 有意留在 v0 之外
 
-为了先闭合语言核心，v0 不包含 map/bag/relation/matrix、候选选择、概率或
+为了逐层闭合语言核心，v0.1.2 仍不包含 relation/matrix、候选选择、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
-建议的下一个最小增量是：泛型有限集合与 relation、显式 `select ... by`、多事件 trace/
-receipt replay，最后才加入稀疏矩阵与可替换搜索后端。它们应继续服从同一条边界：
+下一个增量是 exact rational/numeric profile，随后进入 relation 与显式
+`select ... by`、多事件 trace/receipt replay，最后才加入稀疏矩阵与可替换搜索后端。
+它们应继续服从同一条边界：
 transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。

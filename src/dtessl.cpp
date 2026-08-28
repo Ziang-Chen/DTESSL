@@ -140,7 +140,7 @@ std::vector<Token> lex(std::string_view source) {
         }
 
         const std::string_view two = line.substr(cursor, 2);
-        if (two == "<=" || two == ">=" || two == "!=" || two == "==") {
+        if (two == "<=" || two == ">=" || two == "!=" || two == "==" || two == "->") {
           result.push_back({TokenKind::Symbol, std::string(two), line_number, column});
           cursor += 2;
           continue;
@@ -173,9 +173,10 @@ std::vector<Token> lex(std::string_view source) {
 }
 
 struct DataType {
-  enum class Kind { Bool, Int, String, List, Set, Map, Bag };
+  enum class Kind { Bool, Int, String, List, Set, Map, Bag, Named, Option, Result };
 
   Kind kind{Kind::Bool};
+  std::string name;
   std::shared_ptr<DataType> first;
   std::shared_ptr<DataType> second;
 
@@ -186,9 +187,10 @@ struct DataType {
       : kind(value),
         first(std::make_shared<DataType>(std::move(key))),
         second(std::make_shared<DataType>(std::move(item))) {}
+  DataType(Kind value, std::string identity) : kind(value), name(std::move(identity)) {}
 
   friend bool operator==(const DataType& left, const DataType& right) {
-    if (left.kind != right.kind) return false;
+    if (left.kind != right.kind || left.name != right.name) return false;
     if (static_cast<bool>(left.first) != static_cast<bool>(right.first) ||
         static_cast<bool>(left.second) != static_cast<bool>(right.second)) return false;
     return (!left.first || *left.first == *right.first) &&
@@ -200,17 +202,63 @@ DataType bool_type() { return DataType(DataType::Kind::Bool); }
 DataType int_type() { return DataType(DataType::Kind::Int); }
 DataType string_type() { return DataType(DataType::Kind::String); }
 
+struct TypeField {
+  std::string name;
+  DataType type;
+};
+
+struct VariantConstructor {
+  std::string name;
+  std::optional<DataType> payload;
+};
+
+struct TypeDefinition {
+  enum class Kind { Record, Variant, Newtype };
+  Kind kind{Kind::Record};
+  std::string name;
+  std::vector<TypeField> fields;
+  std::vector<VariantConstructor> constructors;
+  std::optional<DataType> underlying;
+};
+
+using TypeRegistry = std::map<std::string, TypeDefinition, std::less<>>;
+
+struct Expr;
+using ExprPtr = std::shared_ptr<Expr>;
+
+struct MatchArm {
+  std::string constructor;
+  std::string binding;
+  bool wildcard{false};
+  ExprPtr body;
+};
+
 struct Expr {
-  enum class Kind { Literal, Name, Unary, Binary, Exists, Count, SetInsert, SetErase };
+  enum class Kind {
+    Literal,
+    Name,
+    Unary,
+    Binary,
+    Exists,
+    Count,
+    SetInsert,
+    SetErase,
+    Construct,
+    RecordConstruct,
+    Match,
+  };
   Kind kind{Kind::Literal};
   std::optional<Value> literal;
   std::string text;
   std::shared_ptr<Expr> left;
   std::shared_ptr<Expr> right;
   std::shared_ptr<Expr> third;
+  std::vector<ExprPtr> children;
+  std::vector<std::string> names;
+  std::vector<MatchArm> arms;
+  std::optional<DataType> type_argument;
+  std::optional<DataType> resolved_type;
 };
-
-using ExprPtr = std::shared_ptr<Expr>;
 
 ExprPtr make_literal(Value value) {
   auto expr = std::make_shared<Expr>();
@@ -294,7 +342,8 @@ struct Transition {
 
 class FlatParser {
  public:
-  explicit FlatParser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+  FlatParser(std::vector<Token> tokens, const TypeRegistry& types)
+      : tokens_(std::move(tokens)), types_(types) {}
 
   ExprPtr expression() { return parse_or(); }
 
@@ -345,6 +394,35 @@ class FlatParser {
       fail(peek(), "expected identifier");
     }
     return take();
+  }
+
+  DataType parse_type() {
+    if (match("bool")) return bool_type();
+    if (match("int")) return int_type();
+    if (match("string")) return string_type();
+    if (match("list") || match("set") || match("bag") || match("option")) {
+      const std::string constructor = tokens_[cursor_ - 1].text;
+      expect("<");
+      DataType item = parse_type();
+      expect(">");
+      if (constructor == "list") return DataType(DataType::Kind::List, std::move(item));
+      if (constructor == "set") return DataType(DataType::Kind::Set, std::move(item));
+      if (constructor == "bag") return DataType(DataType::Kind::Bag, std::move(item));
+      return DataType(DataType::Kind::Option, std::move(item));
+    }
+    if (match("map") || match("result")) {
+      const std::string constructor = tokens_[cursor_ - 1].text;
+      expect("<");
+      DataType first = parse_type();
+      expect(",");
+      DataType second = parse_type();
+      expect(">");
+      return DataType(constructor == "map" ? DataType::Kind::Map : DataType::Kind::Result,
+                      std::move(first), std::move(second));
+    }
+    Token name = identifier();
+    if (!types_.contains(name.text)) fail(name, "unknown nominal type '" + name.text + "'");
+    return DataType(DataType::Kind::Named, std::move(name.text));
   }
 
   ExprPtr parse_or() {
@@ -412,6 +490,37 @@ class FlatParser {
       result->right = std::move(predicate);
       return result;
     }
+    if (match("match")) {
+      auto result = std::make_shared<Expr>();
+      result->kind = Expr::Kind::Match;
+      if (match("(")) {
+        result->left = parse_or();
+        expect(")");
+      } else {
+        std::string scrutinee = identifier().text;
+        while (match(".")) scrutinee += "." + identifier().text;
+        result->left = make_name(std::move(scrutinee));
+      }
+      expect("{");
+      do {
+        MatchArm arm;
+        if (match("_")) {
+          arm.wildcard = true;
+        } else {
+          arm.constructor = identifier().text;
+          while (match(".")) arm.constructor += "." + identifier().text;
+          if (match("(")) {
+            arm.binding = identifier().text;
+            expect(")");
+          }
+        }
+        expect("->");
+        arm.body = parse_or();
+        result->arms.push_back(std::move(arm));
+      } while (match(","));
+      expect("}");
+      return result;
+    }
     if (match("count")) {
       expect("(");
       auto result = std::make_shared<Expr>();
@@ -453,6 +562,55 @@ class FlatParser {
     std::string path = std::move(name.text);
     while (match(".")) {
       path += "." + identifier().text;
+    }
+    std::optional<DataType> type_argument;
+    if (match("<")) {
+      type_argument = parse_type();
+      expect(">");
+    }
+    if (match("{")) {
+      auto result = std::make_shared<Expr>();
+      result->kind = Expr::Kind::RecordConstruct;
+      result->text = std::move(path);
+      if (!match("}")) {
+        do {
+          result->names.push_back(identifier().text);
+          expect(":");
+          result->children.push_back(parse_or());
+        } while (match(","));
+        expect("}");
+      }
+      return result;
+    }
+    if (match("(")) {
+      auto result = std::make_shared<Expr>();
+      result->kind = Expr::Kind::Construct;
+      result->text = std::move(path);
+      result->type_argument = std::move(type_argument);
+      if (!match(")")) {
+        do {
+          result->children.push_back(parse_or());
+        } while (match(","));
+        expect(")");
+      }
+      return result;
+    }
+    if (type_argument) fail(peek(), "type argument requires a constructor call");
+    if (const std::size_t dot = path.rfind('.'); dot != std::string::npos) {
+      const auto definition = types_.find(path.substr(0, dot));
+      if (definition != types_.end() &&
+          definition->second.kind == TypeDefinition::Kind::Variant) {
+        const std::string constructor = path.substr(dot + 1U);
+        const auto found = std::find_if(
+            definition->second.constructors.begin(), definition->second.constructors.end(),
+            [&](const VariantConstructor& item) { return item.name == constructor; });
+        if (found != definition->second.constructors.end() && !found->payload) {
+          auto result = std::make_shared<Expr>();
+          result->kind = Expr::Kind::Construct;
+          result->text = std::move(path);
+          return result;
+        }
+      }
     }
     return make_name(std::move(path));
   }
@@ -519,6 +677,7 @@ class FlatParser {
   }
 
   std::vector<Token> tokens_;
+  const TypeRegistry& types_;
   std::size_t cursor_{0};
 };
 
@@ -564,6 +723,7 @@ class Parser {
 
   DataType type();
   Value initial_value(DataType type);
+  TypeDefinition type_definition();
   State state();
   Transition transition();
   ExprPtr line_expression();
@@ -573,11 +733,13 @@ class Parser {
 
   std::vector<Token> tokens_;
   std::size_t cursor_{0};
+  TypeRegistry types_;
 };
 
 }  // namespace
 
 struct Program::Impl {
+  TypeRegistry types;
   std::vector<State> states;
   std::vector<Transition> transitions;
 };
@@ -614,7 +776,93 @@ DataType Parser::type() {
     expect(">");
     return DataType(DataType::Kind::Bag, std::move(item));
   }
-  fail(peek(), "expected bool, int, string, list, set, map, or bag type");
+  if (match("option")) {
+    expect("<");
+    DataType item = type();
+    expect(">");
+    return DataType(DataType::Kind::Option, std::move(item));
+  }
+  if (match("result")) {
+    expect("<");
+    DataType item = type();
+    expect(",");
+    DataType error = type();
+    expect(">");
+    return DataType(DataType::Kind::Result, std::move(item), std::move(error));
+  }
+  if (at(TokenKind::Identifier)) {
+    const Token name = take();
+    if (!types_.contains(name.text)) fail(name, "unknown nominal type '" + name.text + "'");
+    return DataType(DataType::Kind::Named, name.text);
+  }
+  fail(peek(), "expected a primitive, collection, option, result, or nominal type");
+}
+
+TypeDefinition Parser::type_definition() {
+  TypeDefinition result;
+  if (match("newtype")) {
+    result.kind = TypeDefinition::Kind::Newtype;
+    result.name = identifier();
+    expect("=");
+    result.underlying = type();
+    newline();
+    return result;
+  }
+  const bool record = match("record");
+  const bool variant = !record && match("variant");
+  const bool enumeration = !record && !variant && match("enum");
+  if (!record && !variant && !enumeration) fail(peek(), "expected type declaration");
+  result.kind = record ? TypeDefinition::Kind::Record : TypeDefinition::Kind::Variant;
+  result.name = identifier();
+  expect(":");
+  newline();
+  indent();
+  std::unordered_set<std::string> members;
+  while (!at(TokenKind::Dedent)) {
+    if (record) {
+      TypeField field;
+      field.name = identifier();
+      if (!members.insert(field.name).second) fail(peek(), "duplicate record field");
+      expect(":");
+      field.type = type();
+      newline();
+      result.fields.push_back(std::move(field));
+    } else {
+      VariantConstructor constructor;
+      constructor.name = identifier();
+      if (!members.insert(constructor.name).second) fail(peek(), "duplicate constructor");
+      if (match("(")) {
+        if (enumeration) fail(peek(), "enum constructors cannot carry payloads");
+        constructor.payload = type();
+        expect(")");
+      }
+      newline();
+      result.constructors.push_back(std::move(constructor));
+    }
+  }
+  dedent();
+  if ((record && result.fields.empty()) || (!record && result.constructors.empty())) {
+    fail(peek(), "type declaration must not be empty");
+  }
+  return result;
+}
+
+std::string type_identity(const DataType& type) {
+  switch (type.kind) {
+    case DataType::Kind::Bool: return "bool";
+    case DataType::Kind::Int: return "int";
+    case DataType::Kind::String: return "string";
+    case DataType::Kind::Named: return type.name;
+    case DataType::Kind::List: return "list<" + type_identity(*type.first) + ">";
+    case DataType::Kind::Set: return "set<" + type_identity(*type.first) + ">";
+    case DataType::Kind::Bag: return "bag<" + type_identity(*type.first) + ">";
+    case DataType::Kind::Option: return "option<" + type_identity(*type.first) + ">";
+    case DataType::Kind::Map:
+      return "map<" + type_identity(*type.first) + "," + type_identity(*type.second) + ">";
+    case DataType::Kind::Result:
+      return "result<" + type_identity(*type.first) + "," + type_identity(*type.second) + ">";
+  }
+  throw Error("invalid type");
 }
 
 Value Parser::initial_value(DataType expected_type) {
@@ -685,6 +933,72 @@ Value Parser::initial_value(DataType expected_type) {
     }
     return Value(std::move(value));
   }
+  if (expected_type.kind == DataType::Kind::Named) {
+    const TypeDefinition& definition = types_.at(expected_type.name);
+    expect(definition.name);
+    if (definition.kind == TypeDefinition::Kind::Newtype) {
+      expect("(");
+      Value item = initial_value(*definition.underlying);
+      expect(")");
+      return Value(ValueNewtype{definition.name, {std::move(item)}});
+    }
+    if (definition.kind == TypeDefinition::Kind::Record) {
+      expect("{");
+      ValueRecord record{definition.name, {}};
+      std::map<std::string, const TypeField*, std::less<>> fields;
+      for (const TypeField& field : definition.fields) fields.emplace(field.name, &field);
+      std::unordered_set<std::string> seen;
+      if (!match("}")) {
+        do {
+          const Token name = peek();
+          const std::string field_name = identifier();
+          const auto found = fields.find(field_name);
+          if (found == fields.end()) fail(name, "unknown record field '" + field_name + "'");
+          if (!seen.insert(field_name).second) fail(name, "duplicate record field");
+          expect(":");
+          record.fields.emplace_back(field_name, initial_value(found->second->type));
+        } while (match(","));
+        expect("}");
+      }
+      if (seen.size() != definition.fields.size()) fail(peek(), "record literal is missing fields");
+      return Value(std::move(record));
+    }
+    expect(".");
+    const Token constructor_token = peek();
+    const std::string constructor_name = identifier();
+    const auto found = std::find_if(
+        definition.constructors.begin(), definition.constructors.end(),
+        [&](const VariantConstructor& item) { return item.name == constructor_name; });
+    if (found == definition.constructors.end()) {
+      fail(constructor_token, "unknown constructor '" + constructor_name + "'");
+    }
+    ValueVariant variant{definition.name, constructor_name, {}};
+    if (found->payload) {
+      expect("(");
+      variant.payload.push_back(initial_value(*found->payload));
+      expect(")");
+    }
+    return Value(std::move(variant));
+  }
+  if (expected_type.kind == DataType::Kind::Option) {
+    if (match("none")) {
+      return Value(ValueVariant{type_identity(expected_type), "none", {}});
+    }
+    expect("some");
+    expect("(");
+    Value item = initial_value(*expected_type.first);
+    expect(")");
+    return Value(ValueVariant{type_identity(expected_type), "some", {std::move(item)}});
+  }
+  if (expected_type.kind == DataType::Kind::Result) {
+    const bool success = match("ok");
+    if (!success) expect("err");
+    expect("(");
+    Value item = initial_value(success ? *expected_type.first : *expected_type.second);
+    expect(")");
+    return Value(ValueVariant{type_identity(expected_type), success ? "ok" : "err",
+                              {std::move(item)}});
+  }
   expect("bag");
   expect("{");
   ValueBag value;
@@ -732,21 +1046,21 @@ ExprPtr Parser::line_expression() {
     flat.push_back(take());
   }
   newline();
-  FlatParser parser(std::move(flat));
+  FlatParser parser(std::move(flat), types_);
   auto result = parser.expression();
   parser.expect_end();
   return result;
 }
 
 ExprPtr Parser::block_expression() {
-  FlatParser parser(take_block_tokens());
+  FlatParser parser(take_block_tokens(), types_);
   auto result = parser.expression();
   parser.expect_end();
   return result;
 }
 
 std::shared_ptr<ActionExpr> Parser::block_action() {
-  FlatParser parser(take_block_tokens());
+  FlatParser parser(take_block_tokens(), types_);
   return parser.action();
 }
 
@@ -848,14 +1162,21 @@ std::shared_ptr<Program::Impl> Parser::program() {
   while (!at(TokenKind::End)) {
     if (at(TokenKind::Newline)) {
       take();
+    } else if (at("record") || at("variant") || at("enum") || at("newtype")) {
+      TypeDefinition definition = type_definition();
+      if (types_.contains(definition.name)) {
+        fail(peek(), "duplicate type '" + definition.name + "'");
+      }
+      types_.emplace(definition.name, std::move(definition));
     } else if (at("state")) {
       result->states.push_back(state());
     } else if (at("transition")) {
       result->transitions.push_back(transition());
     } else {
-      fail(peek(), "expected state or transition");
+      fail(peek(), "expected type, state, or transition declaration");
     }
   }
+  result->types = types_;
   return result;
 }
 
@@ -888,11 +1209,22 @@ DataType value_type(const Value& value) {
     case Value::Kind::Bag:
       if (value.as_bag().entries.empty()) throw Error("cannot infer empty bag type");
       return DataType(DataType::Kind::Bag, value_type(value.as_bag().entries.front().first));
+    case Value::Kind::Record:
+      return DataType(DataType::Kind::Named, value.as_record().type_id);
+    case Value::Kind::Variant:
+      if (value.as_variant().type_id.starts_with("option<") ||
+          value.as_variant().type_id.starts_with("result<")) {
+        throw Error("structural variant type needs its declared context");
+      }
+      return DataType(DataType::Kind::Named, value.as_variant().type_id);
+    case Value::Kind::Newtype:
+      return DataType(DataType::Kind::Named, value.as_newtype().type_id);
   }
   throw Error("invalid value kind");
 }
 
-bool value_matches_type(const Value& value, const DataType& type) {
+bool value_matches_type(const Value& value, const DataType& type,
+                        const TypeRegistry& types) {
   switch (type.kind) {
     case DataType::Kind::Bool: return value.kind() == Value::Kind::Bool;
     case DataType::Kind::Int: return value.kind() == Value::Kind::Int;
@@ -900,27 +1232,76 @@ bool value_matches_type(const Value& value, const DataType& type) {
     case DataType::Kind::List:
       if (value.kind() != Value::Kind::List) return false;
       return std::all_of(value.as_list().values.begin(), value.as_list().values.end(),
-                         [&](const Value& item) { return value_matches_type(item, *type.first); });
+                         [&](const Value& item) { return value_matches_type(item, *type.first, types); });
     case DataType::Kind::Set:
       if (value.kind() == Value::Kind::StringSet) {
         return type.first->kind == DataType::Kind::String;
       }
       if (value.kind() != Value::Kind::Set) return false;
       return std::all_of(value.as_set().values.begin(), value.as_set().values.end(),
-                         [&](const Value& item) { return value_matches_type(item, *type.first); });
+                         [&](const Value& item) { return value_matches_type(item, *type.first, types); });
     case DataType::Kind::Map:
       if (value.kind() != Value::Kind::Map) return false;
       return std::all_of(value.as_map().entries.begin(), value.as_map().entries.end(),
                          [&](const auto& entry) {
-                           return value_matches_type(entry.first, *type.first) &&
-                                  value_matches_type(entry.second, *type.second);
+                           return value_matches_type(entry.first, *type.first, types) &&
+                                  value_matches_type(entry.second, *type.second, types);
                          });
     case DataType::Kind::Bag:
       if (value.kind() != Value::Kind::Bag) return false;
       return std::all_of(value.as_bag().entries.begin(), value.as_bag().entries.end(),
                          [&](const auto& entry) {
-                           return value_matches_type(entry.first, *type.first);
+                           return value_matches_type(entry.first, *type.first, types);
                          });
+    case DataType::Kind::Named: {
+      const auto definition = types.find(type.name);
+      if (definition == types.end()) return false;
+      if (definition->second.kind == TypeDefinition::Kind::Record) {
+        if (value.kind() != Value::Kind::Record || value.as_record().type_id != type.name ||
+            value.as_record().fields.size() != definition->second.fields.size()) return false;
+        for (const TypeField& field : definition->second.fields) {
+          const auto found = std::lower_bound(
+              value.as_record().fields.begin(), value.as_record().fields.end(), field.name,
+              [](const auto& item, const std::string& name) { return item.first < name; });
+          if (found == value.as_record().fields.end() || found->first != field.name ||
+              !value_matches_type(found->second, field.type, types)) return false;
+        }
+        return true;
+      }
+      if (definition->second.kind == TypeDefinition::Kind::Newtype) {
+        return value.kind() == Value::Kind::Newtype &&
+               value.as_newtype().type_id == type.name &&
+               value_matches_type(value.as_newtype().payload.front(),
+                                  *definition->second.underlying, types);
+      }
+      if (value.kind() != Value::Kind::Variant || value.as_variant().type_id != type.name) {
+        return false;
+      }
+      const auto constructor = std::find_if(
+          definition->second.constructors.begin(), definition->second.constructors.end(),
+          [&](const VariantConstructor& item) {
+            return item.name == value.as_variant().constructor;
+          });
+      if (constructor == definition->second.constructors.end()) return false;
+      if (!constructor->payload) return value.as_variant().payload.empty();
+      return value.as_variant().payload.size() == 1U &&
+             value_matches_type(value.as_variant().payload.front(), *constructor->payload, types);
+    }
+    case DataType::Kind::Option:
+      if (value.kind() != Value::Kind::Variant ||
+          value.as_variant().type_id != type_identity(type)) return false;
+      if (value.as_variant().constructor == "none") return value.as_variant().payload.empty();
+      return value.as_variant().constructor == "some" && value.as_variant().payload.size() == 1U &&
+             value_matches_type(value.as_variant().payload.front(), *type.first, types);
+    case DataType::Kind::Result:
+      if (value.kind() != Value::Kind::Variant ||
+          value.as_variant().type_id != type_identity(type) ||
+          value.as_variant().payload.size() != 1U) return false;
+      if (value.as_variant().constructor == "ok") {
+        return value_matches_type(value.as_variant().payload.front(), *type.first, types);
+      }
+      return value.as_variant().constructor == "err" &&
+             value_matches_type(value.as_variant().payload.front(), *type.second, types);
   }
   return false;
 }
@@ -937,33 +1318,71 @@ const Field& find_field(const State& state, std::string_view name) {
 using TypeEnvironment = std::map<std::string, DataType, std::less<>>;
 
 DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
-                    const TypeEnvironment& event, TypeEnvironment locals) {
+                    const TypeEnvironment& event, TypeEnvironment locals,
+                    const TypeRegistry& types) {
   if (!expr) throw Error("missing expression");
   switch (expr->kind) {
     case Expr::Kind::Literal: return value_type(*expr->literal);
     case Expr::Kind::Name: {
       if (expr->text == "round") return int_type();
-      std::string name = expr->text;
-      if (name.starts_with("before.")) {
-        name = name.substr(name.find('.') + 1);
-        const auto found = state.find(name);
-        if (found == state.end()) throw Error("unknown state field '" + name + "'");
-        return found->second;
+      std::string path = expr->text;
+      std::size_t cursor = 0;
+      auto next_component = [&]() {
+        const std::size_t dot = path.find('.', cursor);
+        std::string component = path.substr(cursor, dot == std::string::npos ? dot : dot - cursor);
+        cursor = dot == std::string::npos ? path.size() : dot + 1U;
+        return component;
+      };
+      std::string root = next_component();
+      DataType current;
+      bool found_root = false;
+      if (root == "before") {
+        if (cursor == path.size()) throw Error("before requires a state field");
+        root = next_component();
+        const auto found = state.find(root);
+        if (found == state.end()) throw Error("unknown state field '" + root + "'");
+        current = found->second;
+        found_root = true;
+      } else if (const auto found = locals.find(root); found != locals.end()) {
+        current = found->second;
+        found_root = true;
+      } else if (const auto found = event.find(root); found != event.end()) {
+        current = found->second;
+        found_root = true;
+      } else if (const auto found = state.find(root); found != state.end()) {
+        current = found->second;
+        found_root = true;
       }
-      if (const auto found = locals.find(name); found != locals.end()) return found->second;
-      if (const auto found = event.find(name); found != event.end()) return found->second;
-      if (const auto found = state.find(name); found != state.end()) return found->second;
-      throw Error("unknown value '" + name + "'");
+      if (!found_root) throw Error("unknown value '" + root + "'");
+      while (cursor < path.size()) {
+        const std::string field_name = next_component();
+        if (current.kind != DataType::Kind::Named) {
+          throw Error("field access requires a record value");
+        }
+        const TypeDefinition& definition = types.at(current.name);
+        if (definition.kind != TypeDefinition::Kind::Record) {
+          throw Error("field access requires a record value");
+        }
+        const auto field = std::find_if(definition.fields.begin(), definition.fields.end(),
+                                        [&](const TypeField& item) {
+                                          return item.name == field_name;
+                                        });
+        if (field == definition.fields.end()) {
+          throw Error("record '" + definition.name + "' has no field '" + field_name + "'");
+        }
+        current = field->type;
+      }
+      return current;
     }
     case Expr::Kind::Unary: {
-      const DataType operand = infer_type(expr->left, state, event, std::move(locals));
+      const DataType operand = infer_type(expr->left, state, event, std::move(locals), types);
       const DataType required = expr->text == "not" ? bool_type() : int_type();
       if (operand != required) throw Error("wrong operand type for '" + expr->text + "'");
       return required;
     }
     case Expr::Kind::Binary: {
-      const DataType left = infer_type(expr->left, state, event, locals);
-      const DataType right = infer_type(expr->right, state, event, std::move(locals));
+      const DataType left = infer_type(expr->left, state, event, locals, types);
+      const DataType right = infer_type(expr->right, state, event, std::move(locals), types);
       if (expr->text == "and" || expr->text == "or") {
         if (left.kind != DataType::Kind::Bool || right.kind != DataType::Kind::Bool) {
           throw Error("logical operators need bool operands");
@@ -991,46 +1410,206 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
       return bool_type();
     }
     case Expr::Kind::Exists: {
-      const DataType domain = infer_type(expr->left, state, event, locals);
+      const DataType domain = infer_type(expr->left, state, event, locals, types);
       if (domain.kind != DataType::Kind::Set) throw Error("exists needs a finite set domain");
       locals.insert_or_assign(expr->text, *domain.first);
-      if (infer_type(expr->right, state, event, std::move(locals)).kind !=
+      if (infer_type(expr->right, state, event, std::move(locals), types).kind !=
           DataType::Kind::Bool) {
         throw Error("exists predicate must be bool");
       }
       return bool_type();
     }
     case Expr::Kind::Count:
-      if (const DataType collection = infer_type(expr->left, state, event, std::move(locals));
+      if (const DataType collection = infer_type(expr->left, state, event, std::move(locals), types);
           collection.kind != DataType::Kind::List && collection.kind != DataType::Kind::Set &&
           collection.kind != DataType::Kind::Map && collection.kind != DataType::Kind::Bag) {
         throw Error("count needs a finite collection");
       }
       return int_type();
     case Expr::Kind::SetInsert:
-    case Expr::Kind::SetErase:
-      const DataType collection = infer_type(expr->left, state, event, locals);
+    case Expr::Kind::SetErase: {
+      const DataType collection = infer_type(expr->left, state, event, locals, types);
       if (collection.kind != DataType::Kind::Set ||
-          infer_type(expr->right, state, event, std::move(locals)) != *collection.first) {
+          infer_type(expr->right, state, event, std::move(locals), types) != *collection.first) {
         throw Error("insert/erase item type must match finite set element type");
       }
       return collection;
+    }
+    case Expr::Kind::RecordConstruct: {
+      const auto definition = types.find(expr->text);
+      if (definition == types.end() || definition->second.kind != TypeDefinition::Kind::Record) {
+        throw Error("unknown record constructor '" + expr->text + "'");
+      }
+      if (expr->names.size() != definition->second.fields.size()) {
+        throw Error("record constructor '" + expr->text + "' has missing fields");
+      }
+      std::unordered_set<std::string> seen;
+      for (std::size_t index = 0; index < expr->names.size(); ++index) {
+        if (!seen.insert(expr->names[index]).second) throw Error("duplicate record field");
+        const auto field = std::find_if(
+            definition->second.fields.begin(), definition->second.fields.end(),
+            [&](const TypeField& item) { return item.name == expr->names[index]; });
+        if (field == definition->second.fields.end()) {
+          throw Error("unknown field '" + expr->names[index] + "' in record '" + expr->text + "'");
+        }
+        if (infer_type(expr->children[index], state, event, locals, types) != field->type) {
+          throw Error("wrong value type for record field '" + field->name + "'");
+        }
+      }
+      DataType result(DataType::Kind::Named, expr->text);
+      expr->resolved_type = result;
+      return result;
+    }
+    case Expr::Kind::Construct: {
+      if (expr->text == "none") {
+        if (!expr->children.empty() || !expr->type_argument) {
+          throw Error("none<T>() requires one type argument and no value");
+        }
+        DataType result(DataType::Kind::Option, *expr->type_argument);
+        expr->resolved_type = result;
+        return result;
+      }
+      if (expr->text == "some") {
+        if (expr->children.size() != 1U || expr->type_argument) {
+          throw Error("some(value) takes exactly one value");
+        }
+        DataType result(DataType::Kind::Option,
+                        infer_type(expr->children.front(), state, event, locals, types));
+        expr->resolved_type = result;
+        return result;
+      }
+      if (expr->text == "ok" || expr->text == "err") {
+        if (expr->children.size() != 1U || !expr->type_argument) {
+          throw Error(expr->text + "<T>(value) requires the opposite result type");
+        }
+        const DataType payload = infer_type(expr->children.front(), state, event, locals, types);
+        DataType result = expr->text == "ok"
+                              ? DataType(DataType::Kind::Result, payload, *expr->type_argument)
+                              : DataType(DataType::Kind::Result, *expr->type_argument, payload);
+        expr->resolved_type = result;
+        return result;
+      }
+      if (const auto definition = types.find(expr->text);
+          definition != types.end() && definition->second.kind == TypeDefinition::Kind::Newtype) {
+        if (expr->children.size() != 1U || expr->type_argument ||
+            infer_type(expr->children.front(), state, event, locals, types) !=
+                *definition->second.underlying) {
+          throw Error("newtype constructor '" + expr->text + "' has the wrong payload");
+        }
+        DataType result(DataType::Kind::Named, expr->text);
+        expr->resolved_type = result;
+        return result;
+      }
+      const std::size_t dot = expr->text.rfind('.');
+      if (dot == std::string::npos) throw Error("unknown constructor '" + expr->text + "'");
+      const std::string type_name = expr->text.substr(0, dot);
+      const std::string constructor_name = expr->text.substr(dot + 1U);
+      const auto definition = types.find(type_name);
+      if (definition == types.end() || definition->second.kind != TypeDefinition::Kind::Variant) {
+        throw Error("unknown variant type '" + type_name + "'");
+      }
+      const auto constructor = std::find_if(
+          definition->second.constructors.begin(), definition->second.constructors.end(),
+          [&](const VariantConstructor& item) { return item.name == constructor_name; });
+      if (constructor == definition->second.constructors.end()) {
+        throw Error("unknown constructor '" + expr->text + "'");
+      }
+      if (static_cast<bool>(constructor->payload) != (expr->children.size() == 1U) ||
+          expr->children.size() > 1U || expr->type_argument) {
+        throw Error("constructor '" + expr->text + "' has the wrong arity");
+      }
+      if (constructor->payload &&
+          infer_type(expr->children.front(), state, event, locals, types) !=
+              *constructor->payload) {
+        throw Error("constructor '" + expr->text + "' has the wrong payload type");
+      }
+      DataType result(DataType::Kind::Named, type_name);
+      expr->resolved_type = result;
+      return result;
+    }
+    case Expr::Kind::Match: {
+      const DataType scrutinee = infer_type(expr->left, state, event, locals, types);
+      std::map<std::string, std::optional<DataType>, std::less<>> constructors;
+      if (scrutinee.kind == DataType::Kind::Option) {
+        constructors.emplace("none", std::nullopt);
+        constructors.emplace("some", *scrutinee.first);
+      } else if (scrutinee.kind == DataType::Kind::Result) {
+        constructors.emplace("ok", *scrutinee.first);
+        constructors.emplace("err", *scrutinee.second);
+      } else if (scrutinee.kind == DataType::Kind::Named) {
+        const TypeDefinition& definition = types.at(scrutinee.name);
+        if (definition.kind != TypeDefinition::Kind::Variant) {
+          throw Error("match requires a variant, enum, option, or result");
+        }
+        for (const VariantConstructor& constructor : definition.constructors) {
+          constructors.emplace(constructor.name, constructor.payload);
+        }
+      } else {
+        throw Error("match requires a variant, enum, option, or result");
+      }
+      std::set<std::string, std::less<>> covered;
+      bool wildcard = false;
+      std::optional<DataType> result_type;
+      for (std::size_t index = 0; index < expr->arms.size(); ++index) {
+        const MatchArm& arm = expr->arms[index];
+        TypeEnvironment arm_locals = locals;
+        if (arm.wildcard) {
+          if (wildcard || index + 1U != expr->arms.size()) {
+            throw Error("match wildcard must be the unique final arm");
+          }
+          wildcard = true;
+        } else {
+          const std::size_t dot = arm.constructor.rfind('.');
+          const std::string constructor_name =
+              dot == std::string::npos ? arm.constructor : arm.constructor.substr(dot + 1U);
+          if (dot != std::string::npos && scrutinee.kind == DataType::Kind::Named &&
+              arm.constructor.substr(0, dot) != scrutinee.name) {
+            throw Error("pattern constructor belongs to a different variant");
+          }
+          const auto constructor = constructors.find(constructor_name);
+          if (constructor == constructors.end()) {
+            throw Error("unknown pattern constructor '" + arm.constructor + "'");
+          }
+          if (!covered.insert(constructor_name).second) {
+            throw Error("duplicate pattern constructor '" + constructor_name + "'");
+          }
+          if (constructor->second) {
+            if (arm.binding.empty()) throw Error("payload pattern requires a binding");
+            arm_locals.insert_or_assign(arm.binding, *constructor->second);
+          } else if (!arm.binding.empty()) {
+            throw Error("payload-free constructor cannot bind a value");
+          }
+        }
+        const DataType arm_type = infer_type(arm.body, state, event, std::move(arm_locals), types);
+        if (!result_type) result_type = arm_type;
+        else if (*result_type != arm_type) throw Error("match arms have different result types");
+      }
+      if (!result_type) throw Error("match requires at least one arm");
+      if (!wildcard && covered.size() != constructors.size()) {
+        throw Error("non-exhaustive match expression");
+      }
+      expr->resolved_type = *result_type;
+      return *result_type;
+    }
   }
   throw Error("invalid expression");
 }
 
 void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironment& state,
-                   const TypeEnvironment& event, std::unordered_set<std::string>& labels) {
+                   const TypeEnvironment& event, std::unordered_set<std::string>& labels,
+                   const TypeRegistry& types) {
   if (!action) return;
   if (action->kind != ActionExpr::Kind::Call) {
-    for (const auto& child : action->children) verify_action(child, state, event, labels);
+    for (const auto& child : action->children) {
+      verify_action(child, state, event, labels, types);
+    }
     return;
   }
   if (!labels.insert(action->label).second) {
     throw Error("duplicate action label '" + action->label + "'");
   }
   for (const ExprPtr& argument : action->arguments) {
-    static_cast<void>(infer_type(argument, state, event, {}));
+    static_cast<void>(infer_type(argument, state, event, {}, types));
   }
   if (const auto parameter = event.find(action->context);
       parameter != event.end() && parameter->second.kind != DataType::Kind::String) {
@@ -1052,9 +1631,13 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
   if (!expr) return;
   if (expr->kind == Expr::Kind::Name) {
     if (expr->text.starts_with("before.")) {
-      reads.insert(expr->text.substr(expr->text.find('.') + 1));
-    } else if (!shadowed.contains(expr->text) && state.contains(expr->text)) {
-      reads.insert(expr->text);
+      std::string root = expr->text.substr(expr->text.find('.') + 1);
+      if (const std::size_t dot = root.find('.'); dot != std::string::npos) root.resize(dot);
+      reads.insert(std::move(root));
+    } else {
+      std::string root = expr->text;
+      if (const std::size_t dot = root.find('.'); dot != std::string::npos) root.resize(dot);
+      if (!shadowed.contains(root) && state.contains(root)) reads.insert(std::move(root));
     }
     return;
   }
@@ -1064,9 +1647,21 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
     collect_reads(expr->right, state, std::move(shadowed), reads);
     return;
   }
+  if (expr->kind == Expr::Kind::Match) {
+    collect_reads(expr->left, state, shadowed, reads);
+    for (const MatchArm& arm : expr->arms) {
+      auto arm_shadowed = shadowed;
+      if (!arm.binding.empty()) arm_shadowed.insert(arm.binding);
+      collect_reads(arm.body, state, std::move(arm_shadowed), reads);
+    }
+    return;
+  }
   collect_reads(expr->left, state, shadowed, reads);
   collect_reads(expr->right, state, shadowed, reads);
-  collect_reads(expr->third, state, std::move(shadowed), reads);
+  collect_reads(expr->third, state, shadowed, reads);
+  for (const ExprPtr& child : expr->children) {
+    collect_reads(child, state, shadowed, reads);
+  }
 }
 
 void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
@@ -1140,7 +1735,7 @@ void verify_program(Program::Impl& program) {
         }
       }
     }
-    if (infer_type(transition.condition, state_types, event_types, {}).kind !=
+    if (infer_type(transition.condition, state_types, event_types, {}, program.types).kind !=
         DataType::Kind::Bool) {
       throw Error("where clause in transition '" + transition.name + "' must be bool");
     }
@@ -1150,12 +1745,12 @@ void verify_program(Program::Impl& program) {
       if (!assigned.insert(assignment.field).second) {
         throw Error("field '" + assignment.field + "' is assigned twice");
       }
-      if (infer_type(assignment.value, state_types, event_types, {}) != field.type) {
+      if (infer_type(assignment.value, state_types, event_types, {}, program.types) != field.type) {
         throw Error("assignment to '" + assignment.field + "' has the wrong type");
       }
     }
     std::unordered_set<std::string> labels;
-    verify_action(transition.action, state_types, event_types, labels);
+    verify_action(transition.action, state_types, event_types, labels, program.types);
 
     std::set<std::string, std::less<>> shadowed;
     for (const Parameter& parameter : transition.parameters) shadowed.insert(parameter.name);
@@ -1173,7 +1768,7 @@ void verify_program(Program::Impl& program) {
     TypeEnvironment state_types;
     for (const Field& field : state.fields) state_types.emplace(field.name, field.type);
     for (const ExprPtr& invariant : state.invariants) {
-      if (infer_type(invariant, state_types, {}, {}).kind != DataType::Kind::Bool) {
+      if (infer_type(invariant, state_types, {}, {}, program.types).kind != DataType::Kind::Bool) {
         throw Error("invariant in state '" + state.name + "' must be bool");
       }
     }
@@ -1206,6 +1801,9 @@ int compare_values(const Value& left, const Value& right) {
     case Value::Kind::Set:
     case Value::Kind::Map:
     case Value::Kind::Bag:
+    case Value::Kind::Record:
+    case Value::Kind::Variant:
+    case Value::Kind::Newtype:
       throw Error("composite values only support equality in ordered expressions");
   }
   throw Error("invalid comparison");
@@ -1268,6 +1866,31 @@ int canonical_value_order(const Value& left, const Value& right) {
                                  return a.second < b.second ? -1 : a.second > b.second ? 1 : 0;
                                });
   }
+  if (left.kind() == Value::Kind::Record) {
+    const auto& lhs = left.as_record();
+    const auto& rhs = right.as_record();
+    if (lhs.type_id != rhs.type_id) return lhs.type_id < rhs.type_id ? -1 : 1;
+    return lexicographic_order(lhs.fields.begin(), lhs.fields.end(),
+                               rhs.fields.begin(), rhs.fields.end(),
+                               [](const auto& a, const auto& b) {
+                                 if (a.first != b.first) return a.first < b.first ? -1 : 1;
+                                 return canonical_value_order(a.second, b.second);
+                               });
+  }
+  if (left.kind() == Value::Kind::Variant) {
+    const auto& lhs = left.as_variant();
+    const auto& rhs = right.as_variant();
+    if (lhs.type_id != rhs.type_id) return lhs.type_id < rhs.type_id ? -1 : 1;
+    if (lhs.constructor != rhs.constructor) return lhs.constructor < rhs.constructor ? -1 : 1;
+    return lexicographic_order(lhs.payload.begin(), lhs.payload.end(),
+                               rhs.payload.begin(), rhs.payload.end(), canonical_value_order);
+  }
+  if (left.kind() == Value::Kind::Newtype) {
+    const auto& lhs = left.as_newtype();
+    const auto& rhs = right.as_newtype();
+    if (lhs.type_id != rhs.type_id) return lhs.type_id < rhs.type_id ? -1 : 1;
+    return canonical_value_order(lhs.payload.front(), rhs.payload.front());
+  }
   return compare_values(left, right);
 }
 
@@ -1292,21 +1915,53 @@ Value resolve_name(const std::string& name, const Environment& environment) {
     }
     return Value(static_cast<std::int64_t>(environment.round));
   }
-  const auto local = environment.locals.find(name);
-  if (local != environment.locals.end()) return local->second;
-  if (name.starts_with("before.")) {
-    const std::string field = name.substr(name.find('.') + 1);
-    const auto found = environment.state.find(field);
-    if (found == environment.state.end()) throw Error("unknown state field '" + field + "'");
-    return found->second;
+  std::size_t cursor = 0;
+  auto next_component = [&]() {
+    const std::size_t dot = name.find('.', cursor);
+    std::string component = name.substr(cursor, dot == std::string::npos ? dot : dot - cursor);
+    cursor = dot == std::string::npos ? name.size() : dot + 1U;
+    return component;
+  };
+  std::string root = next_component();
+  Value value(false);
+  bool found_root = false;
+  if (root == "before") {
+    if (cursor == name.size()) throw Error("before requires a state field");
+    root = next_component();
+    const auto found = environment.state.find(root);
+    if (found == environment.state.end()) throw Error("unknown state field '" + root + "'");
+    value = found->second;
+    found_root = true;
+  } else if (const auto local = environment.locals.find(root);
+             local != environment.locals.end()) {
+    value = local->second;
+    found_root = true;
+  } else if (environment.event != nullptr) {
+    const auto found = environment.event->fields.find(root);
+    if (found != environment.event->fields.end()) {
+      value = found->second;
+      found_root = true;
+    }
   }
-  if (environment.event != nullptr) {
-    const auto found = environment.event->fields.find(name);
-    if (found != environment.event->fields.end()) return found->second;
+  if (!found_root) {
+    const auto field = environment.state.find(root);
+    if (field != environment.state.end()) {
+      value = field->second;
+      found_root = true;
+    }
   }
-  const auto field = environment.state.find(name);
-  if (field != environment.state.end()) return field->second;
-  throw Error("unknown value '" + name + "'");
+  if (!found_root) throw Error("unknown value '" + root + "'");
+  while (cursor < name.size()) {
+    const std::string field_name = next_component();
+    const auto field = std::lower_bound(
+        value.as_record().fields.begin(), value.as_record().fields.end(), field_name,
+        [](const auto& item, const std::string& target) { return item.first < target; });
+    if (field == value.as_record().fields.end() || field->first != field_name) {
+      throw Error("record has no field '" + field_name + "'");
+    }
+    value = field->second;
+  }
+  return value;
 }
 
 Value evaluate(const ExprPtr& expr, Environment& environment) {
@@ -1409,7 +2064,10 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         case Value::Kind::Bag: size = collection.as_bag().entries.size(); break;
         case Value::Kind::Bool:
         case Value::Kind::Int:
-        case Value::Kind::String: throw Error("count needs a finite collection");
+        case Value::Kind::String:
+        case Value::Kind::Record:
+        case Value::Kind::Variant:
+        case Value::Kind::Newtype: throw Error("count needs a finite collection");
       }
       if (size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
         throw Error("set size exceeds int range");
@@ -1437,6 +2095,55 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
             result.values.end());
       }
       return Value(std::move(result));
+    }
+    case Expr::Kind::RecordConstruct: {
+      ValueRecord record{expr->text, {}};
+      for (std::size_t index = 0; index < expr->names.size(); ++index) {
+        record.fields.emplace_back(expr->names[index], evaluate(expr->children[index], environment));
+      }
+      return Value(std::move(record));
+    }
+    case Expr::Kind::Construct: {
+      if (!expr->resolved_type) throw Error("unverified constructor expression");
+      const std::string identity = type_identity(*expr->resolved_type);
+      if (expr->text == "none") return Value(ValueVariant{identity, "none", {}});
+      if (expr->text == "some" || expr->text == "ok" || expr->text == "err") {
+        return Value(ValueVariant{identity, expr->text,
+                                  {evaluate(expr->children.front(), environment)}});
+      }
+      if (expr->text.find('.') == std::string::npos) {
+        return Value(ValueNewtype{expr->text,
+                                  {evaluate(expr->children.front(), environment)}});
+      }
+      const std::size_t dot = expr->text.rfind('.');
+      ValueVariant variant{expr->text.substr(0, dot), expr->text.substr(dot + 1U), {}};
+      if (!expr->children.empty()) {
+        variant.payload.push_back(evaluate(expr->children.front(), environment));
+      }
+      return Value(std::move(variant));
+    }
+    case Expr::Kind::Match: {
+      const Value scrutinee = evaluate(expr->left, environment);
+      const ValueVariant& variant = scrutinee.as_variant();
+      for (const MatchArm& arm : expr->arms) {
+        const std::size_t dot = arm.constructor.rfind('.');
+        const std::string constructor =
+            dot == std::string::npos ? arm.constructor : arm.constructor.substr(dot + 1U);
+        if (!arm.wildcard && constructor != variant.constructor) continue;
+        std::optional<Value> previous;
+        if (!arm.binding.empty()) {
+          const auto found = environment.locals.find(arm.binding);
+          if (found != environment.locals.end()) previous = found->second;
+          environment.locals.insert_or_assign(arm.binding, variant.payload.front());
+        }
+        Value result = evaluate(arm.body, environment);
+        if (!arm.binding.empty()) {
+          if (previous) environment.locals.insert_or_assign(arm.binding, *previous);
+          else environment.locals.erase(arm.binding);
+        }
+        return result;
+      }
+      throw Error("verified match had no runtime arm");
     }
   }
   throw Error("invalid expression");
@@ -1519,7 +2226,8 @@ Fragment build_plan(const std::shared_ptr<ActionExpr>& action, Environment& envi
   return result;
 }
 
-void validate_event(const Transition& transition, const Event& event) {
+void validate_event(const Transition& transition, const Event& event,
+                    const TypeRegistry& types) {
   if (event.fields.size() != transition.parameters.size()) {
     throw Error("event '" + event.name + "' has the wrong number of fields");
   }
@@ -1528,7 +2236,7 @@ void validate_event(const Transition& transition, const Event& event) {
     if (found == event.fields.end()) {
       throw Error("event '" + event.name + "' is missing field '" + parameter.name + "'");
     }
-    if (!value_matches_type(found->second, parameter.type)) {
+    if (!value_matches_type(found->second, parameter.type, types)) {
       throw Error("event field '" + parameter.name + "' has the wrong type");
     }
   }
@@ -1603,6 +2311,34 @@ Value::Value(ValueBag value) : kind_(Kind::Bag) {
   }
   bag_value_ = std::make_shared<const ValueBag>(std::move(normalized));
 }
+Value::Value(ValueRecord value) : kind_(Kind::Record) {
+  if (value.type_id.empty()) throw Error("record type identity must not be empty");
+  std::sort(value.fields.begin(), value.fields.end(),
+            [](const auto& left, const auto& right) { return left.first < right.first; });
+  if (std::any_of(value.fields.begin(), value.fields.end(),
+                  [](const auto& field) { return field.first.empty(); })) {
+    throw Error("record field name must not be empty");
+  }
+  if (std::adjacent_find(value.fields.begin(), value.fields.end(),
+                         [](const auto& left, const auto& right) {
+                           return left.first == right.first;
+                         }) != value.fields.end()) {
+    throw Error("duplicate record field");
+  }
+  record_value_ = std::make_shared<const ValueRecord>(std::move(value));
+}
+Value::Value(ValueVariant value) : kind_(Kind::Variant) {
+  if (value.type_id.empty() || value.constructor.empty()) {
+    throw Error("variant identity must not be empty");
+  }
+  if (value.payload.size() > 1U) throw Error("variant supports zero or one payload");
+  variant_value_ = std::make_shared<const ValueVariant>(std::move(value));
+}
+Value::Value(ValueNewtype value) : kind_(Kind::Newtype) {
+  if (value.type_id.empty()) throw Error("newtype identity must not be empty");
+  if (value.payload.size() != 1U) throw Error("newtype requires exactly one payload");
+  newtype_value_ = std::make_shared<const ValueNewtype>(std::move(value));
+}
 
 Value::Kind Value::kind() const noexcept { return kind_; }
 bool Value::as_bool() const {
@@ -1637,6 +2373,18 @@ const ValueBag& Value::as_bag() const {
   if (kind_ != Kind::Bag) throw Error("expected bag value");
   return *bag_value_;
 }
+const ValueRecord& Value::as_record() const {
+  if (kind_ != Kind::Record) throw Error("expected record value");
+  return *record_value_;
+}
+const ValueVariant& Value::as_variant() const {
+  if (kind_ != Kind::Variant) throw Error("expected variant value");
+  return *variant_value_;
+}
+const ValueNewtype& Value::as_newtype() const {
+  if (kind_ != Kind::Newtype) throw Error("expected newtype value");
+  return *newtype_value_;
+}
 
 bool operator==(const Value& left, const Value& right) {
   if (left.kind_ != right.kind_) return false;
@@ -1649,6 +2397,9 @@ bool operator==(const Value& left, const Value& right) {
     case Value::Kind::Set: return *left.generic_set_value_ == *right.generic_set_value_;
     case Value::Kind::Map: return *left.map_value_ == *right.map_value_;
     case Value::Kind::Bag: return *left.bag_value_ == *right.bag_value_;
+    case Value::Kind::Record: return *left.record_value_ == *right.record_value_;
+    case Value::Kind::Variant: return *left.variant_value_ == *right.variant_value_;
+    case Value::Kind::Newtype: return *left.newtype_value_ == *right.newtype_value_;
   }
   return false;
 }
@@ -1712,7 +2463,7 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     std::vector<const Transition*> enabled;
     for (const Transition& transition : program.transitions) {
       if (transition.from != current_state_ || transition.event != event.name) continue;
-      validate_event(transition, event);
+      validate_event(transition, event, program.types);
       Environment environment{values_, &event, {}, round_};
       if (evaluate(transition.condition, environment).as_bool()) enabled.push_back(&transition);
     }
@@ -1746,7 +2497,7 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     for (const Assignment& assignment : transition.assignments) {
       Value value = evaluate(assignment.value, environment);
       const Field& field = find_field(target, assignment.field);
-      if (!value_matches_type(value, field.type)) {
+      if (!value_matches_type(value, field.type, program.types)) {
         throw Error("assignment to '" + assignment.field + "' has the wrong type");
       }
       decision.writes.insert_or_assign(assignment.field, std::move(value));
@@ -1901,6 +2652,25 @@ std::string value_text(const Value& value) {
       }
       return result + "}";
     }
+    case Value::Kind::Record: {
+      std::string result = value.as_record().type_id + "{";
+      for (std::size_t index = 0; index < value.as_record().fields.size(); ++index) {
+        if (index != 0) result += ", ";
+        result += value.as_record().fields[index].first + ": " +
+                  value_text(value.as_record().fields[index].second);
+      }
+      return result + "}";
+    }
+    case Value::Kind::Variant: {
+      std::string result = value.as_variant().type_id + "." + value.as_variant().constructor;
+      if (!value.as_variant().payload.empty()) {
+        result += "(" + value_text(value.as_variant().payload.front()) + ")";
+      }
+      return result;
+    }
+    case Value::Kind::Newtype:
+      return value.as_newtype().type_id + "(" +
+             value_text(value.as_newtype().payload.front()) + ")";
   }
   throw Error("invalid value kind");
 }
@@ -1969,6 +2739,15 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
     case Expr::Kind::Exists: features.insert(LanguageFeature::ExistentialSearch); break;
     case Expr::Kind::SetInsert:
     case Expr::Kind::SetErase: features.insert(LanguageFeature::PureSetUpdate); break;
+    case Expr::Kind::Construct:
+    case Expr::Kind::RecordConstruct:
+      features.insert(LanguageFeature::AlgebraicDataTypes);
+      features.insert(LanguageFeature::NominalTypes);
+      break;
+    case Expr::Kind::Match:
+      features.insert(LanguageFeature::AlgebraicDataTypes);
+      features.insert(LanguageFeature::ExhaustiveMatch);
+      break;
     case Expr::Kind::Literal:
     case Expr::Kind::Name:
     case Expr::Kind::Unary:
@@ -1978,6 +2757,8 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
   collect_features(expr->left, features);
   collect_features(expr->right, features);
   collect_features(expr->third, features);
+  for (const ExprPtr& child : expr->children) collect_features(child, features);
+  for (const MatchArm& arm : expr->arms) collect_features(arm.body, features);
 }
 
 void collect_action_features(const std::shared_ptr<ActionExpr>& action,
@@ -1993,6 +2774,10 @@ void collect_type_features(const DataType& type, FeatureSet& features) {
       type.kind == DataType::Kind::Map || type.kind == DataType::Kind::Bag) {
     features.insert(LanguageFeature::FiniteCollections);
   }
+  if (type.kind == DataType::Kind::Named) features.insert(LanguageFeature::NominalTypes);
+  if (type.kind == DataType::Kind::Option || type.kind == DataType::Kind::Result) {
+    features.insert(LanguageFeature::AlgebraicDataTypes);
+  }
   if (type.first) collect_type_features(*type.first, features);
   if (type.second) collect_type_features(*type.second, features);
 }
@@ -2003,6 +2788,18 @@ FeatureSet required_features(const Program& program) {
   if (program.empty()) throw Error("cannot inspect features of an empty program");
   FeatureSet result{LanguageFeature::TypedState, LanguageFeature::ParallelEventBag};
   const Program::Impl& implementation = *program.implementation();
+  if (!implementation.types.empty()) result.insert(LanguageFeature::NominalTypes);
+  for (const auto& [name, definition] : implementation.types) {
+    static_cast<void>(name);
+    if (definition.kind == TypeDefinition::Kind::Variant) {
+      result.insert(LanguageFeature::AlgebraicDataTypes);
+    }
+    if (definition.underlying) collect_type_features(*definition.underlying, result);
+    for (const TypeField& field : definition.fields) collect_type_features(field.type, result);
+    for (const VariantConstructor& constructor : definition.constructors) {
+      if (constructor.payload) collect_type_features(*constructor.payload, result);
+    }
+  }
   for (const State& state : implementation.states) {
     for (const Field& field : state.fields) {
       collect_type_features(field.type, result);
@@ -2044,6 +2841,9 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::ParallelEventBag: return "parallel-event-bag";
     case LanguageFeature::EqualMerge: return "equal-merge";
     case LanguageFeature::UnionMerge: return "union-merge";
+    case LanguageFeature::AlgebraicDataTypes: return "algebraic-data-types";
+    case LanguageFeature::NominalTypes: return "nominal-types";
+    case LanguageFeature::ExhaustiveMatch: return "exhaustive-match";
   }
   return "unknown";
 }

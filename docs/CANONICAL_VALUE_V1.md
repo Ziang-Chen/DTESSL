@@ -1,7 +1,8 @@
 # Canonical Value Format v1
 
 This format is a backend-neutral, length-delimited encoding for the value kinds
-implemented in DTESSL `v0.1.0`. It is not the future canonical module format.
+implemented since DTESSL `v0.1.0` and extended additively in `v0.1.x`. It is
+not the future canonical module format.
 
 ## Common rules
 
@@ -12,6 +13,8 @@ implemented in DTESSL `v0.1.0`. It is not the future canonical module format.
   UTF-8; strict UTF-8 validation is a later lexer/schema gate.
 - Sets are strictly sorted by bytewise string order and contain no duplicates.
 - Decoding is bounded by explicit byte, string and set-cardinality limits.
+- Record fields are strictly sorted by field name. Nominal type identities and
+  variant constructor identities are encoded as strings and cannot be empty.
 
 ## Tags
 
@@ -25,6 +28,9 @@ implemented in DTESSL `v0.1.0`. It is not the future canonical module format.
 | `05` | generic set | varuint count followed by strictly canonical-sorted values |
 | `06` | map | varuint count followed by strictly key-sorted key/value canonical pairs |
 | `07` | bag | varuint distinct-item count followed by sorted value/positive-varuint-count pairs |
+| `08` | record | type identity, field count, then strictly name-sorted name/value pairs |
+| `09` | variant/enum/option/result | type identity, constructor identity, payload count (zero or one), then payload |
+| `0a` | newtype | type identity followed by exactly one canonical value |
 
 Unknown tags are invalid.
 
@@ -36,6 +42,8 @@ true              00 01
 42                01 00 00 00 00 00 00 00 2a
 "a"               02 01 61
 {"a", "b"}        03 02 01 61 01 62
+SessionId("x")    0a 09 53 65 73 73 69 6f 6e 49 64 02 01 78
+Phase.Running     09 05 50 68 61 73 65 07 52 75 6e 6e 69 6e 67 00
 ```
 
 ## Canonicality
@@ -46,6 +54,6 @@ sets. Therefore `encode(decode(bytes)) == bytes` for every accepted sequence,
 and `decode(encode(value)) == value` for every supported value.
 
 Future kinds receive new tags. Existing tag meaning is immutable within format
-v1. Records and exact rationals are introduced in later `v0.1.x` releases with
-additional golden vectors. Recursive decoding is bounded by maximum depth,
+v1. Exact rationals are introduced in a later `v0.1.x` release with additional
+golden vectors. Recursive decoding is bounded by maximum depth,
 collection cardinality, string size and total bytes.

@@ -1,0 +1,42 @@
+newtype SessionId = string
+
+record Session:
+  id: SessionId
+  owner: string
+
+variant Decision:
+  Accepted(Session)
+  Rejected(string)
+
+enum Phase:
+  Idle
+  Active
+
+state Service @ local initial:
+  phase: Phase = Phase.Idle
+  session: option<Session> = none
+  decision: Decision = Decision.Rejected("not-started")
+  outcome: result<int, string> = ok(0)
+  message: string = ""
+
+transition Accept @ Open(id: string, owner: string):
+  from Service
+  to Service:
+    phase = Phase.Active
+    session = some(Session{id: SessionId(id), owner: owner})
+    decision = Decision.Accepted(Session{id: SessionId(id), owner: owner})
+    outcome = ok<string>(1)
+    message = match before.decision { Accepted(found) -> found.owner, Rejected(reason) -> reason }
+  where:
+    match before.session { none -> true, some(existing) -> existing.owner = owner }
+  do:
+    accepted: $ipc.accept(id) @ local
+
+transition Reject @ Close(reason: string):
+  from Service
+  to Service:
+    phase = Phase.Idle
+    session = none<Session>()
+    decision = Decision.Rejected(reason)
+    outcome = err<int>(reason)
+    message = match before.decision { Accepted(found) -> found.owner, Rejected(previous) -> previous }

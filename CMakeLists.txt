@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.1.1)
+set(DTESSL_VERSION 0.1.2)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -50,4 +50,11 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.dtessl)
   set_tests_properties(dtessl.cli_features PROPERTIES
                        PASS_REGULAR_EXPRESSION "parallel-event-bag")
+  add_test(NAME dtessl.cli_algebraic_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   replay
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/algebraic.dtessl
+                   Open id=session-1 owner=alice)
+  set_tests_properties(dtessl.cli_algebraic_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "Decision.Accepted")
 endif()

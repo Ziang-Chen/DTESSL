@@ -17,6 +17,9 @@ struct ValueList;
 struct ValueSet;
 struct ValueMap;
 struct ValueBag;
+struct ValueRecord;
+struct ValueVariant;
+struct ValueNewtype;
 
 struct StringSet {
   std::set<std::string, std::less<>> values;
@@ -26,7 +29,19 @@ struct StringSet {
 
 class Value {
  public:
-  enum class Kind { Bool, Int, String, StringSet, List, Set, Map, Bag };
+  enum class Kind {
+    Bool,
+    Int,
+    String,
+    StringSet,
+    List,
+    Set,
+    Map,
+    Bag,
+    Record,
+    Variant,
+    Newtype,
+  };
 
   Value(bool value);
   Value(std::int64_t value);
@@ -37,6 +52,9 @@ class Value {
   Value(ValueSet value);
   Value(ValueMap value);
   Value(ValueBag value);
+  Value(ValueRecord value);
+  Value(ValueVariant value);
+  Value(ValueNewtype value);
 
   [[nodiscard]] Kind kind() const noexcept;
   [[nodiscard]] bool as_bool() const;
@@ -47,6 +65,9 @@ class Value {
   [[nodiscard]] const ValueSet& as_set() const;
   [[nodiscard]] const ValueMap& as_map() const;
   [[nodiscard]] const ValueBag& as_bag() const;
+  [[nodiscard]] const ValueRecord& as_record() const;
+  [[nodiscard]] const ValueVariant& as_variant() const;
+  [[nodiscard]] const ValueNewtype& as_newtype() const;
 
   friend bool operator==(const Value& left, const Value& right);
 
@@ -60,6 +81,9 @@ class Value {
   std::shared_ptr<const ValueSet> generic_set_value_;
   std::shared_ptr<const ValueMap> map_value_;
   std::shared_ptr<const ValueBag> bag_value_;
+  std::shared_ptr<const ValueRecord> record_value_;
+  std::shared_ptr<const ValueVariant> variant_value_;
+  std::shared_ptr<const ValueNewtype> newtype_value_;
 };
 
 // Total canonical order used by generic sets, maps, bags and codecs. It is a
@@ -84,6 +108,28 @@ struct ValueMap {
 struct ValueBag {
   std::vector<std::pair<Value, std::uint64_t>> entries;
   friend bool operator==(const ValueBag&, const ValueBag&) = default;
+};
+
+// Nominal values carry their canonical type identity. For v0.1.x this is the
+// declaration name in one source unit; package-qualified identities replace it
+// when CanonicalModule lands without changing the value shape.
+struct ValueRecord {
+  std::string type_id;
+  std::vector<std::pair<std::string, Value>> fields;
+  friend bool operator==(const ValueRecord&, const ValueRecord&) = default;
+};
+
+struct ValueVariant {
+  std::string type_id;
+  std::string constructor;
+  std::vector<Value> payload;
+  friend bool operator==(const ValueVariant&, const ValueVariant&) = default;
+};
+
+struct ValueNewtype {
+  std::string type_id;
+  std::vector<Value> payload;
+  friend bool operator==(const ValueNewtype&, const ValueNewtype&) = default;
 };
 
 struct Event {

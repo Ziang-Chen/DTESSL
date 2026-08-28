@@ -17,6 +17,9 @@ enum class Tag : std::uint8_t {
   Set = 5,
   Map = 6,
   Bag = 7,
+  Record = 8,
+  Variant = 9,
+  Newtype = 10,
 };
 
 void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
@@ -125,6 +128,44 @@ class Decoder {
           bag.entries.emplace_back(std::move(item), static_cast<std::uint64_t>(multiplicity));
         }
         return Value(std::move(bag));
+      }
+      case Tag::Record: {
+        ValueRecord record;
+        record.type_id = string();
+        if (record.type_id.empty()) throw Error("canonical record type identity is empty");
+        const std::size_t count = collection_count();
+        record.fields.reserve(count);
+        std::string previous;
+        for (std::size_t index = 0; index < count; ++index) {
+          std::string field = string();
+          if (field.empty() || (!previous.empty() && field <= previous)) {
+            throw Error("canonical record fields are not strictly sorted");
+          }
+          previous = field;
+          record.fields.emplace_back(std::move(field), value(depth + 1U));
+        }
+        return Value(std::move(record));
+      }
+      case Tag::Variant: {
+        ValueVariant variant;
+        variant.type_id = string();
+        variant.constructor = string();
+        if (variant.type_id.empty() || variant.constructor.empty()) {
+          throw Error("canonical variant identity is empty");
+        }
+        const std::size_t count = collection_count();
+        if (count > 1U) throw Error("canonical variant has more than one payload");
+        for (std::size_t index = 0; index < count; ++index) {
+          variant.payload.push_back(value(depth + 1U));
+        }
+        return Value(std::move(variant));
+      }
+      case Tag::Newtype: {
+        ValueNewtype wrapped;
+        wrapped.type_id = string();
+        if (wrapped.type_id.empty()) throw Error("canonical newtype identity is empty");
+        wrapped.payload.push_back(value(depth + 1U));
+        return Value(std::move(wrapped));
       }
     }
     throw Error("unknown canonical value tag");
@@ -251,6 +292,32 @@ void encode_into(const Value& value, std::vector<std::uint8_t>& output,
         }
         append_varuint(output, static_cast<std::size_t>(count));
       }
+      break;
+    case Value::Kind::Record:
+      output.push_back(static_cast<std::uint8_t>(Tag::Record));
+      append_string(output, value.as_record().type_id);
+      if (value.as_record().fields.size() > limits.max_set_items) {
+        throw Error("canonical record exceeds field limit");
+      }
+      append_varuint(output, value.as_record().fields.size());
+      for (const auto& [name, item] : value.as_record().fields) {
+        append_string(output, name);
+        encode_into(item, output, limits, depth + 1U);
+      }
+      break;
+    case Value::Kind::Variant:
+      output.push_back(static_cast<std::uint8_t>(Tag::Variant));
+      append_string(output, value.as_variant().type_id);
+      append_string(output, value.as_variant().constructor);
+      append_varuint(output, value.as_variant().payload.size());
+      for (const Value& item : value.as_variant().payload) {
+        encode_into(item, output, limits, depth + 1U);
+      }
+      break;
+    case Value::Kind::Newtype:
+      output.push_back(static_cast<std::uint8_t>(Tag::Newtype));
+      append_string(output, value.as_newtype().type_id);
+      encode_into(value.as_newtype().payload.front(), output, limits, depth + 1U);
       break;
   }
   if (output.size() > limits.max_bytes) throw Error("canonical value exceeds byte limit");

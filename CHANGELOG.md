@@ -3,6 +3,20 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.1.2
+
+- Nominal `newtype`, typed `record`, payload/no-payload `variant` and `enum`
+  declarations with declaration-before-use verification.
+- Structural `option<T>` and `result<T,E>` values with canonical full type
+  identities.
+- Record, variant, enum, newtype, option and result constructors in initial
+  values and transition expressions.
+- Record field projection and exhaustive variant pattern matching with static
+  constructor, payload-binding and arm-result checks.
+- Canonical value tags for records, variants and newtypes, including sorted
+  record fields and bounded recursive decoding.
+- Runtime, negative-verifier, canonical-roundtrip and sanitizer coverage.
+
 ## v0.1.1
 
 - Recursive `list<T>`, `set<T>`, `map<K,V>` and `bag<T>` type syntax and initial
