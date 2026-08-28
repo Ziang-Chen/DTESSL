@@ -3,6 +3,13 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.0.2
+
+- Canonical event-bag ordering for parallel rounds.
+- Static transition read/write sets.
+- Stable decision IDs and causal predecessor sets derived from prior field
+  writers, without same-round artificial ordering.
+
 ## v0.0.1
 
 - First independent C++20 implementation.

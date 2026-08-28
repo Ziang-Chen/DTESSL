@@ -1,4 +1,4 @@
-# DTESSL v0.0.1
+# DTESSL v0.0.2
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -65,7 +65,7 @@ program     = { state | transition } ;
 state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
                 { field | invariant }
               DEDENT ;
-field       = Name ":" type "=" literal NEWLINE ;
+field       = Name ":" type "=" literal [ "merge" ( "equal" | "union" ) ] NEWLINE ;
 invariant   = "invariant" ":" INDENT expression DEDENT ;
 
 transition  = "transition" Name "@" event-pattern ":" INDENT
@@ -98,6 +98,9 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `@` 只表达调用或定义所处的上下文，不授予权限。动作未写 `@` 时继承源 state 的上下文；
 写 `@ worker` 时，如果 `worker` 是 string 类型事件参数，就绑定到该参数的值，否则它是
 一个静态上下文名。
+
+同一 round 默认禁止多个 transition 写同一字段。字段可显式声明 `merge equal`（候选值
+必须相同）或对 `set<string>` 声明单调的 `merge union`；源顺序永远不是冲突决议规则。
 
 ## 值、谓词与搜索
 
@@ -136,6 +139,8 @@ build/dtessl check examples/scheduler.dtessl
 build/dtessl version
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
+build/dtessl replay-batch examples/scheduler.dtessl \
+  Submit task=task-1 worker=worker-a -- Note text=same-round
 ctest --test-dir build --output-on-failure
 ```
 

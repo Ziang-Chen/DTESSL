@@ -69,11 +69,17 @@ struct StepResult {
   // A round is one atomic simulation batch, not a per-transition clock.
   // Independent transitions in the same batch share this value.
   std::uint64_t round{0};
+  // Stable within the canonical event bag. The numeric suffix is an identity,
+  // not a happens-before relation between same-round decisions.
+  std::string id;
   std::string transition;
   std::string from_state;
   std::string to_state;
   std::map<std::string, Value, std::less<>> state;
   ActionPlan actions;
+  std::set<std::string, std::less<>> reads;
+  std::set<std::string, std::less<>> writes;
+  std::set<std::string, std::less<>> causal_predecessors;
 
   friend bool operator==(const StepResult&, const StepResult&) = default;
 };
@@ -138,6 +144,7 @@ class Engine {
   std::uint64_t round_{0};
   std::string current_state_;
   std::map<std::string, Value, std::less<>> values_;
+  std::map<std::string, std::set<std::string, std::less<>>, std::less<>> last_writers_;
 };
 
 [[nodiscard]] std::string value_text(const Value& value);

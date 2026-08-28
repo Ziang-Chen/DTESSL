@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.0.1)
+set(DTESSL_VERSION 0.0.2)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -33,4 +33,13 @@ if(DTESSL_BUILD_TESTS)
   add_executable(dtessl_tests tests/dtessl_test.cpp)
   target_link_libraries(dtessl_tests PRIVATE dtessl)
   add_test(NAME dtessl.minimum_language COMMAND dtessl_tests)
+  add_test(NAME dtessl.cli_parallel_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   replay-batch
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.dtessl
+                   Submit task=task-1 worker=worker-a
+                   --
+                   Note text=same-round)
+  set_tests_properties(dtessl.cli_parallel_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "replay ok")
 endif()

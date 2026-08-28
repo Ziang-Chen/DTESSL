@@ -216,9 +216,11 @@ ExprPtr make_binary(std::string op, ExprPtr left, ExprPtr right) {
 }
 
 struct Field {
+  enum class Merge { Reject, Equal, Union };
   std::string name;
   DataType type;
   Value initial;
+  Merge merge{Merge::Reject};
 };
 
 struct State {
@@ -258,6 +260,8 @@ struct Transition {
   std::vector<Assignment> assignments;
   ExprPtr condition{make_literal(Value(true))};
   std::shared_ptr<ActionExpr> action;
+  std::set<std::string, std::less<>> reads;
+  std::set<std::string, std::less<>> writes;
 };
 
 class FlatParser {
@@ -658,12 +662,20 @@ State Parser::state() {
       result.invariants.push_back(block_expression());
       continue;
     }
-    Field field{"", DataType::Bool, Value(false)};
+    Field field{"", DataType::Bool, Value(false), Field::Merge::Reject};
     field.name = identifier();
     expect(":");
     field.type = type();
     expect("=");
     field.initial = initial_value(field.type);
+    if (match("merge")) {
+      if (match("equal")) field.merge = Field::Merge::Equal;
+      else if (match("union")) field.merge = Field::Merge::Union;
+      else fail(peek(), "expected equal or union merge relation");
+      if (field.merge == Field::Merge::Union && field.type != DataType::StringSet) {
+        fail(tokens_[cursor_ - 1], "union merge needs set<string>");
+      }
+    }
     newline();
     result.fields.push_back(std::move(field));
   }
@@ -879,7 +891,51 @@ void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironm
   }
 }
 
-void verify_program(const Program::Impl& program) {
+void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
+                   std::set<std::string, std::less<>> shadowed,
+                   std::set<std::string, std::less<>>& reads) {
+  if (!expr) return;
+  if (expr->kind == Expr::Kind::Name) {
+    if (expr->text.starts_with("before.")) {
+      reads.insert(expr->text.substr(expr->text.find('.') + 1));
+    } else if (!shadowed.contains(expr->text) && state.contains(expr->text)) {
+      reads.insert(expr->text);
+    }
+    return;
+  }
+  if (expr->kind == Expr::Kind::Exists) {
+    collect_reads(expr->left, state, shadowed, reads);
+    shadowed.insert(expr->text);
+    collect_reads(expr->right, state, std::move(shadowed), reads);
+    return;
+  }
+  collect_reads(expr->left, state, shadowed, reads);
+  collect_reads(expr->right, state, shadowed, reads);
+  collect_reads(expr->third, state, std::move(shadowed), reads);
+}
+
+void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
+                          const TypeEnvironment& state,
+                          const std::set<std::string, std::less<>>& shadowed,
+                          std::set<std::string, std::less<>>& reads) {
+  if (!action) return;
+  if (action->kind != ActionExpr::Kind::Call) {
+    for (const auto& child : action->children) {
+      collect_action_reads(child, state, shadowed, reads);
+    }
+    return;
+  }
+  for (const ExprPtr& argument : action->arguments) {
+    collect_reads(argument, state, shadowed, reads);
+  }
+  if (action->context.starts_with("before.")) {
+    reads.insert(action->context.substr(action->context.find('.') + 1));
+  } else if (!shadowed.contains(action->context) && state.contains(action->context)) {
+    reads.insert(action->context);
+  }
+}
+
+void verify_program(Program::Impl& program) {
   if (program.states.empty()) throw Error("program must define at least one state");
   std::unordered_set<std::string> names;
   std::size_t initial_count = 0;
@@ -897,7 +953,7 @@ void verify_program(const Program::Impl& program) {
 
   names.clear();
   std::map<std::string, std::vector<Parameter>, std::less<>> event_schemas;
-  for (const Transition& transition : program.transitions) {
+  for (Transition& transition : program.transitions) {
     if (!names.insert(transition.name).second) {
       throw Error("duplicate transition '" + transition.name + "'");
     }
@@ -944,6 +1000,18 @@ void verify_program(const Program::Impl& program) {
     }
     std::unordered_set<std::string> labels;
     verify_action(transition.action, state_types, event_types, labels);
+
+    std::set<std::string, std::less<>> shadowed;
+    for (const Parameter& parameter : transition.parameters) shadowed.insert(parameter.name);
+    collect_reads(transition.condition, state_types, shadowed, transition.reads);
+    for (const Assignment& assignment : transition.assignments) {
+      transition.writes.insert(assignment.field);
+      collect_reads(assignment.value, state_types, shadowed, transition.reads);
+    }
+    if (transition.from != transition.to) {
+      for (const Field& field : target.fields) transition.writes.insert(field.name);
+    }
+    collect_action_reads(transition.action, state_types, shadowed, transition.reads);
   }
   for (const State& state : program.states) {
     TypeEnvironment state_types;
@@ -981,6 +1049,32 @@ int compare_values(const Value& left, const Value& right) {
       throw Error("sets only support equality and membership");
   }
   throw Error("invalid comparison");
+}
+
+int canonical_value_order(const Value& left, const Value& right) {
+  if (left.kind() != right.kind()) {
+    return static_cast<int>(left.kind()) < static_cast<int>(right.kind()) ? -1 : 1;
+  }
+  if (left.kind() != Value::Kind::StringSet) return compare_values(left, right);
+  const auto& lhs = left.as_string_set().values;
+  const auto& rhs = right.as_string_set().values;
+  if (std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(), rhs.end())) return -1;
+  if (std::lexicographical_compare(rhs.begin(), rhs.end(), lhs.begin(), lhs.end())) return 1;
+  return 0;
+}
+
+bool event_less(const Event& left, const Event& right) {
+  if (left.name != right.name) return left.name < right.name;
+  auto lhs = left.fields.begin();
+  auto rhs = right.fields.begin();
+  while (lhs != left.fields.end() && rhs != right.fields.end()) {
+    if (lhs->first != rhs->first) return lhs->first < rhs->first;
+    const int value_order = canonical_value_order(lhs->second, rhs->second);
+    if (value_order != 0) return value_order < 0;
+    ++lhs;
+    ++rhs;
+  }
+  return lhs == left.fields.end() && rhs != right.fields.end();
 }
 
 Value resolve_name(const std::string& name, const Environment& environment) {
@@ -1275,12 +1369,20 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     const Transition* transition;
     std::map<std::string, Value, std::less<>> writes;
     ActionPlan actions;
+    std::set<std::string, std::less<>> causal_predecessors;
   };
   std::vector<Prepared> prepared;
   prepared.reserve(events.size());
   std::string target_name;
 
-  for (const Event& event : events) {
+  std::vector<const Event*> ordered_events;
+  ordered_events.reserve(events.size());
+  for (const Event& event : events) ordered_events.push_back(&event);
+  std::stable_sort(ordered_events.begin(), ordered_events.end(),
+                   [](const Event* left, const Event* right) { return event_less(*left, *right); });
+
+  for (const Event* event_pointer : ordered_events) {
+    const Event& event = *event_pointer;
     std::vector<const Transition*> enabled;
     for (const Transition& transition : program.transitions) {
       if (transition.from != current_state_ || transition.event != event.name) continue;
@@ -1305,14 +1407,23 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     const State& source = find_state(program, transition.from);
     const State& target = find_state(program, transition.to);
     Environment environment{values_, &event, {}, round_};
-    Prepared decision{&transition, {}, {}};
+    Prepared decision{&transition, {}, {}, {}};
+    for (const std::string& field : transition.reads) {
+      const auto writers = last_writers_.find(field);
+      if (writers != last_writers_.end()) {
+        decision.causal_predecessors.insert(writers->second.begin(), writers->second.end());
+      }
+    }
+    if (transition.from != transition.to) {
+      decision.writes = initial_values(target);
+    }
     for (const Assignment& assignment : transition.assignments) {
       Value value = evaluate(assignment.value, environment);
       const Field& field = find_field(target, assignment.field);
       if (value_type(value) != field.type) {
         throw Error("assignment to '" + assignment.field + "' has the wrong type");
       }
-      decision.writes.emplace(assignment.field, std::move(value));
+      decision.writes.insert_or_assign(assignment.field, std::move(value));
     }
     if (transition.action) {
       std::unordered_set<std::string> labels;
@@ -1328,14 +1439,35 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
   const State& target = find_state(program, target_name);
   std::map<std::string, Value, std::less<>> next =
       target_name == current_state_ ? values_ : initial_values(target);
-  std::unordered_set<std::string> written;
+  std::map<std::string, std::vector<Value>, std::less<>> candidates;
   for (const Prepared& decision : prepared) {
     for (const auto& [field, value] : decision.writes) {
-      if (!written.insert(field).second) {
-        throw Error("parallel transitions write the same field '" + field + "'");
-      }
-      next.insert_or_assign(field, value);
+      candidates[field].push_back(value);
     }
+  }
+  for (const auto& [name, values] : candidates) {
+    if (values.size() == 1) {
+      next.insert_or_assign(name, values.front());
+      continue;
+    }
+    const Field& field = find_field(target, name);
+    if (field.merge == Field::Merge::Reject) {
+      throw Error("parallel transitions write the same field '" + name + "'");
+    }
+    if (field.merge == Field::Merge::Equal) {
+      if (!std::all_of(values.begin() + 1, values.end(),
+                       [&](const Value& value) { return value == values.front(); })) {
+        throw Error("equal merge disagrees for field '" + name + "'");
+      }
+      next.insert_or_assign(name, values.front());
+      continue;
+    }
+    StringSet merged = next.at(name).as_string_set();
+    for (const Value& value : values) {
+      const StringSet& candidate = value.as_string_set();
+      merged.values.insert(candidate.values.begin(), candidate.values.end());
+    }
+    next.insert_or_assign(name, Value(std::move(merged)));
   }
   verify_invariants(target, next, round_ + 1U);
 
@@ -1343,15 +1475,30 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
   result.round = round_ + 1U;
   result.state = next;
   result.transitions.reserve(prepared.size());
-  for (Prepared& decision : prepared) {
+  for (std::size_t index = 0; index < prepared.size(); ++index) {
+    Prepared& decision = prepared[index];
     StepResult step_result;
     step_result.round = result.round;
+    step_result.id = "r" + std::to_string(result.round) + ":" + std::to_string(index);
     step_result.transition = decision.transition->name;
     step_result.from_state = decision.transition->from;
     step_result.to_state = decision.transition->to;
     step_result.state = next;
     step_result.actions = std::move(decision.actions);
+    step_result.reads = decision.transition->reads;
+    step_result.writes = decision.transition->writes;
+    step_result.causal_predecessors = std::move(decision.causal_predecessors);
     result.transitions.push_back(std::move(step_result));
+  }
+
+  for (const auto& [field, values] : candidates) {
+    static_cast<void>(values);
+    last_writers_[field].clear();
+  }
+  for (const StepResult& decision : result.transitions) {
+    for (const std::string& field : decision.writes) {
+      last_writers_[field].insert(decision.id);
+    }
   }
 
   ++round_;
@@ -1392,7 +1539,32 @@ std::string value_text(const Value& value) {
 std::string result_text(const StepResult& result) {
   std::ostringstream out;
   out << "round " << result.round << '\n';
+  out << "decision " << result.id << '\n';
   out << "transition " << result.transition << '\n';
+  out << "reads {";
+  bool first_read = true;
+  for (const std::string& field : result.reads) {
+    if (!first_read) out << ", ";
+    first_read = false;
+    out << field;
+  }
+  out << "}\n";
+  out << "writes {";
+  bool first_write = true;
+  for (const std::string& field : result.writes) {
+    if (!first_write) out << ", ";
+    first_write = false;
+    out << field;
+  }
+  out << "}\n";
+  out << "after {";
+  bool first_predecessor = true;
+  for (const std::string& predecessor : result.causal_predecessors) {
+    if (!first_predecessor) out << ", ";
+    first_predecessor = false;
+    out << predecessor;
+  }
+  out << "}\n";
   out << "state " << result.from_state << " -> " << result.to_state << " {\n";
   for (const auto& [name, value] : result.state) {
     out << "  " << name << " = " << value_text(value) << '\n';

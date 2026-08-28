@@ -5,6 +5,7 @@ state Scheduler @ local initial:
   workers: set<string> = {"worker-a", "worker-b"}
   busy: set<string> = {}
   last_round: int = 0
+  note: string = ""
   invariant:
     credits >= 0 and count(busy) <= count(workers)
 
@@ -38,3 +39,12 @@ transition Complete @ Done(task: string, worker: string):
     before.mode = "Waiting"
   do:
     finish: $ipc.complete(task) @ local
+
+transition Annotate @ Note(text: string):
+  from Scheduler
+  to Scheduler:
+    note = text
+  where:
+    before.mode = "Idle"
+  do:
+    record: $audit.note(text) @ local

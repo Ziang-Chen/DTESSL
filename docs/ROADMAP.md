@@ -3,6 +3,8 @@
 Versions follow `vMilestone.MajorFeature.MinorFeature`. Each row is an
 acceptance slice, not merely a calendar label.
 
+Released foundation: `v0.0.1`. Current release gate: `v0.0.2`.
+
 ## Milestone 0 — semantic foundation
 
 | Version | Feature slice | Required acceptance evidence |

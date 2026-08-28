@@ -8,13 +8,14 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule
-- Current target: `v0.0.1`
+- Current target: `v0.0.2`
 - Stop orders: none
 
 ## Current state
 
-**Candidate.** The minimal executable loop is implemented and locally verified.
-It is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
+**Candidate.** The causal-round hardening slice is implemented and locally
+verified. It is not the complete DTESSL design described in
+`LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
@@ -23,8 +24,8 @@ It is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
   ChenVM integration.
 - Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
   universal bytecode and premature JIT.
-- Current exit gate: publish a clean, self-reporting `v0.0.1` with reproducible
-  standalone and submodule builds.
+- Current exit gate: publish a clean, self-reporting `v0.0.2` with canonical
+  event bags, read/write sets, typed merges and causal predecessor evidence.
 
 ## Evidence matrix
 
@@ -33,11 +34,14 @@ It is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Independent C++ build | Standalone CMake build passes | Built from standalone clone layout | pass |
 | Typed state/transition loop | Unit test covers parse, verify and two serial steps | Scheduler example produces inspectable state | pass |
 | Parallel transition semantics | Same-snapshot disjoint merge and conflict rejection tests | No multi-component user model yet | candidate |
+| Canonical event bags | Permutation-equivalence unit test and batch CLI integration | Scheduler batch exercised | pass |
+| Typed merge relation | Same-round set-union and default-conflict tests | Grow-only set scenario exercised | pass |
+| Causal predecessor trace | Prior-writer and merged-multiwriter assertions | Output is inspectable; full trace file absent | candidate |
 | Deterministic action DAG | Dependency assertions and replay equality | CLI output shows serial fan-out | pass |
 | Relation predicate baseline | `exists`, membership and set updates tested | Unknown worker disables transition | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.0.1` | Tag not yet published | candidate |
+| Version identity | CMake/generated header/CLI/test at `0.0.2` | Tag not yet published | candidate |
 | Full relation/search design | Specification exists | Implementation absent | missing |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
 | Typed host receipts/replay | Call plan baseline exists | Receipt protocol absent | missing |
@@ -69,10 +73,11 @@ There is no external blocker for the `v0.0.1` gate.
 
 ## Next corrective focus
 
-1. Close and tag `v0.0.1`.
-2. Begin `v0.1.0` with canonical typed values and a golden codec before adding
+1. Close and tag `v0.0.2`.
+2. Complete the `v0.0.3` backend seam without freezing the private AST.
+3. Begin `v0.1.0` with canonical typed values and a golden codec before adding
    more surface sugar.
-3. Reject any claim that the full language is complete until all roadmap gates
+4. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
 ## Decision log
@@ -83,3 +88,5 @@ There is no external blocker for the `v0.0.1` gate.
   `vMilestone.MajorFeature.MinorFeature`; first baseline is `v0.0.1`.
 - 2026-08-28: complete design partitioned into core, standard dialect and
   external integration layers.
+- 2026-08-28: `v0.0.1` released; per-transition tick replaced by same-snapshot
+  parallel rounds before stabilizing the next slice.

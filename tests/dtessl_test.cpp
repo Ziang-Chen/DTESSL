@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <set>
 #include <string>
 
 namespace {
@@ -16,6 +17,8 @@ state Scheduler @ local initial:
   busy: set<string> = {}
   last_round: int = 0
   note: string = ""
+  tags: set<string> = {} merge union
+  tag_count: int = 0
   invariant:
     credits >= 0 and count(workers) = 2 and count(busy) <= count(workers)
 
@@ -52,6 +55,16 @@ transition Mark @ Note(text: string):
     before.mode = "Idle"
   do:
     noted: $log.note(text)
+
+transition AddTag @ Tag(value: string):
+  from Scheduler
+  to Scheduler:
+    tags = insert(before.tags, value)
+
+transition SnapshotTags @ Snapshot():
+  from Scheduler
+  to Scheduler:
+    tag_count = count(before.tags)
 )DTESSL";
 
 [[noreturn]] void fail(const std::string& message) {
@@ -66,7 +79,7 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.0.1", "compiled version must be v0.0.1");
+  require(dtessl::version == "0.0.2", "compiled version must be v0.0.2");
   const dtessl::Program program = dtessl::parse(source);
   dtessl::Event submit{"Submit", {{"task", dtessl::Value("task-1")},
                                     {"worker", dtessl::Value("worker-a")}}};
@@ -98,6 +111,8 @@ int main() {
   require(second.state.at("busy").as_string_set().values.empty(),
           "set resource release is wrong");
   require(second.state.at("last_round").as_int() == 1, "simulation round did not advance");
+  require(second.causal_predecessors.contains(first.id),
+          "a later state read must name the prior writer as a causal predecessor");
 
   dtessl::Engine replay(program);
   require(replay.step(submit) == first, "fresh replay must be byte-for-byte deterministic");
@@ -123,6 +138,13 @@ int main() {
           "disjoint parallel writes were not committed atomically");
   require(parallel.transitions[0].round == parallel.transitions[1].round,
           "parallel decisions must not receive an artificial total order");
+  require(parallel.transitions[0].causal_predecessors.empty() &&
+              parallel.transitions[1].causal_predecessors.empty(),
+          "same-round decisions must not become causal predecessors");
+  dtessl::Engine permuted_engine(program);
+  const dtessl::ParallelStepResult permuted = permuted_engine.step_parallel(
+      {dtessl::Event{"Note", {{"text", dtessl::Value("same-round")}}}, submit});
+  require(permuted == parallel, "event bag input order must not affect the decision set");
 
   bool conflict = false;
   try {
@@ -134,6 +156,19 @@ int main() {
     conflict = true;
   }
   require(conflict, "parallel writes need an explicit merge relation");
+
+  dtessl::Engine merging(program);
+  const dtessl::ParallelStepResult merged = merging.step_parallel(
+      {dtessl::Event{"Tag", {{"value", dtessl::Value("blue")}}},
+       dtessl::Event{"Tag", {{"value", dtessl::Value("green")}}}});
+  require(merged.state.at("tags").as_string_set().values ==
+              std::set<std::string, std::less<>>{"blue", "green"},
+          "typed union merge did not combine concurrent writes");
+  const dtessl::StepResult snapshot = merging.step(dtessl::Event{"Snapshot", {}});
+  require(snapshot.state.at("tag_count").as_int() == 2,
+          "the next round did not observe the merged value");
+  require(snapshot.causal_predecessors.size() == 2,
+          "a merged field must retain every same-round causal writer");
 
   dtessl::ScratchPool pool(64, 128);
   struct Pair {

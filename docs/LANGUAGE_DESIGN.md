@@ -262,6 +262,9 @@ invent an order between independent transitions.
 - Disjoint/confluent transitions may commit in the same round.
 - Conflicting writes require an explicit collision/merge relation; source order
   is never an implicit tie-breaker.
+- Core merge relations must be typed, associative, commutative and deterministic.
+  The foundation provides `equal` and grow-only set `union`; later user-defined
+  merges require a verifier proof/profile rather than an arbitrary callback.
 - `happensBefore(a,b)` is a partial order derived from local order, message
   send/receive, data dependencies and action DAG edges.
 - A scalar round is useful for deterministic scheduling and trace grouping but
