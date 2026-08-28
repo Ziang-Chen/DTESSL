@@ -281,7 +281,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.2.3", "compiled version must be v0.2.3");
+  require(dtessl::version == "0.3.0", "compiled version must be v0.3.0");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1078,6 +1078,225 @@ transition Break @ Go(value: TaskId):
     invalid_name_atom = true;
   }
   require(invalid_name_atom, "non-canonical logical name atom was accepted");
+
+  constexpr std::string_view composite_trace_source = R"DTESSL(
+function positive(value: int) -> bool:
+  value > 0
+
+state Idle @ scheduler initial:
+  credits: int = 2
+  invariant:
+    credits >= 0
+
+state Busy @ scheduler:
+  credits: int = 0
+  invariant:
+    credits >= 0
+
+state Ready @ process initial:
+  started: bool = false
+
+state Retrying @ process:
+  started: bool = false
+
+state Running @ process:
+  started: bool = true
+
+transition Dispatch @ Tick():
+  case ready (Idle @ scheduler, {Ready, Retrying} @ process) -> (Busy @ scheduler, Running @ process):
+    where:
+      positive(scheduler.credits)
+    set @ scheduler:
+      credits = before.scheduler.credits - 1
+    set @ process:
+      started = true
+
+transition BreakInvariant @ Break():
+  case violate (Idle @ scheduler, Ready @ process) -> (Idle @ scheduler, Running @ process):
+    set @ scheduler:
+      credits = -1
+    set @ process:
+      started = true
+
+procedure RetryEntry @ system:
+  initial (Idle @ scheduler, Retrying @ process)
+
+trace Happy @ system:
+  replay:
+    Tick()
+  capture closed:
+    Busy @ scheduler
+    Running @ process
+    Dispatch.ready
+
+trace ProcessView @ system:
+  capture projected:
+    Running @ process
+    Dispatch.ready
+
+Claim ReachedRunning @ Happy:
+  eventually:
+    process.started
+
+Claim NonNegative @ Happy:
+  always:
+    scheduler.credits >= 0
+
+Claim OneDispatch @ Happy:
+  count Dispatch.ready <= 1
+)DTESSL";
+  const dtessl::Program composite_program = dtessl::parse(composite_trace_source);
+  const dtessl::TraceSnapshot static_trace =
+      dtessl::run_named_trace(composite_program, "Happy");
+  require(static_trace.closed && static_trace.rounds.size() == 1U &&
+              static_trace.rounds.front().transitions.front().from_state.find("Ready") !=
+                  std::string::npos &&
+              static_trace.final_state.at("process.started").as_bool(),
+          "static typed trace did not execute the composite state rewrite");
+  const auto claim_results = dtessl::evaluate_named_trace(composite_program, "Happy");
+  require(claim_results.size() == 3U &&
+              std::all_of(claim_results.begin(), claim_results.end(),
+                          [](const dtessl::ClaimEvaluation& claim) {
+                            return claim.status == dtessl::ClaimStatus::Satisfied;
+                          }),
+          "closed trace claims did not reach satisfied");
+  dtessl::Engine procedure_engine =
+      dtessl::Engine::from_procedure(composite_program, "RetryEntry");
+  require(procedure_engine.initial_context() == "system" &&
+              procedure_engine.current_states().at("scheduler") == "Idle" &&
+              procedure_engine.current_states().at("process") == "Retrying",
+          "procedure did not supply only its declared Engine entry configuration");
+  const dtessl::StepResult procedure_step =
+      procedure_engine.step(dtessl::Event{"Tick", {}});
+  require(procedure_step.transition == "Dispatch.ready" &&
+              procedure_engine.current_states().at("scheduler") == "Busy" &&
+              procedure_engine.current_states().at("process") == "Running",
+          "global transition engine did not advance a procedure entry");
+  dtessl::Engine composite_engine(composite_program);
+  const dtessl::StepResult composite_step = composite_engine.step(dtessl::Event{"Tick", {}});
+  require(composite_step.active_states.at("scheduler") == "Busy" &&
+              composite_step.active_states.at("process") == "Running" &&
+              composite_step.transition == "Dispatch.ready" &&
+              composite_step.state.at("scheduler.credits").as_int() == 1,
+          "composite state axes were not committed atomically");
+  const dtessl::TraceSnapshot projected =
+      composite_engine.captured_trace("ProcessView", true);
+  require(projected.rounds.size() == 1U && !projected.causal_gaps.empty() &&
+              projected.captured_paths.contains("Dispatch.ready") &&
+              projected.rounds.front().transitions.front().transition == "Dispatch.ready" &&
+              projected.final_state.contains("process.started") &&
+              !projected.final_state.contains("scheduler.credits"),
+          "projected dynamic trace did not enforce its @ context scope");
+  dtessl::Engine rollback_engine(composite_program);
+  bool invariant_error = false;
+  try {
+    static_cast<void>(rollback_engine.step(dtessl::Event{"Break", {}}));
+  } catch (const dtessl::Error&) {
+    invariant_error = true;
+  }
+  require(invariant_error && rollback_engine.current_round() == 0U &&
+              rollback_engine.current_states().at("scheduler") == "Idle" &&
+              rollback_engine.current_states().at("process") == "Ready" &&
+              rollback_engine.values().at("scheduler.credits").as_int() == 2,
+          "failed composite invariant partially committed another state axis");
+
+  constexpr std::string_view ambiguous_cases = R"DTESSL(
+state Idle @ scheduler initial:
+  value: int = 0
+
+state Busy @ scheduler:
+  value: int = 0
+
+transition Ambiguous @ Go():
+  case wildcard (_ @ scheduler) -> (Busy @ scheduler):
+    set @ scheduler:
+      value = 1
+  case exact (Idle @ scheduler) -> (Busy @ scheduler):
+    set @ scheduler:
+      value = 2
+)DTESSL";
+  bool ambiguous_error = false;
+  try {
+    dtessl::Engine ambiguous(dtessl::parse(ambiguous_cases));
+    static_cast<void>(ambiguous.step(dtessl::Event{"Go", {}}));
+  } catch (const dtessl::Error&) {
+    ambiguous_error = true;
+  }
+  require(ambiguous_error, "overlapping executable case paths were not rejected as ambiguous");
+
+  constexpr std::string_view unknown_trace_path = R"DTESSL(
+state Idle @ scheduler initial:
+  value: int = 0
+
+transition Move @ Go():
+  case known (Idle @ scheduler) -> (Idle @ scheduler):
+    set @ scheduler:
+      value = 1
+
+trace Bad @ system:
+  capture projected:
+    Move.missing
+)DTESSL";
+  bool unknown_path_error = false;
+  try {
+    static_cast<void>(dtessl::parse(unknown_trace_path));
+  } catch (const dtessl::Error&) {
+    unknown_path_error = true;
+  }
+  require(unknown_path_error, "trace accepted an unknown qualified case path");
+
+  constexpr std::string_view impure_function = R"DTESSL(
+function bad() -> int:
+  round
+
+state Idle initial:
+  value: int = 0
+)DTESSL";
+  bool impure_function_error = false;
+  try {
+    static_cast<void>(dtessl::parse(impure_function));
+  } catch (const dtessl::Error&) {
+    impure_function_error = true;
+  }
+  require(impure_function_error, "pure function observed the automaton round");
+
+  constexpr std::string_view recursive_function = R"DTESSL(
+function loop(value: int) -> int:
+  loop(value)
+
+state Idle initial:
+  value: int = 0
+)DTESSL";
+  bool recursive_function_error = false;
+  try {
+    static_cast<void>(dtessl::parse(recursive_function));
+  } catch (const dtessl::Error&) {
+    recursive_function_error = true;
+  }
+  require(recursive_function_error, "recursive pure function cycle was accepted");
+
+  constexpr std::string_view reversed_trace_sections = R"DTESSL(
+state Idle initial:
+  value: int = 0
+
+transition Stay @ Go():
+  from Idle
+  to Idle:
+    value = 1
+
+trace Bad @ system:
+  capture projected:
+    Idle @ system
+  replay:
+    Go()
+)DTESSL";
+  bool trace_order_error = false;
+  try {
+    static_cast<void>(dtessl::parse(reversed_trace_sections));
+  } catch (const dtessl::Error&) {
+    trace_order_error = true;
+  }
+  require(trace_order_error, "trace accepted capture before replay");
 
   constexpr std::string_view empty_option_without_context = R"DTESSL(
 state Broken initial:

@@ -208,9 +208,14 @@ struct StepResult {
   // Stable within the canonical event bag. The numeric suffix is an identity,
   // not a happens-before relation between same-round decisions.
   std::string id;
+  // Qualified as Transition.caseName when the selected case is named.
   std::string transition;
+  std::string case_name;
   std::string from_state;
   std::string to_state;
+  // Active state per explicit @ context after this decision. The empty
+  // context is the legacy single-state root.
+  std::map<std::string, std::string, std::less<>> active_states;
   std::map<std::string, Value, std::less<>> state;
   ActionPlan actions;
   std::set<std::string, std::less<>> reads;
@@ -245,6 +250,42 @@ struct TraceResult {
   friend bool operator==(const TraceResult&, const TraceResult&) = default;
 };
 
+enum class TraceCaptureMode {
+  Static,
+  Closed,
+  Projected,
+};
+
+struct TraceSnapshot {
+  std::string name;
+  std::string root_context;
+  TraceCaptureMode mode{TraceCaptureMode::Static};
+  bool closed{false};
+  std::set<std::string, std::less<>> captured_contexts;
+  std::set<std::string, std::less<>> captured_paths;
+  std::vector<ParallelStepResult> rounds;
+  std::map<std::string, Value, std::less<>> final_state;
+  std::vector<std::string> causal_gaps;
+
+  friend bool operator==(const TraceSnapshot&, const TraceSnapshot&) = default;
+};
+
+enum class ClaimStatus {
+  Satisfied,
+  Violated,
+  Pending,
+};
+
+struct ClaimEvaluation {
+  std::string name;
+  std::string trace;
+  ClaimStatus status{ClaimStatus::Pending};
+  std::uint64_t witness_round{0};
+  std::string detail;
+
+  friend bool operator==(const ClaimEvaluation&, const ClaimEvaluation&) = default;
+};
+
 class Error : public std::runtime_error {
  public:
   Error(std::string message, std::size_t line = 0, std::size_t column = 0);
@@ -277,6 +318,14 @@ class Program {
 class Engine {
  public:
   explicit Engine(Program program);
+  Engine(Program program,
+         std::map<std::string, std::string, std::less<>> initial_states);
+
+  // A procedure is only a named Engine entry configuration. It supplies the
+  // initial orthogonal states and lexical entry context; all later progress is
+  // still selected by the program's global transition engine.
+  [[nodiscard]] static Engine from_procedure(Program program,
+                                             std::string_view procedure_name);
 
   // Executes one logical event. External calls are only described in the
   // returned ActionPlan; this standalone engine never performs ambient I/O.
@@ -289,15 +338,24 @@ class Engine {
   [[nodiscard]] ParallelStepResult step_parallel(const std::vector<Event>& events);
 
   [[nodiscard]] std::string current_state() const;
+  [[nodiscard]] const std::map<std::string, std::string, std::less<>>&
+  current_states() const noexcept;
+  [[nodiscard]] const std::string& initial_context() const noexcept;
   [[nodiscard]] std::uint64_t current_round() const noexcept;
   [[nodiscard]] const std::map<std::string, Value, std::less<>>& values() const;
+  [[nodiscard]] TraceSnapshot captured_trace(std::string_view name,
+                                             bool close = false) const;
+  [[nodiscard]] std::vector<ClaimEvaluation> evaluate_claims(
+      std::string_view trace_name, bool close = false) const;
 
  private:
   Program program_;
+  std::string initial_context_;
   std::uint64_t round_{0};
-  std::string current_state_;
+  std::map<std::string, std::string, std::less<>> active_states_;
   std::map<std::string, Value, std::less<>> values_;
   std::map<std::string, std::set<std::string, std::less<>>, std::less<>> last_writers_;
+  std::map<std::string, TraceSnapshot, std::less<>> captured_traces_;
 };
 
 [[nodiscard]] std::string value_text(const Value& value);
@@ -306,5 +364,12 @@ class Engine {
 // runtime journal or provider receipt and never executes an ActionPlan.
 [[nodiscard]] TraceResult run_trace(const Program& program, const EventTrace& trace);
 [[nodiscard]] TraceResult replay_trace(const Program& program, const EventTrace& trace);
+[[nodiscard]] std::vector<std::string> declared_traces(const Program& program);
+[[nodiscard]] std::vector<std::string> declared_procedures(const Program& program);
+[[nodiscard]] TraceSnapshot run_named_trace(const Program& program,
+                                            std::string_view name);
+[[nodiscard]] std::vector<ClaimEvaluation> evaluate_named_trace(
+    const Program& program, std::string_view name);
+[[nodiscard]] std::string_view claim_status_name(ClaimStatus status) noexcept;
 
 }  // namespace dtessl

@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.2.3` integration slice.
+- **Implemented**: accepted and executed through the `v0.3.0` state/trace slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -220,29 +220,39 @@ They are library types, not baked-in keywords.
 
 ```text
 transition Assign @ Submit(task: Task):
-  from {Scheduler as before, Session[task.session] as session}
+  case active (SchedulerIdle @ scheduler, SessionActive @ session)
+    -> (SchedulerBusy @ scheduler, SessionActive @ session):
+    where:
+      E worker in scheduler.workers: eligible(worker, task)
+      and select worker in scheduler.workers
+            where eligible(worker, task)
+            by lex(load(worker), worker.id)
+    set @ scheduler:
+      ready = erase(before.scheduler.ready, task.id)
+      running = insert(before.scheduler.running, task.id)
+    do:
+      accept: $ipc.accept(task.id),
+      (reserve: $provider.reserve(task.id) @ worker
+       | audit: $audit.append(task.id) @ session)
 
-  to {Scheduler as after}:
-    after.ready = erase(before.ready, task.id)
-    after.running = insert(before.running, task.id)
-
-  where:
-    session.status = Active
-    and E worker in before.workers: eligible(worker, task)
-    and select worker in before.workers
-          where eligible(worker, task)
-          by lex(load(worker), worker.id)
-
-  do:
-    accept: $ipc.accept(task.id),
-    (reserve: $provider.reserve(task.id) @ worker
-     | audit: $audit.append(task.id) @ session)
+  case expired (SchedulerIdle @ scheduler, SessionExpired @ session)
+    -> (SchedulerIdle @ scheduler, SessionExpired @ session):
+    do:
+      reject: $ipc.reject(task.id) @ session
 ```
 
 - `@ Submit(...)` is the explicit event/context trigger; there is no separate
   `on` keyword.
-- `from` and `to` are sets of typed state patterns. Multiple components may be
-  independent or coupled by `where` predicates.
+- Every `case (source-set) -> (target-set)` is one path. Items inside a set are
+  conjunctive; repeated `case` paths are alternatives.
+- An optional case name yields the stable qualified identity
+  `Transition.caseName`; native trace selectors and count claims may reference
+  either that exact path or the transition as a whole.
+- Source items accept exact, finite-set and `_` wildcard patterns. Targets are
+  exact so executable lowering never invents nondeterministic choice.
+- `case` is static topology matching. Its path-local `where` is the dynamic,
+  typed value/relation guard; path-local `set` and `do` cannot leak into a
+  different alternative.
 - Target assignments are evaluated against one immutable before snapshot and
   the selected bindings, then committed atomically.
 - A target state set may be selectable only through the same deterministic
@@ -286,6 +296,32 @@ no host handles, leases, credentials, provider objects, physical scheduling or
 completion facts. Native replay consumes only `Program + typed EventTrace` and
 recomputes logical results; runtime journals, snapshots and receipts are not
 DTESSL inputs.
+
+### Procedure entry, native trace and claims
+
+- `procedure P @ context: initial (...)` declares only an Engine entry
+  configuration: one initial context and a finite initial state combination.
+  It contains no events, transitions, replay, capture or ordered steps. Once
+  started, ordinary typed events are dispatched by the global transition set.
+- A procedure is not a trace. A trace never selects a procedure implicitly;
+  tools compose a procedure entry with an EventTrace explicitly when they need
+  to test that entry configuration.
+- `trace T @ root: replay:` is a closed, source-authored native EventTrace.
+  One source line is one discrete round and `|` joins simultaneous events.
+- A trace may put `capture closed/projected:` after `replay:` to declare both a
+  replay input and a capture projection; the section order is semantic and
+  cannot be reversed.
+- `trace T @ root: capture closed:` retains every native Engine round while
+  projecting state to the declared `state @ context` axes.
+- `capture projected` retains only decisions touching those axes and records a
+  causal gap. It is useful for inspection, not conclusive global assurance.
+- `Claim C @ T` currently supports `always`, `eventually` and
+  `count Transition <= N`. A finite open trace returns `pending` unless it
+  already contains a decisive counterexample or witness. A closed trace can
+  return `satisfied` or `violated`; positive satisfaction is downgraded to
+  `pending` when projection gaps exist.
+- Dynamic capture consumes only DTESSL-native typed Engine steps. It is not a
+  syslog, audit-log, receipt or chenRT journal adapter.
 
 ## 10. Time, simultaneity and causality
 

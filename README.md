@@ -1,4 +1,4 @@
-# DTESSL v0.2.3
+# DTESSL v0.3.0
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -23,21 +23,24 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 
 ## v0 的闭环
 
-一个程序由三类定义组成：
+一个程序的闭环由五类定义组成：
 
 - `record / variant / enum / newtype` 定义代数与名义领域类型；
 - `state` 定义一个有类型的状态空间、初值、上下文和不变量；
-- `transition` 定义一次事件能够引起的整体变化，以及变化后建议宿主执行的调用 DAG。
+- `transition` 的 `case (source-set) -> (target-set)` 定义原子状态集重写；
+- `trace` 定义原生静态事件序列或按 `@context` 捕获的动态执行投影；
+- `Claim` 用 `always`、`eventually` 或 transition 次数约束判定 trace。
 
 执行器以一组可并行事件为一个离散 `round`。同一 round 的 transition 都读取同一个
 before snapshot；写集不冲突时原子合并，冲突而没有显式 merge relation 时拒绝整组事件。
 因此 round 是模拟批次，不是“每个 transition 自增一次”的全局逻辑时钟。引擎按以下顺序工作：
 
-1. 用当前状态和事件参数求值 `where`；
-2. 要求恰好一个 transition 可用，否则拒绝事件；
-3. 根据 `to` 计算候选新状态；
-4. 检查目标 state 的全部 `invariant`；
-5. 生成 `do` 的调用 DAG，然后原子提交逻辑状态。
+1. 用 `case` 静态匹配当前正交状态组合；
+2. 用当前 typed value 和事件参数动态求值 path-local `where`；
+3. 要求恰好一个 path 可用，否则拒绝事件；
+4. 根据 `->` 和 path-local `set` 计算候选状态集；
+5. 检查所有目标 state 的 `invariant`；
+6. 生成所选 path 的 `do` 调用 DAG，然后原子提交全部状态轴和值。
 
 `$name(...)` 不会在解释器内执行。它只是一个带类型实参、上下文和依赖边的外部调用
 记录。宿主以后可以向这些名字注入 chenRT IPC 或其他接口；DTESSL 本身没有环境时钟、
@@ -64,22 +67,23 @@ state Scheduler @ local initial:
     credits >= 0 and count(workers) > 0
 
 transition Schedule @ Submit(task: string, worker: string):
-  from Scheduler
-  to Scheduler:
-    mode = Mode.Assigned(TaskId(task))
-    credits = before.credits - 1
-  where:
-    before.mode = "Idle"
-    and exists candidate in before.workers where candidate = worker
-  do:
-    accept: $ipc.accept(task),
-    (reserve: $pool.reserve(task) @ worker | audit: $log.append(task) @ local)
+  case (Scheduler @ local) -> (Scheduler @ local):
+    where:
+      before.mode = Mode.Idle
+      and exists candidate in before.workers where candidate = worker
+    set @ local:
+      mode = Mode.Assigned(TaskId(task))
+      credits = before.credits - 1
+    do:
+      accept: $ipc.accept(task),
+      (reserve: $pool.reserve(task) @ worker | audit: $log.append(task) @ local)
 ```
 
 核心词法和文法骨架如下；缩进构成块，Tab 非法，`//` 开始行注释。
 
 ```ebnf
-program     = { type-declaration | port | state | transition } ;
+program     = { type-declaration | port | function | state | transition
+              | procedure | trace | claim } ;
 type-declaration = name-type | newtype | record | variant | enum ;
 name-type   = "name" Name NEWLINE ;
 newtype     = "newtype" Name "=" type NEWLINE ;
@@ -89,6 +93,8 @@ variant     = "variant" Name ":" INDENT
               DEDENT ;
 enum        = "enum" Name ":" INDENT { Name NEWLINE } DEDENT ;
 port        = "port" qualified-name "(" [ type { "," type } ] ")" NEWLINE ;
+function    = "function" Name "(" [ parameter { "," parameter } ] ")"
+              "->" type ":" INDENT expression DEDENT ;
 state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
                 { field | invariant }
               DEDENT ;
@@ -96,10 +102,29 @@ field       = Name ":" type "=" literal [ "merge" ( "equal" | "union" ) ] NEWLIN
 invariant   = "invariant" ":" INDENT expression DEDENT ;
 
 transition  = "transition" Name "@" event-pattern ":" INDENT
-                "from" Name NEWLINE
-                "to" Name ":" INDENT { Name "=" expression NEWLINE } DEDENT
+                case { case }
+              DEDENT ;
+case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                 [ "where" ":" INDENT expression DEDENT ]
+                { "set" "@" Name ":" INDENT { Name "=" expression NEWLINE } DEDENT }
                 [ "do" ":" INDENT action-expression DEDENT ]
+              DEDENT ;
+state-pattern-set = "(" state-pattern { "," state-pattern } ")" ;
+state-pattern = ( Name | "{" Name { "," Name } "}" | "_" ) [ "@" Name ] ;
+exact-state-set = "(" state-binding { "," state-binding } ")" ;
+state-binding = Name [ "@" Name ] ;
+procedure   = "procedure" Name "@" Name ":" INDENT
+                "initial" exact-state-set NEWLINE
+              DEDENT ;
+trace       = "trace" Name "@" Name ":" INDENT
+                [ "replay" ":" INDENT event-round { event-round } DEDENT ]
+                [ "capture" ( "closed" | "projected" ) ":"
+                    INDENT ( state-binding | qualified-name )
+                           { state-binding | qualified-name } DEDENT ]
+              DEDENT ;
+claim       = "Claim" Name "@" Name ":" INDENT
+                ( ( "always" | "eventually" ) ":" INDENT expression DEDENT
+                | "count" Name "<=" integer NEWLINE )
               DEDENT ;
 event-pattern = Name "(" [ parameter { "," parameter } ] ")" ;
 parameter   = Name ":" type ;
@@ -146,6 +171,27 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `,` 表示必须按序发生，`|` 表示两边没有顺序边；`,` 的结合优先级高于 `|`。因此
 `a, b | c, d` 是两条并行链 `(a, b) | (c, d)`。若要先做 `a` 再并行做 `b/c`，应写
 `a, (b | c)`。输出中的 `requires` 是该表达式编译出的 DAG 边，不是另一套表层语法。
+
+`case` 的源括号是合取状态集：其中每个 `state @ context` 必须同时成立。重复的
+`case` 表示候选 path 的析取；`{Idle, Waiting} @ scheduler` 是有限模式，`_ @ scheduler`
+是该轴的通配模式。模式在验证阶段展开为有限候选；目标侧只接受精确状态，生产执行中
+绝不从多个目标中暗选。`where` 是 path-local 的动态 typed guard，`set` 与 `do` 也只属于
+被唯一选中的 path。可选的 case 名形成 `Transition.caseName` 规范身份，供 trace 捕获和
+`Claim count` 精确引用；不写名字的单 path 仍使用 transition 名。v0 旧式
+`from/to/where/do` 仍作为单状态兼容输入。
+
+`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。replay 中一行
+是一个 round，`|` 分隔同 round 事件；下一行表示下一 round。动态
+`capture closed/projected` 只观察当前 Engine 的原生 typed step，不读取外部日志。
+`Claim` 对闭合 trace 返回 `satisfied/violated`；开放 trace 在没有反例或见证时返回
+`pending`。有 causal gap 的 projected trace 不得给出肯定的 `satisfied`。
+
+`procedure P @ context` 只命名一个 Engine 入口：`@ context` 是 initial context，
+`initial (...)` 是正交状态轴的 initial state 组合。它没有 transition、event、replay、
+capture 或步骤正文。启动后，后续 typed event 仍由全局 transition engine 自动匹配与推进；
+`trace` 只是独立的测试/判定投影，不是 procedure 的步骤容器。`function` 是非递归、纯、总的
+typed expression 封装；只能读取
+参数，不能观察 `before`/`round`，不能修改状态或生成 ActionPlan。
 
 `@` 只表达调用或定义所处的上下文，不授予权限。动作未写 `@` 时继承源 state 的上下文；
 写 `@ worker` 时，如果 `worker` 是 string 类型事件参数，就绑定到该参数的值，否则它是
@@ -199,10 +245,10 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 
 ## 确定性与错误边界
 
-- 一个程序必须且只能有一个 `initial` state；
+- 每个 `@context` 状态轴必须且只能有一个 `initial` state；
 - 同名事件在所有 transition 上必须拥有相同参数表；
 - 字段、事件、赋值、谓词和动作实参在 `check` 时静态检查；
-- 同一事件若没有可用 transition，或同时启用多个 transition，执行失败；
+- 同一事件若没有可用 path，或同时启用多个 `case` path，执行失败；
 - 新状态违反 invariant 时不提交状态，也不产出外部调用计划；
 - 调用标签在一个 transition 内必须唯一；
 - 输出的 map/set、调用和依赖边都有规范顺序。
@@ -245,9 +291,9 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.2.3 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.3.0 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
-下一个增量进入完整 state theory 与多组件 transition，随后扩展原生 typed EventTrace，
-最后才加入稀疏矩阵与可替换 solver backend。
+下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
+与可替换 solver backend。
 它们应继续服从同一条边界：
 transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。

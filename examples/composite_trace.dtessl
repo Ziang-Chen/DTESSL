@@ -1,0 +1,58 @@
+// Orthogonal state axes, state-set rewrite, native traces, and trace claims.
+function hasCredits(value: int) -> bool:
+  value > 0
+
+state SchedulerIdle @ scheduler initial:
+  credits: int = 2
+  invariant:
+    credits >= 0
+
+state SchedulerBusy @ scheduler:
+  credits: int = 0
+  invariant:
+    credits >= 0
+
+state ProcessReady @ process initial:
+  started: bool = false
+
+state ProcessRetrying @ process:
+  started: bool = false
+
+state ProcessRunning @ process:
+  started: bool = true
+
+transition Dispatch @ Tick():
+  case ready (SchedulerIdle @ scheduler, {ProcessReady, ProcessRetrying} @ process) -> (SchedulerBusy @ scheduler, ProcessRunning @ process):
+    where:
+      hasCredits(scheduler.credits)
+    set @ scheduler:
+      credits = before.scheduler.credits - 1
+    set @ process:
+      started = true
+
+procedure DispatchRun @ system:
+  initial (SchedulerIdle @ scheduler, ProcessRetrying @ process)
+
+trace Happy @ system:
+  replay:
+    Tick()
+  capture closed:
+    SchedulerBusy @ scheduler
+    ProcessRunning @ process
+    Dispatch.ready
+
+trace ProcessView @ system:
+  capture projected:
+    ProcessRunning @ process
+    Dispatch.ready
+
+Claim DispatchReachesRunning @ Happy:
+  eventually:
+    process.started
+
+Claim CreditsNeverNegative @ Happy:
+  always:
+    scheduler.credits >= 0
+
+Claim AtMostOneDispatch @ Happy:
+  count Dispatch.ready <= 1

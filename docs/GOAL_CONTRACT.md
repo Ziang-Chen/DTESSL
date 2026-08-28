@@ -65,17 +65,19 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.2.3 integration boundary
+## Current v0.3.0 state/trace boundary
 
 - Work is restricted to the DTESSL repository and the
-  `codex/repl-cli-v0-2-3` integration branch.
-- The authoritative core input is commit
-  `7097f32df32efdcaea5f1f34ce4a77448280ace3`.
-- The slice must preserve both the core logical syntax and the production-parser
-  language service, editor/REPL, highlighting and terminal history behavior.
-- Completion requires standard, `-Werror`, ASan/UBSan, installed CLI,
-  non-interactive command and real PTY REPL evidence, followed by a pushed
-  commit and clean worktree.
+  `codex/composite-trace-claims-v0-3-0` branch.
+- The slice must preserve the v0.2.3 logical/workbench surface while adding
+  atomic orthogonal state sets, path-local transition cases, native trace
+  capture, finite-prefix claim evaluation, pure helper functions and procedure
+  entry configurations.
+- A procedure contains only an initial context and initial state combination.
+  It owns no transitions, events, trace or execution steps; after explicit
+  startup, the global transition engine handles later typed events.
+- Completion requires parser/verifier/runtime/CLI evidence plus standard,
+  `-Werror` and ASan/UBSan gates, followed by a scoped commit and push.
 - This slice does not authorize changes to `main`, tags, chenRT, ChenVM or any
   other task thread.
 
@@ -91,6 +93,9 @@ The project is complete only when all of the following are evidenced:
 - `,` composes actions serially; `|` composes them in parallel.
 - Logical implication uses `->`; action sequencing does not use `then`.
 - `where` is the single surface for guards and relational eligibility/search.
+- `case (source-set) -> (target-set):` is the primary transition path syntax;
+  source items are conjunctive, repeated cases are alternatives, and
+  `where/set/do` are path-local.
 - `name T` and `T(atom)` are nominal logical identifiers, not strings,
   capabilities or authority.
 - `~` is reserved for relation types, literals and typed relation matching.

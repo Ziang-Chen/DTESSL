@@ -40,7 +40,9 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "invariant", "transition", "from", "to", "where", "do", "merge",
       "equal", "union", "and", "or", "not", "in", "exists", "select",
       "by", "lex", "match", "E", "A", "true", "false", "none", "some",
-      "ok", "err", "round"};
+      "ok", "err", "round", "trace", "replay", "capture", "closed",
+      "projected", "Claim", "always", "eventually", "case", "function",
+      "procedure", "initial"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
@@ -421,6 +423,17 @@ struct Parameter {
   std::size_t column{0};
 };
 
+struct FunctionDeclaration {
+  std::string name;
+  std::vector<Parameter> parameters;
+  DataType result;
+  ExprPtr body;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+using FunctionRegistry = std::map<std::string, FunctionDeclaration, std::less<>>;
+
 struct ActionPortDeclaration {
   std::string name;
   std::vector<DataType> parameters;
@@ -445,17 +458,73 @@ struct Assignment {
   std::size_t column{0};
 };
 
-struct Transition {
-  std::string name;
-  std::string event;
-  std::vector<Parameter> parameters;
-  std::string from;
-  std::string to;
+struct StateBinding {
+  std::string state;
+  std::string context;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct TransitionTarget {
+  StateBinding binding;
   std::vector<Assignment> assignments;
+};
+
+struct TransitionAlternative {
+  std::string name;
+  std::vector<StateBinding> from;
+  std::vector<TransitionTarget> to;
   ExprPtr condition{make_literal(Value(true))};
   std::shared_ptr<ActionExpr> action;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
+};
+
+struct Transition {
+  std::string name;
+  std::string event;
+  std::vector<Parameter> parameters;
+  std::string case_name;
+  std::vector<StateBinding> from;
+  std::vector<TransitionTarget> to;
+  std::vector<TransitionAlternative> alternatives;
+  ExprPtr condition{make_literal(Value(true))};
+  std::shared_ptr<ActionExpr> action;
+  std::set<std::string, std::less<>> reads;
+  std::set<std::string, std::less<>> writes;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct TraceDeclaration {
+  std::string name;
+  std::string root_context;
+  bool has_replay{false};
+  bool has_capture{false};
+  TraceCaptureMode capture_mode{TraceCaptureMode::Closed};
+  std::vector<StateBinding> capture;
+  std::set<std::string, std::less<>> paths;
+  EventTrace events;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct ClaimDeclaration {
+  enum class Kind { Always, Eventually, CountAtMost };
+  std::string name;
+  std::string trace;
+  Kind kind{Kind::Always};
+  ExprPtr predicate;
+  std::string transition;
+  std::uint64_t limit{0};
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct ProcedureDeclaration {
+  std::string name;
+  std::string initial_context;
+  std::vector<StateBinding> initial_states;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -465,7 +534,7 @@ class FlatParser {
   FlatParser(std::vector<Token> tokens, const TypeRegistry& types)
       : tokens_(std::move(tokens)), types_(types) {}
 
-  ExprPtr expression() { return parse_or(); }
+  ExprPtr expression() { return parse_implication(); }
 
   std::shared_ptr<ActionExpr> action() {
     auto result = parse_parallel();
@@ -591,6 +660,14 @@ class FlatParser {
     return DataType(DataType::Kind::Named, std::move(name.text));
   }
 
+  ExprPtr parse_implication() {
+    auto left = parse_or();
+    if (match("->")) {
+      return make_binary("->", std::move(left), parse_implication());
+    }
+    return left;
+  }
+
   ExprPtr parse_or() {
     auto left = parse_and();
     while (match("or")) {
@@ -648,7 +725,7 @@ class FlatParser {
 
   ExprPtr parse_primary() {
     if (match("(")) {
-      auto result = parse_or();
+      auto result = parse_implication();
       expect(")");
       return result;
     }
@@ -660,7 +737,7 @@ class FlatParser {
       if (!match("~")) expect("in");
       auto domain = parse_add();
       if (!match("where")) expect(":");
-      auto predicate = parse_or();
+      auto predicate = parse_implication();
       auto result = std::make_shared<Expr>();
       result->kind = quantifier == "exists" || quantifier == "E"
                          ? Expr::Kind::Exists
@@ -680,12 +757,12 @@ class FlatParser {
       if (!match("~")) expect("in");
       result->left = parse_add();
       if (!match("where")) expect(":");
-      result->right = parse_or();
+      result->right = parse_implication();
       expect("by");
       expect("lex");
       expect("(");
       do {
-        result->children.push_back(parse_or());
+        result->children.push_back(parse_implication());
       } while (match(","));
       expect(")");
       result->line = start.line;
@@ -699,7 +776,7 @@ class FlatParser {
       result->line = start.line;
       result->column = start.column;
       if (match("(")) {
-        result->left = parse_or();
+        result->left = parse_implication();
         expect(")");
       } else {
         std::string scrutinee = identifier().text;
@@ -728,7 +805,7 @@ class FlatParser {
           }
         }
         expect("->");
-        arm.body = parse_or();
+        arm.body = parse_implication();
         result->arms.push_back(std::move(arm));
       } while (match(","));
       expect("}");
@@ -739,7 +816,7 @@ class FlatParser {
       expect("(");
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::Count;
-      result->left = parse_or();
+      result->left = parse_implication();
       expect(")");
       result->line = start.line;
       result->column = start.column;
@@ -751,9 +828,9 @@ class FlatParser {
       expect("(");
       auto result = std::make_shared<Expr>();
       result->kind = inserting ? Expr::Kind::SetInsert : Expr::Kind::SetErase;
-      result->left = parse_or();
+      result->left = parse_implication();
       expect(",");
-      result->right = parse_or();
+      result->right = parse_implication();
       expect(")");
       result->line = start.line;
       result->column = start.column;
@@ -763,7 +840,7 @@ class FlatParser {
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::OptionLiteral;
       if (!match("]")) {
-        result->children.push_back(parse_or());
+        result->children.push_back(parse_implication());
         expect("]");
       }
       return result;
@@ -808,7 +885,7 @@ class FlatParser {
         do {
           result->names.push_back(identifier().text);
           expect(":");
-          result->children.push_back(parse_or());
+          result->children.push_back(parse_implication());
         } while (match(","));
         expect("}");
       }
@@ -830,7 +907,7 @@ class FlatParser {
         expect(")");
       } else if (!match(")")) {
         do {
-          result->children.push_back(parse_or());
+          result->children.push_back(parse_implication());
         } while (match(","));
         expect(")");
       }
@@ -906,7 +983,7 @@ class FlatParser {
     expect("(");
     if (!match(")")) {
       do {
-        result->arguments.push_back(parse_or());
+        result->arguments.push_back(parse_implication());
       } while (match(","));
       expect(")");
     }
@@ -967,9 +1044,13 @@ class Parser {
   DataType type();
   Value initial_value(DataType type);
   TypeDefinition type_definition();
+  FunctionDeclaration function_declaration();
   ActionPortDeclaration action_port_declaration();
   State state();
   Transition transition();
+  TraceDeclaration trace(const std::vector<Transition>& transitions);
+  ClaimDeclaration claim();
+  ProcedureDeclaration procedure();
   ExprPtr line_expression();
   ExprPtr block_expression();
   std::shared_ptr<ActionExpr> block_action();
@@ -984,12 +1065,30 @@ class Parser {
 
 struct Program::Impl {
   TypeRegistry types;
+  FunctionRegistry functions;
   std::vector<ActionPortDeclaration> action_ports;
   std::vector<State> states;
   std::vector<Transition> transitions;
+  std::vector<TraceDeclaration> traces;
+  std::vector<ClaimDeclaration> claims;
+  std::map<std::string, ProcedureDeclaration, std::less<>> procedures;
 };
 
 namespace {
+
+thread_local const FunctionRegistry* active_functions = nullptr;
+
+class FunctionScope {
+ public:
+  explicit FunctionScope(const FunctionRegistry& functions)
+      : previous_(active_functions) {
+    active_functions = &functions;
+  }
+  ~FunctionScope() { active_functions = previous_; }
+
+ private:
+  const FunctionRegistry* previous_;
+};
 
 DataType Parser::type() {
   if (match("bool")) return bool_type();
@@ -1153,6 +1252,34 @@ ActionPortDeclaration Parser::action_port_declaration() {
     expect(")");
   }
   newline();
+  return result;
+}
+
+FunctionDeclaration Parser::function_declaration() {
+  const Token start = peek();
+  expect("function");
+  FunctionDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = identifier();
+  expect("(");
+  if (!match(")")) {
+    do {
+      Parameter parameter;
+      const Token parameter_start = peek();
+      parameter.name = identifier();
+      parameter.line = parameter_start.line;
+      parameter.column = parameter_start.column;
+      expect(":");
+      parameter.type = type();
+      result.parameters.push_back(std::move(parameter));
+    } while (match(","));
+    expect(")");
+  }
+  expect("->");
+  result.result = type();
+  expect(":");
+  result.body = block_expression();
   return result;
 }
 
@@ -1508,28 +1635,200 @@ Transition Parser::transition() {
   expect(":");
   newline();
   indent();
-  while (!at(TokenKind::Dedent)) {
-    if (match("from")) {
-      result.from = identifier();
-      newline();
-      continue;
+  const auto binding = [&]() {
+    StateBinding result;
+    const Token start_token = peek();
+    result.line = start_token.line;
+    result.column = start_token.column;
+    result.state = identifier();
+    if (match("@")) result.context = identifier();
+    return result;
+  };
+  const auto assignments = [&]() {
+    std::vector<Assignment> result;
+    while (!at(TokenKind::Dedent)) {
+      Assignment assignment;
+      const Token assignment_start = peek();
+      assignment.field = identifier();
+      assignment.line = assignment_start.line;
+      assignment.column = assignment_start.column;
+      expect("=");
+      assignment.value = line_expression();
+      result.push_back(std::move(assignment));
     }
-    if (match("to")) {
-      result.to = identifier();
+    return result;
+  };
+  const auto source_patterns = [&]() {
+    std::vector<std::vector<StateBinding>> expansions(1);
+    expect("(");
+    if (!match(")")) {
+      do {
+        const Token pattern_start = peek();
+        std::vector<std::string> choices;
+        if (match("{")) {
+          do choices.push_back(identifier()); while (match(","));
+          expect("}");
+        } else if (match("_")) {
+          choices.push_back("_");
+        } else {
+          choices.push_back(identifier());
+        }
+        std::string context;
+        if (match("@")) context = identifier();
+        std::vector<std::vector<StateBinding>> next;
+        for (const auto& expansion : expansions) {
+          for (const std::string& choice : choices) {
+            auto item = expansion;
+            item.push_back(
+                StateBinding{choice, context, pattern_start.line, pattern_start.column});
+            next.push_back(std::move(item));
+          }
+        }
+        expansions = std::move(next);
+      } while (match(","));
+      expect(")");
+    }
+    return expansions;
+  };
+  const auto exact_targets = [&]() {
+    std::vector<TransitionTarget> targets;
+    expect("(");
+    if (!match(")")) {
+      do {
+        if (at("{") || at("_")) {
+          fail(peek(), "transition targets must be exact states");
+        }
+        targets.push_back(TransitionTarget{binding(), {}});
+      } while (match(","));
+      expect(")");
+    }
+    return targets;
+  };
+  while (!at(TokenKind::Dedent)) {
+    if (match("case")) {
+      bool first_route = result.from.empty();
+      std::string case_name;
+      if (!at("(")) case_name = identifier();
+      auto sources = source_patterns();
+      expect("->");
+      auto targets = exact_targets();
       expect(":");
       newline();
       indent();
+      ExprPtr condition = make_literal(Value(true));
+      std::shared_ptr<ActionExpr> action;
       while (!at(TokenKind::Dedent)) {
-        Assignment assignment;
-        const Token assignment_start = peek();
-        assignment.field = identifier();
-        assignment.line = assignment_start.line;
-        assignment.column = assignment_start.column;
-        expect("=");
-        assignment.value = line_expression();
-        result.assignments.push_back(std::move(assignment));
+        if (match("where")) {
+          expect(":");
+          condition = block_expression();
+          continue;
+        }
+        if (match("set")) {
+          expect("@");
+          const std::string context = identifier();
+          expect(":");
+          newline();
+          indent();
+          const std::vector<Assignment> updates = assignments();
+          dedent();
+          const auto found = std::find_if(
+              targets.begin(), targets.end(), [&](const TransitionTarget& target) {
+                return target.binding.context == context;
+              });
+          if (found == targets.end()) {
+            fail(peek(), "set @" + context + " has no matching path target");
+          }
+          found->assignments.insert(found->assignments.end(), updates.begin(), updates.end());
+          continue;
+        }
+        if (match("do")) {
+          expect(":");
+          action = block_action();
+          continue;
+        }
+        fail(peek(), "case path requires where, set, or do");
       }
       dedent();
+      for (auto& source : sources) {
+        if (first_route) {
+          result.from = std::move(source);
+          result.to = targets;
+          result.case_name = case_name;
+          result.condition = condition;
+          result.action = action;
+          first_route = false;
+        } else {
+          result.alternatives.push_back(TransitionAlternative{
+              case_name, std::move(source), targets, condition, action, {}, {}});
+        }
+      }
+      continue;
+    }
+    if (match("set")) {
+      expect("@");
+      const std::string context = identifier();
+      expect(":");
+      newline();
+      indent();
+      const std::vector<Assignment> updates = assignments();
+      dedent();
+      auto attach = [&](std::vector<TransitionTarget>& targets) {
+        const auto found = std::find_if(targets.begin(), targets.end(),
+                                        [&](const TransitionTarget& target) {
+                                          return target.binding.context == context;
+                                        });
+        if (found == targets.end()) {
+          fail(peek(), "set @" + context + " has no matching target context");
+        }
+        found->assignments.insert(found->assignments.end(), updates.begin(), updates.end());
+      };
+      attach(result.to);
+      for (TransitionAlternative& alternative : result.alternatives) attach(alternative.to);
+      continue;
+    }
+    if (match("from")) {
+      if (match(":")) {
+        newline();
+        indent();
+        while (!at(TokenKind::Dedent)) {
+          result.from.push_back(binding());
+          newline();
+        }
+        dedent();
+      } else {
+        result.from.push_back(binding());
+        newline();
+      }
+      continue;
+    }
+    if (match("to")) {
+      if (match(":")) {
+        newline();
+        indent();
+        while (!at(TokenKind::Dedent)) {
+          TransitionTarget target;
+          target.binding = binding();
+          if (match(":")) {
+            newline();
+            indent();
+            target.assignments = assignments();
+            dedent();
+          } else {
+            newline();
+          }
+          result.to.push_back(std::move(target));
+        }
+        dedent();
+      } else {
+        TransitionTarget target;
+        target.binding = binding();
+        expect(":");
+        newline();
+        indent();
+        target.assignments = assignments();
+        dedent();
+        result.to.push_back(std::move(target));
+      }
       continue;
     }
     if (match("where")) {
@@ -1542,7 +1841,176 @@ Transition Parser::transition() {
       result.action = block_action();
       continue;
     }
-    fail(peek(), "expected from, to, where, or do");
+    fail(peek(), "expected case, set, from, to, where, or do");
+  }
+  dedent();
+  return result;
+}
+
+TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
+  const Token start = peek();
+  expect("trace");
+  TraceDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = identifier();
+  expect("@");
+  result.root_context = identifier();
+  expect(":");
+  newline();
+  indent();
+  const auto parse_replay = [&]() {
+    result.has_replay = true;
+    expect(":");
+    newline();
+    indent();
+    const auto schema = [&](std::string_view event_name) -> const std::vector<Parameter>& {
+      const auto found = std::find_if(
+          transitions.begin(), transitions.end(), [&](const Transition& item) {
+            return item.event == event_name;
+          });
+      if (found == transitions.end()) {
+        fail(peek(), "trace references unknown event '" + std::string(event_name) + "'");
+      }
+      return found->parameters;
+    };
+    while (!at(TokenKind::Dedent)) {
+      EventBatch batch;
+      for (;;) {
+        Event event;
+        event.name = identifier();
+        const auto& parameters = schema(event.name);
+        expect("(");
+        for (std::size_t index = 0; index < parameters.size(); ++index) {
+          if (index != 0) expect(",");
+          event.fields.emplace(parameters[index].name,
+                               initial_value(parameters[index].type));
+        }
+        expect(")");
+        batch.events.push_back(std::move(event));
+        if (!match("|")) break;
+      }
+      result.events.rounds.push_back(std::move(batch));
+      static_cast<void>(match(","));
+      newline();
+    }
+    dedent();
+  };
+  const auto parse_capture = [&]() {
+    result.has_capture = true;
+    result.capture_mode = TraceCaptureMode::Closed;
+    if (match("closed")) result.capture_mode = TraceCaptureMode::Closed;
+    else if (match("projected")) result.capture_mode = TraceCaptureMode::Projected;
+    expect(":");
+    newline();
+    indent();
+    while (!at(TokenKind::Dedent)) {
+      const Token binding_start = peek();
+      const std::string state_name = identifier();
+      if (match(".")) {
+        const std::string path = state_name + "." + identifier();
+        if (!result.paths.insert(path).second) {
+          fail(binding_start, "trace captures the same transition path twice");
+        }
+        newline();
+        continue;
+      }
+      std::string context;
+      if (match("@")) context = identifier();
+      if (context.empty()) {
+        fail(peek(), "dynamic trace capture requires an explicit @ context");
+      }
+      const bool duplicate = std::any_of(
+          result.capture.begin(), result.capture.end(),
+          [&](const StateBinding& item) { return item.context == context; });
+      if (duplicate) fail(peek(), "trace captures the same context twice");
+      result.capture.push_back(
+          StateBinding{state_name, context, binding_start.line, binding_start.column});
+      newline();
+    }
+    dedent();
+  };
+  if (match("replay")) parse_replay();
+  if (match("capture")) parse_capture();
+  if (!result.has_replay && !result.has_capture) {
+    fail(peek(), "trace requires replay: and/or capture [closed|projected]:");
+  }
+  if (!at(TokenKind::Dedent)) {
+    fail(peek(), "trace sections must be ordered replay then capture");
+  }
+  dedent();
+  return result;
+}
+
+ProcedureDeclaration Parser::procedure() {
+  const Token start = peek();
+  expect("procedure");
+  ProcedureDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = identifier();
+  expect("@");
+  result.initial_context = identifier();
+  expect(":");
+  newline();
+  indent();
+  expect("initial");
+  expect("(");
+  if (!match(")")) {
+    do {
+      StateBinding binding;
+      const Token binding_start = peek();
+      binding.line = binding_start.line;
+      binding.column = binding_start.column;
+      binding.state = identifier();
+      if (match("@")) binding.context = identifier();
+      result.initial_states.push_back(std::move(binding));
+    } while (match(","));
+    expect(")");
+  }
+  newline();
+  dedent();
+  if (result.initial_states.empty()) {
+    fail(start, "procedure requires at least one initial state");
+  }
+  return result;
+}
+
+ClaimDeclaration Parser::claim() {
+  const Token start = peek();
+  expect("Claim");
+  ClaimDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = identifier();
+  expect("@");
+  result.trace = identifier();
+  expect(":");
+  newline();
+  indent();
+  if (match("always")) {
+    result.kind = ClaimDeclaration::Kind::Always;
+    expect(":");
+    result.predicate = block_expression();
+  } else if (match("eventually")) {
+    result.kind = ClaimDeclaration::Kind::Eventually;
+    expect(":");
+    result.predicate = block_expression();
+  } else if (match("count")) {
+    result.kind = ClaimDeclaration::Kind::CountAtMost;
+    result.transition = identifier();
+    if (match(".")) result.transition += "." + identifier();
+    expect("<=");
+    if (!at(TokenKind::Integer)) fail(peek(), "claim count limit must be an integer");
+    const Token limit = take();
+    const auto parsed = std::from_chars(limit.text.data(), limit.text.data() + limit.text.size(),
+                                        result.limit);
+    if (parsed.ec != std::errc{} || parsed.ptr != limit.text.data() + limit.text.size()) {
+      fail(limit, "invalid claim count limit");
+    }
+    newline();
+  } else {
+    fail(peek(), "Claim requires always:, eventually:, or count Transition <= N");
   }
   dedent();
   return result;
@@ -1562,12 +2030,26 @@ std::shared_ptr<Program::Impl> Parser::program() {
       types_.emplace(definition.name, std::move(definition));
     } else if (at("port")) {
       result->action_ports.push_back(action_port_declaration());
+    } else if (at("function")) {
+      FunctionDeclaration function = function_declaration();
+      if (!result->functions.emplace(function.name, std::move(function)).second) {
+        fail(peek(), "duplicate function declaration");
+      }
     } else if (at("state")) {
       result->states.push_back(state());
     } else if (at("transition")) {
       result->transitions.push_back(transition());
+    } else if (at("procedure")) {
+      ProcedureDeclaration declaration = procedure();
+      if (!result->procedures.emplace(declaration.name, std::move(declaration)).second) {
+        fail(peek(), "duplicate procedure declaration");
+      }
+    } else if (at("trace")) {
+      result->traces.push_back(trace(result->transitions));
+    } else if (at("Claim")) {
+      result->claims.push_back(claim());
     } else {
-      fail(peek(), "expected type, name, port, state, or transition declaration");
+      fail(peek(), "expected type, name, port, function, state, transition, procedure, trace, or Claim declaration");
     }
   }
   result->types = types_;
@@ -1767,6 +2249,11 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
     case Expr::Kind::Name: {
       if (expr->text == "round") return int_type();
       std::string path = expr->text;
+      bool before = false;
+      if (path.starts_with("before.")) {
+        before = true;
+        path.erase(0, 7);
+      }
       std::size_t cursor = 0;
       auto next_component = [&]() {
         const std::size_t dot = path.find('.', cursor);
@@ -1774,25 +2261,37 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         cursor = dot == std::string::npos ? path.size() : dot + 1U;
         return component;
       };
-      std::string root = next_component();
+      std::string root;
       DataType current;
       bool found_root = false;
-      if (root == "before") {
-        if (cursor == path.size()) throw Error("before requires a state field");
-        root = next_component();
-        const auto found = state.find(root);
-        if (found == state.end()) throw Error("unknown state field '" + root + "'");
-        current = found->second;
-        found_root = true;
-      } else if (const auto found = locals.find(root); found != locals.end()) {
-        current = found->second;
-        found_root = true;
-      } else if (const auto found = event.find(root); found != event.end()) {
-        current = found->second;
-        found_root = true;
-      } else if (const auto found = state.find(root); found != state.end()) {
-        current = found->second;
-        found_root = true;
+      root = next_component();
+      if (!before) {
+        if (const auto found = locals.find(root); found != locals.end()) {
+          current = found->second;
+          found_root = true;
+        } else if (const auto found = event.find(root); found != event.end()) {
+          current = found->second;
+          found_root = true;
+        }
+      }
+      if (!found_root) {
+        // State keys may themselves be qualified (for example
+        // scheduler.phase). Prefer the longest matching key before treating
+        // the remaining components as record projections.
+        cursor = 0;
+        std::size_t matched = 0;
+        for (const auto& [key, type] : state) {
+          if (path == key || (path.starts_with(key) && path.size() > key.size() &&
+                              path[key.size()] == '.')) {
+            if (key.size() > matched) {
+              matched = key.size();
+              root = key;
+              current = type;
+              found_root = true;
+            }
+          }
+        }
+        if (found_root) cursor = matched == path.size() ? path.size() : matched + 1U;
       }
       if (!found_root) throw Error("unknown value '" + root + "'");
       while (cursor < path.size()) {
@@ -1843,7 +2342,7 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
     case Expr::Kind::Binary: {
       const DataType left = infer_type(expr->left, state, event, locals, types);
       const DataType right = infer_type(expr->right, state, event, std::move(locals), types);
-      if (expr->text == "and" || expr->text == "or") {
+      if (expr->text == "and" || expr->text == "or" || expr->text == "->") {
         if (left.kind != DataType::Kind::Bool || right.kind != DataType::Kind::Bool) {
           throw Error("logical operators need bool operands");
         }
@@ -2011,6 +2510,22 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
       return result;
     }
     case Expr::Kind::Construct: {
+      if (active_functions != nullptr) {
+        const auto function = active_functions->find(expr->text);
+        if (function != active_functions->end()) {
+          if (expr->type_argument || expr->children.size() != function->second.parameters.size()) {
+            throw Error("function '" + expr->text + "' has the wrong arguments");
+          }
+          for (std::size_t index = 0; index < expr->children.size(); ++index) {
+            if (infer_type(expr->children[index], state, event, locals, types) !=
+                function->second.parameters[index].type) {
+              throw Error("function '" + expr->text + "' argument has the wrong type");
+            }
+          }
+          expr->resolved_type = function->second.result;
+          return function->second.result;
+        }
+      }
       if (expr->text == "tuple") {
         if (expr->children.empty() || expr->type_argument) {
           throw Error("tuple(...) requires at least one value and no type argument");
@@ -2319,15 +2834,17 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
                    std::set<std::string, std::less<>>& reads) {
   if (!expr) return;
   if (expr->kind == Expr::Kind::Name) {
-    if (expr->text.starts_with("before.")) {
-      std::string root = expr->text.substr(expr->text.find('.') + 1);
-      if (const std::size_t dot = root.find('.'); dot != std::string::npos) root.resize(dot);
-      reads.insert(std::move(root));
-    } else {
-      std::string root = expr->text;
-      if (const std::size_t dot = root.find('.'); dot != std::string::npos) root.resize(dot);
-      if (!shadowed.contains(root) && state.contains(root)) reads.insert(std::move(root));
+    std::string path = expr->text.starts_with("before.") ? expr->text.substr(7) : expr->text;
+    std::string best;
+    for (const auto& [key, type] : state) {
+      static_cast<void>(type);
+      if ((path == key || (path.starts_with(key) && path.size() > key.size() &&
+                           path[key.size()] == '.')) &&
+          key.size() > best.size()) {
+        best = key;
+      }
     }
+    if (!best.empty() && !shadowed.contains(best)) reads.insert(std::move(best));
     return;
   }
   if (expr->kind == Expr::Kind::Exists || expr->kind == Expr::Kind::ForAll) {
@@ -2362,6 +2879,44 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
   }
 }
 
+std::string state_key(std::string_view context, std::string_view field) {
+  return context.empty() ? std::string(field)
+                         : std::string(context) + "." + std::string(field);
+}
+
+std::map<std::string, Value, std::less<>> local_state_values(
+    const std::map<std::string, Value, std::less<>>& values,
+    std::string_view context, const State& state) {
+  std::map<std::string, Value, std::less<>> result;
+  for (const Field& field : state.fields) {
+    auto found = values.find(state_key(context, field.name));
+    if (found == values.end()) found = values.find(field.name);
+    if (found == values.end()) {
+      throw Error("missing field '" + state_key(context, field.name) + "'");
+    }
+    result.emplace(field.name, found->second);
+  }
+  return result;
+}
+
+std::string binding_set_text(const std::vector<StateBinding>& bindings) {
+  std::string result = "{";
+  for (std::size_t index = 0; index < bindings.size(); ++index) {
+    if (index != 0) result += ", ";
+    result += bindings[index].state;
+    if (!bindings[index].context.empty()) result += "@" + bindings[index].context;
+  }
+  result += "}";
+  return result;
+}
+
+std::string target_set_text(const std::vector<TransitionTarget>& targets) {
+  std::vector<StateBinding> bindings;
+  bindings.reserve(targets.size());
+  for (const TransitionTarget& target : targets) bindings.push_back(target.binding);
+  return binding_set_text(bindings);
+}
+
 void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
                           const TypeEnvironment& state,
                           const std::set<std::string, std::less<>>& shadowed,
@@ -2383,8 +2938,63 @@ void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
   }
 }
 
+void inspect_function_body(const ExprPtr& expr, const FunctionRegistry& functions,
+                           std::set<std::string, std::less<>>& calls) {
+  if (!expr) return;
+  if (expr->kind == Expr::Kind::Name &&
+      (expr->text == "round" || expr->text.starts_with("before."))) {
+    throw Error("pure function cannot observe automaton state or logical round",
+                expr->line, expr->column);
+  }
+  if (expr->kind == Expr::Kind::Construct && functions.contains(expr->text)) {
+    calls.insert(expr->text);
+  }
+  inspect_function_body(expr->left, functions, calls);
+  inspect_function_body(expr->right, functions, calls);
+  inspect_function_body(expr->third, functions, calls);
+  for (const ExprPtr& child : expr->children) inspect_function_body(child, functions, calls);
+  for (const MatchArm& arm : expr->arms) inspect_function_body(arm.body, functions, calls);
+}
+
 void verify_program(Program::Impl& program) {
   if (program.states.empty()) throw Error("program must define at least one state");
+  FunctionScope function_scope(program.functions);
+  static const std::set<std::string, std::less<>> reserved_functions{
+      "tuple", "project", "join", "compose", "inverse", "closure",
+      "union", "intersection", "difference", "none", "some", "ok", "err"};
+  std::map<std::string, std::set<std::string, std::less<>>, std::less<>> call_graph;
+  for (const auto& [name, function] : program.functions) {
+    if (program.types.contains(name) || reserved_functions.contains(name)) {
+      throw Error("function name '" + name + "' conflicts with a type or builtin",
+                  function.line, function.column);
+    }
+    TypeEnvironment parameters;
+    for (const Parameter& parameter : function.parameters) {
+      if (!parameters.emplace(parameter.name, parameter.type).second) {
+        throw Error("duplicate function parameter '" + parameter.name + "'",
+                    parameter.line, parameter.column);
+      }
+    }
+    inspect_function_body(function.body, program.functions, call_graph[name]);
+    if (infer_type(function.body, {}, {}, parameters, program.types) != function.result) {
+      throw Error("function '" + name + "' body has the wrong result type",
+                  function.line, function.column);
+    }
+  }
+  std::set<std::string, std::less<>> visiting;
+  std::set<std::string, std::less<>> visited;
+  std::function<void(const std::string&)> reject_recursive = [&](const std::string& name) {
+    if (visiting.contains(name)) throw Error("recursive function cycle contains '" + name + "'");
+    if (visited.contains(name)) return;
+    visiting.insert(name);
+    for (const std::string& called : call_graph[name]) reject_recursive(called);
+    visiting.erase(name);
+    visited.insert(name);
+  };
+  for (const auto& [name, function] : program.functions) {
+    static_cast<void>(function);
+    reject_recursive(name);
+  }
   std::unordered_set<std::string> names;
   ActionPortRegistry action_ports;
   for (const ActionPortDeclaration& port : program.action_ports) {
@@ -2392,12 +3002,14 @@ void verify_program(Program::Impl& program) {
       throw Error("duplicate typed action port '" + port.name + "'", port.line, port.column);
     }
   }
-  std::size_t initial_count = 0;
+  std::map<std::string, std::size_t, std::less<>> states_per_context;
+  std::map<std::string, std::size_t, std::less<>> initials_per_context;
   for (const State& state : program.states) {
     if (!names.insert(state.name).second) {
       throw Error("duplicate state '" + state.name + "'", state.line, state.column);
     }
-    initial_count += state.initial ? 1U : 0U;
+    ++states_per_context[state.context];
+    initials_per_context[state.context] += state.initial ? 1U : 0U;
     std::unordered_set<std::string> fields;
     for (const Field& field : state.fields) {
       if (!fields.insert(field.name).second) {
@@ -2406,9 +3018,29 @@ void verify_program(Program::Impl& program) {
       }
     }
   }
-  if (initial_count != 1) {
-    throw Error("program must have exactly one initial state", program.states.front().line,
-                program.states.front().column);
+  for (const auto& [context, count] : states_per_context) {
+    static_cast<void>(count);
+    if (initials_per_context[context] != 1U) {
+      throw Error("context '" + context + "' must have exactly one initial state",
+                  program.states.front().line, program.states.front().column);
+    }
+  }
+  for (auto& [name, procedure] : program.procedures) {
+    static_cast<void>(name);
+    std::set<std::string, std::less<>> contexts;
+    for (StateBinding& binding : procedure.initial_states) {
+      const State& state = find_state(program, binding.state);
+      if (binding.context.empty()) binding.context = state.context;
+      if (binding.context != state.context) {
+        throw Error("procedure initial state '" + state.name + "' belongs to @" +
+                        state.context + ", not @" + binding.context,
+                    binding.line, binding.column);
+      }
+      if (!contexts.insert(binding.context).second) {
+        throw Error("procedure initial combination repeats @" + binding.context,
+                    binding.line, binding.column);
+      }
+    }
   }
 
   names.clear();
@@ -2422,18 +3054,131 @@ void verify_program(Program::Impl& program) {
       throw Error("transition '" + transition.name + "' needs from and to", transition.line,
                   transition.column);
     }
-    const State* source_pointer = nullptr;
-    const State* target_pointer = nullptr;
-    try {
-      source_pointer = &find_state(program, transition.from);
-      target_pointer = &find_state(program, transition.to);
-    } catch (const Error& error) {
-      throw Error(error.what(), transition.line, transition.column);
+    // Expand source-side wildcard patterns to a finite, statically known set
+    // of executable alternatives. Target patterns remain forbidden.
+    std::vector<TransitionAlternative> raw_routes;
+    raw_routes.push_back(TransitionAlternative{transition.case_name,
+                                               transition.from, transition.to,
+                                               transition.condition, transition.action,
+                                               {}, {}});
+    raw_routes.insert(raw_routes.end(), transition.alternatives.begin(),
+                      transition.alternatives.end());
+    std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>> case_names;
+    for (const TransitionAlternative& route : raw_routes) {
+      if (!route.name.empty()) {
+        const auto location = std::pair{route.from.front().line, route.from.front().column};
+        const auto [found, inserted] = case_names.emplace(route.name, location);
+        if (!inserted && found->second != location) {
+          throw Error("duplicate case name '" + transition.name + "." + route.name + "'",
+                      transition.line, transition.column);
+        }
+      }
     }
-    const State& source = *source_pointer;
-    const State& target = *target_pointer;
+    std::vector<TransitionAlternative> expanded_routes;
+    for (const TransitionAlternative& raw : raw_routes) {
+      std::vector<std::vector<StateBinding>> sources(1);
+      for (const StateBinding& binding : raw.from) {
+        std::vector<StateBinding> choices;
+        if (binding.state != "_") {
+          choices.push_back(binding);
+        } else {
+          if (binding.context.empty()) {
+            throw Error("wildcard state pattern requires an explicit @ context",
+                        binding.line, binding.column);
+          }
+          for (const State& state : program.states) {
+            if (state.context == binding.context) {
+              choices.push_back(StateBinding{state.name, binding.context,
+                                             binding.line, binding.column});
+            }
+          }
+        }
+        std::vector<std::vector<StateBinding>> next;
+        for (const auto& source : sources) {
+          for (const StateBinding& choice : choices) {
+            auto item = source;
+            item.push_back(choice);
+            next.push_back(std::move(item));
+          }
+        }
+        sources = std::move(next);
+      }
+      for (auto& source : sources) {
+        expanded_routes.push_back(TransitionAlternative{raw.name, std::move(source), raw.to,
+                                                        raw.condition, raw.action,
+                                                        {}, {}});
+      }
+    }
+    transition.from = std::move(expanded_routes.front().from);
+    transition.to = std::move(expanded_routes.front().to);
+    transition.case_name = std::move(expanded_routes.front().name);
+    transition.condition = std::move(expanded_routes.front().condition);
+    transition.action = std::move(expanded_routes.front().action);
+    transition.alternatives.assign(
+        std::make_move_iterator(expanded_routes.begin() + 1),
+        std::make_move_iterator(expanded_routes.end()));
+    struct RouteRef {
+      std::vector<StateBinding>* sources;
+      std::vector<TransitionTarget>* targets;
+      ExprPtr* condition;
+      std::shared_ptr<ActionExpr>* action;
+      std::set<std::string, std::less<>>* reads;
+      std::set<std::string, std::less<>>* writes;
+    };
+    std::vector<RouteRef> routes;
+    routes.push_back(RouteRef{&transition.from, &transition.to,
+                              &transition.condition, &transition.action,
+                              &transition.reads, &transition.writes});
+    for (TransitionAlternative& alternative : transition.alternatives) {
+      routes.push_back(RouteRef{&alternative.from, &alternative.to,
+                                &alternative.condition, &alternative.action,
+                                &alternative.reads, &alternative.writes});
+    }
+    const bool legacy_single = std::all_of(
+        routes.begin(), routes.end(), [](const auto& route) {
+          return route.sources->size() == 1U && route.targets->size() == 1U;
+        });
     TypeEnvironment state_types;
-    for (const Field& field : source.fields) state_types.emplace(field.name, field.type);
+    for (RouteRef& route : routes) {
+      auto* sources = route.sources;
+      auto* targets = route.targets;
+      std::set<std::string, std::less<>> source_contexts;
+      for (StateBinding& binding : *sources) {
+        const State& source = find_state(program, binding.state);
+        if (binding.context.empty()) binding.context = source.context;
+        if (binding.context != source.context) {
+          throw Error("state '" + source.name + "' belongs to @" + source.context +
+                          ", not @" + binding.context,
+                      binding.line, binding.column);
+        }
+        if (!source_contexts.insert(binding.context).second) {
+          throw Error("transition source repeats context @" + binding.context,
+                      binding.line, binding.column);
+        }
+        for (const Field& field : source.fields) {
+          const std::string key = state_key(binding.context, field.name);
+          const auto [found, inserted] = state_types.emplace(key, field.type);
+          if (!inserted && found->second != field.type) {
+            throw Error("alternative states disagree on field type '" + key + "'");
+          }
+          if (legacy_single) state_types.emplace(field.name, field.type);
+        }
+      }
+      std::set<std::string, std::less<>> target_contexts;
+      for (TransitionTarget& target : *targets) {
+        const State& state = find_state(program, target.binding.state);
+        if (target.binding.context.empty()) target.binding.context = state.context;
+        if (target.binding.context != state.context) {
+          throw Error("state '" + state.name + "' belongs to @" + state.context +
+                          ", not @" + target.binding.context,
+                      target.binding.line, target.binding.column);
+        }
+        if (!target_contexts.insert(target.binding.context).second) {
+          throw Error("transition target repeats context @" + target.binding.context,
+                      target.binding.line, target.binding.column);
+        }
+      }
+    }
     std::unordered_set<std::string> parameters;
     TypeEnvironment event_types;
     for (const Parameter& parameter : transition.parameters) {
@@ -2458,57 +3203,103 @@ void verify_program(Program::Impl& program) {
         }
       }
     }
-    if (infer_type(transition.condition, state_types, event_types, {}, program.types).kind !=
-        DataType::Kind::Bool) {
-      throw Error("where clause in transition '" + transition.name + "' must be bool",
-                  transition.condition->line, transition.condition->column);
+    const auto route_state_types = [&](const RouteRef& route) {
+      TypeEnvironment result;
+      for (const StateBinding& binding : *route.sources) {
+        const State& source = find_state(program, binding.state);
+        for (const Field& field : source.fields) {
+          result.emplace(state_key(binding.context, field.name), field.type);
+          if (legacy_single) result.emplace(field.name, field.type);
+        }
+      }
+      return result;
+    };
+    for (const RouteRef& route : routes) {
+      const TypeEnvironment local_types = route_state_types(route);
+      if (infer_type(*route.condition, local_types, event_types, {}, program.types).kind !=
+          DataType::Kind::Bool) {
+        throw Error("where clause in transition '" + transition.name + "' must be bool",
+                    (*route.condition)->line, (*route.condition)->column);
+      }
     }
-    std::unordered_set<std::string> assigned;
-    for (const Assignment& assignment : transition.assignments) {
-      const Field* field_pointer = nullptr;
-      try {
-        field_pointer = &find_field(target, assignment.field);
-      } catch (const Error& error) {
-        throw Error(error.what(), assignment.line, assignment.column);
-      }
-      const Field& field = *field_pointer;
-      if (!assigned.insert(assignment.field).second) {
-        throw Error("field '" + assignment.field + "' is assigned twice", assignment.line,
-                    assignment.column);
-      }
-      if (assignment.value->kind == Expr::Kind::OptionLiteral &&
-          assignment.value->children.empty()) {
-        if (field.type.kind != DataType::Kind::Option) {
-          throw Error("empty option [] requires an expected [T] type",
+    for (const RouteRef& route : routes) {
+      const TypeEnvironment local_types = route_state_types(route);
+      for (const TransitionTarget& target : *route.targets) {
+       const State& target_state = find_state(program, target.binding.state);
+       std::unordered_set<std::string> assigned;
+       for (const Assignment& assignment : target.assignments) {
+        const Field& field = find_field(target_state, assignment.field);
+        if (!assigned.insert(assignment.field).second) {
+          throw Error("field '" + assignment.field + "' is assigned twice", assignment.line,
+                      assignment.column);
+        }
+        if (assignment.value->kind == Expr::Kind::OptionLiteral &&
+            assignment.value->children.empty()) {
+          if (field.type.kind != DataType::Kind::Option) {
+            throw Error("empty option [] requires an expected [T] type",
+                        assignment.line, assignment.column);
+          }
+          assignment.value->resolved_type = field.type;
+        } else if (infer_type(assignment.value, local_types, event_types, {}, program.types) !=
+                   field.type) {
+          throw Error("assignment to '" + assignment.field + "' has the wrong type",
                       assignment.line, assignment.column);
         }
-        assignment.value->resolved_type = field.type;
-      } else if (infer_type(assignment.value, state_types, event_types, {}, program.types) !=
-                 field.type) {
-        throw Error("assignment to '" + assignment.field + "' has the wrong type",
-                    assignment.line, assignment.column);
+       }
       }
     }
-    std::unordered_set<std::string> labels;
-    try {
-      verify_action(transition.action, state_types, event_types, labels, program.types,
-                    action_ports);
-    } catch (const Error& error) {
-      if (error.line() != 0) throw;
-      throw Error(error.what(), transition.line, transition.column);
+    if (!legacy_single) {
+      std::function<void(const std::shared_ptr<ActionExpr>&)> require_context =
+          [&](const std::shared_ptr<ActionExpr>& action) {
+            if (!action) return;
+            if (action->kind == ActionExpr::Kind::Call && action->context.empty()) {
+              throw Error("actions in a composite transition require explicit @ context",
+                          transition.line, transition.column);
+            }
+            for (const auto& child : action->children) require_context(child);
+          };
+      for (const RouteRef& route : routes) require_context(*route.action);
+    }
+    for (const RouteRef& route : routes) {
+      const TypeEnvironment local_types = route_state_types(route);
+      std::unordered_set<std::string> labels;
+      try {
+        verify_action(*route.action, local_types, event_types, labels, program.types,
+                      action_ports);
+      } catch (const Error& error) {
+        if (error.line() != 0) throw;
+        throw Error(error.what(), transition.line, transition.column);
+      }
     }
 
     std::set<std::string, std::less<>> shadowed;
     for (const Parameter& parameter : transition.parameters) shadowed.insert(parameter.name);
-    collect_reads(transition.condition, state_types, shadowed, transition.reads);
-    for (const Assignment& assignment : transition.assignments) {
-      transition.writes.insert(assignment.field);
-      collect_reads(assignment.value, state_types, shadowed, transition.reads);
+    for (const RouteRef& route : routes) {
+     const TypeEnvironment local_types = route_state_types(route);
+     collect_reads(*route.condition, local_types, shadowed, *route.reads);
+     for (const TransitionTarget& target : *route.targets) {
+      const State& target_state = find_state(program, target.binding.state);
+      for (const Assignment& assignment : target.assignments) {
+        route.writes->insert(legacy_single
+                                 ? assignment.field
+                                 : state_key(target.binding.context, assignment.field));
+        collect_reads(assignment.value, local_types, shadowed, *route.reads);
+      }
+      const auto matching_source = std::find_if(
+          route.sources->begin(), route.sources->end(), [&](const StateBinding& source) {
+            return source.context == target.binding.context &&
+                   source.state == target.binding.state;
+          });
+      if (matching_source == route.sources->end()) {
+        for (const Field& field : target_state.fields) {
+          route.writes->insert(legacy_single
+                                   ? field.name
+                                   : state_key(target.binding.context, field.name));
+        }
+      }
+     }
+     collect_action_reads(*route.action, local_types, shadowed, *route.reads);
     }
-    if (transition.from != transition.to) {
-      for (const Field& field : target.fields) transition.writes.insert(field.name);
-    }
-    collect_action_reads(transition.action, state_types, shadowed, transition.reads);
   }
   for (const State& state : program.states) {
     TypeEnvironment state_types;
@@ -2518,6 +3309,73 @@ void verify_program(Program::Impl& program) {
         throw Error("invariant in state '" + state.name + "' must be bool", invariant->line,
                     invariant->column);
       }
+    }
+  }
+
+  names.clear();
+  std::set<std::string, std::less<>> qualified_paths;
+  for (const Transition& transition : program.transitions) {
+    if (!transition.case_name.empty()) {
+      qualified_paths.insert(transition.name + "." + transition.case_name);
+    }
+    for (const TransitionAlternative& alternative : transition.alternatives) {
+      if (!alternative.name.empty()) {
+        qualified_paths.insert(transition.name + "." + alternative.name);
+      }
+    }
+  }
+  for (TraceDeclaration& trace : program.traces) {
+    if (!names.insert(trace.name).second) {
+      throw Error("duplicate trace '" + trace.name + "'", trace.line, trace.column);
+    }
+    for (StateBinding& binding : trace.capture) {
+      const State& state = find_state(program, binding.state);
+      if (binding.context != state.context) {
+        throw Error("trace capture '" + binding.state + "' belongs to @" + state.context,
+                    binding.line, binding.column);
+      }
+    }
+    for (const std::string& path : trace.paths) {
+      if (!qualified_paths.contains(path)) {
+        throw Error("trace captures unknown transition path '" + path + "'",
+                    trace.line, trace.column);
+      }
+    }
+  }
+  names.clear();
+  TypeEnvironment claim_types;
+  const bool single_context = states_per_context.size() == 1U;
+  for (const State& state : program.states) {
+    for (const Field& field : state.fields) {
+      const std::string key = state_key(state.context, field.name);
+      const auto [found, inserted] = claim_types.emplace(key, field.type);
+      if (!inserted && found->second != field.type) {
+        throw Error("states in context @" + state.context +
+                    " disagree on claim field type '" + field.name + "'");
+      }
+      if (single_context) claim_types.emplace(field.name, field.type);
+    }
+  }
+  for (ClaimDeclaration& claim : program.claims) {
+    if (!names.insert(claim.name).second) {
+      throw Error("duplicate Claim '" + claim.name + "'", claim.line, claim.column);
+    }
+    if (std::none_of(program.traces.begin(), program.traces.end(),
+                     [&](const TraceDeclaration& trace) { return trace.name == claim.trace; })) {
+      throw Error("Claim references unknown trace '" + claim.trace + "'",
+                  claim.line, claim.column);
+    }
+    if (claim.kind == ClaimDeclaration::Kind::CountAtMost) {
+      const bool base_transition = std::any_of(
+          program.transitions.begin(), program.transitions.end(),
+          [&](const Transition& transition) { return transition.name == claim.transition; });
+      if (!base_transition && !qualified_paths.contains(claim.transition)) {
+        throw Error("Claim references unknown transition '" + claim.transition + "'",
+                    claim.line, claim.column);
+      }
+    } else if (infer_type(claim.predicate, claim_types, {}, {}, program.types).kind !=
+               DataType::Kind::Bool) {
+      throw Error("Claim predicate must be bool", claim.line, claim.column);
     }
   }
 }
@@ -2723,43 +3581,54 @@ Value resolve_name(const std::string& name, const Environment& environment) {
     }
     return Value(static_cast<std::int64_t>(environment.round));
   }
+  std::string path = name;
+  bool before = false;
+  if (path.starts_with("before.")) {
+    before = true;
+    path.erase(0, 7);
+  }
   std::size_t cursor = 0;
   auto next_component = [&]() {
-    const std::size_t dot = name.find('.', cursor);
-    std::string component = name.substr(cursor, dot == std::string::npos ? dot : dot - cursor);
-    cursor = dot == std::string::npos ? name.size() : dot + 1U;
+    const std::size_t dot = path.find('.', cursor);
+    std::string component = path.substr(cursor, dot == std::string::npos ? dot : dot - cursor);
+    cursor = dot == std::string::npos ? path.size() : dot + 1U;
     return component;
   };
-  std::string root = next_component();
+  std::string root;
   Value value(false);
   bool found_root = false;
-  if (root == "before") {
-    if (cursor == name.size()) throw Error("before requires a state field");
-    root = next_component();
-    const auto found = environment.state.find(root);
-    if (found == environment.state.end()) throw Error("unknown state field '" + root + "'");
-    value = found->second;
-    found_root = true;
-  } else if (const auto local = environment.locals.find(root);
-             local != environment.locals.end()) {
-    value = local->second;
-    found_root = true;
-  } else if (environment.event != nullptr) {
-    const auto found = environment.event->fields.find(root);
-    if (found != environment.event->fields.end()) {
-      value = found->second;
+  root = next_component();
+  if (!before) {
+    if (const auto local = environment.locals.find(root);
+        local != environment.locals.end()) {
+      value = local->second;
       found_root = true;
+    } else if (environment.event != nullptr) {
+      const auto found = environment.event->fields.find(root);
+      if (found != environment.event->fields.end()) {
+        value = found->second;
+        found_root = true;
+      }
     }
   }
   if (!found_root) {
-    const auto field = environment.state.find(root);
-    if (field != environment.state.end()) {
-      value = field->second;
-      found_root = true;
+    cursor = 0;
+    std::size_t matched = 0;
+    for (const auto& [key, item] : environment.state) {
+      if (path == key || (path.starts_with(key) && path.size() > key.size() &&
+                          path[key.size()] == '.')) {
+        if (key.size() > matched) {
+          matched = key.size();
+          root = key;
+          value = item;
+          found_root = true;
+        }
+      }
     }
+    if (found_root) cursor = matched == path.size() ? path.size() : matched + 1U;
   }
   if (!found_root) throw Error("unknown value '" + root + "'");
-  while (cursor < name.size()) {
+  while (cursor < path.size()) {
     const std::string field_name = next_component();
     if (value.kind() == Value::Kind::Tuple) {
       std::size_t index = 0;
@@ -2807,6 +3676,10 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       if (expr->text == "or") {
         const bool left = evaluate(expr->left, environment).as_bool();
         return Value(left || evaluate(expr->right, environment).as_bool());
+      }
+      if (expr->text == "->") {
+        const bool left = evaluate(expr->left, environment).as_bool();
+        return Value(!left || evaluate(expr->right, environment).as_bool());
       }
       const Value left = evaluate(expr->left, environment);
       const Value right = evaluate(expr->right, environment);
@@ -3014,6 +3887,18 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
                              expr->children.front()->literal->as_string()});
     case Expr::Kind::Construct: {
       if (!expr->resolved_type) throw Error("unverified constructor expression");
+      if (active_functions != nullptr) {
+        const auto function = active_functions->find(expr->text);
+        if (function != active_functions->end()) {
+          static const std::map<std::string, Value, std::less<>> empty_state;
+          Environment nested{empty_state, nullptr, {}, 0};
+          for (std::size_t index = 0; index < expr->children.size(); ++index) {
+            nested.locals.emplace(function->second.parameters[index].name,
+                                  evaluate(expr->children[index], environment));
+          }
+          return evaluate(function->second.body, nested);
+        }
+      }
       if (expr->text == "tuple") {
         ValueTuple tuple;
         for (const ExprPtr& child : expr->children) {
@@ -3518,20 +4403,80 @@ Program parse(std::string_view source) {
   Parser parser(lex(source));
   auto implementation = parser.program();
   verify_program(*implementation);
+  FunctionScope function_scope(implementation->functions);
 
-  const auto initial = std::find_if(implementation->states.begin(), implementation->states.end(),
-                                    [](const State& state) { return state.initial; });
-  verify_invariants(*initial, initial_values(*initial), 0);
+  for (const State& state : implementation->states) {
+    if (state.initial) verify_invariants(state, initial_values(state), 0);
+  }
   return Program(std::move(implementation));
 }
 
-Engine::Engine(Program program) : program_(std::move(program)) {
+Engine::Engine(Program program) : Engine(std::move(program), {}) {}
+
+Engine::Engine(Program program,
+               std::map<std::string, std::string, std::less<>> initial_states)
+    : program_(std::move(program)) {
   if (program_.empty()) throw Error("cannot construct an engine from an empty program");
   const Program::Impl& implementation = *program_.implementation();
-  const auto initial = std::find_if(implementation.states.begin(), implementation.states.end(),
-                                    [](const State& state) { return state.initial; });
-  current_state_ = initial->name;
-  values_ = initial_values(*initial);
+  FunctionScope function_scope(implementation.functions);
+  const std::size_t initial_count = static_cast<std::size_t>(std::count_if(
+      implementation.states.begin(), implementation.states.end(),
+      [](const State& state) { return state.initial; }));
+  for (const State& state : implementation.states) {
+    if (!state.initial) continue;
+    active_states_.emplace(state.context, state.name);
+    for (const auto& [field, value] : initial_values(state)) {
+      values_.emplace(initial_count == 1U ? field : state_key(state.context, field), value);
+    }
+  }
+  for (const auto& [context, state_name] : initial_states) {
+    const State& state = find_state(implementation, state_name);
+    if (state.context != context) {
+      throw Error("initial override '" + state_name + "' does not belong to @" + context);
+    }
+    const State& previous = find_state(implementation, active_states_.at(context));
+    for (const Field& field : previous.fields) {
+      values_.erase(initial_count == 1U ? field.name : state_key(context, field.name));
+    }
+    active_states_.insert_or_assign(context, state_name);
+    for (const auto& [field, value] : initial_values(state)) {
+      values_.insert_or_assign(initial_count == 1U ? field : state_key(context, field), value);
+    }
+    verify_invariants(state, initial_values(state), 0);
+  }
+  for (const TraceDeclaration& trace : implementation.traces) {
+    if (!trace.has_capture) continue;
+    TraceSnapshot snapshot;
+    snapshot.name = trace.name;
+    snapshot.root_context = trace.root_context;
+    snapshot.mode = trace.capture_mode;
+    for (const StateBinding& binding : trace.capture) {
+      snapshot.captured_contexts.insert(binding.context);
+    }
+    snapshot.captured_paths = trace.paths;
+    if (trace.capture_mode == TraceCaptureMode::Projected) {
+      snapshot.causal_gaps.push_back(
+          "projected capture omits decisions outside selected @ contexts");
+    }
+    captured_traces_.emplace(trace.name, std::move(snapshot));
+  }
+}
+
+Engine Engine::from_procedure(Program program, std::string_view procedure_name) {
+  if (program.empty()) throw Error("cannot start a procedure from an empty program");
+  const auto& procedures = program.implementation()->procedures;
+  const auto found = procedures.find(procedure_name);
+  if (found == procedures.end()) {
+    throw Error("unknown procedure '" + std::string(procedure_name) + "'");
+  }
+  std::map<std::string, std::string, std::less<>> initial_states;
+  for (const StateBinding& binding : found->second.initial_states) {
+    initial_states.emplace(binding.context, binding.state);
+  }
+  const std::string initial_context = found->second.initial_context;
+  Engine result(std::move(program), std::move(initial_states));
+  result.initial_context_ = initial_context;
+  return result;
 }
 
 ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
@@ -3540,15 +4485,21 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     throw Error("simulation round overflow");
   }
   const Program::Impl& program = *program_.implementation();
+  FunctionScope function_scope(program.functions);
   struct Prepared {
     const Transition* transition;
+    const std::string* case_name;
+    const std::vector<StateBinding>* from;
+    const std::vector<TransitionTarget>* to;
+    const std::set<std::string, std::less<>>* read_set;
+    const std::set<std::string, std::less<>>* write_set;
     std::map<std::string, Value, std::less<>> writes;
+    std::map<std::string, std::string, std::less<>> targets;
     ActionPlan actions;
     std::set<std::string, std::less<>> causal_predecessors;
   };
   std::vector<Prepared> prepared;
   prepared.reserve(events.size());
-  std::string target_name;
 
   std::vector<const Event*> ordered_events;
   ordered_events.reserve(events.size());
@@ -3558,51 +4509,100 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
 
   for (const Event* event_pointer : ordered_events) {
     const Event& event = *event_pointer;
-    std::vector<const Transition*> enabled;
+    struct Enabled {
+      const Transition* transition;
+      const std::string* case_name;
+      const std::vector<StateBinding>* from;
+      const std::vector<TransitionTarget>* to;
+      const ExprPtr* condition;
+      const std::shared_ptr<ActionExpr>* action;
+      const std::set<std::string, std::less<>>* reads;
+      const std::set<std::string, std::less<>>* writes;
+    };
+    std::vector<Enabled> enabled;
     for (const Transition& transition : program.transitions) {
-      if (transition.from != current_state_ || transition.event != event.name) continue;
-      validate_event(transition, event, program.types);
-      Environment environment{values_, &event, {}, round_};
-      if (evaluate(transition.condition, environment).as_bool()) enabled.push_back(&transition);
+      if (transition.event != event.name) continue;
+      struct Route {
+        const std::vector<StateBinding>* from;
+        const std::string* case_name;
+        const std::vector<TransitionTarget>* to;
+        const ExprPtr* condition;
+        const std::shared_ptr<ActionExpr>* action;
+        const std::set<std::string, std::less<>>* reads;
+        const std::set<std::string, std::less<>>* writes;
+      };
+      std::vector<Route> routes;
+      routes.push_back(Route{&transition.from, &transition.case_name, &transition.to,
+                             &transition.condition, &transition.action,
+                             &transition.reads, &transition.writes});
+      for (const TransitionAlternative& alternative : transition.alternatives) {
+        routes.push_back(Route{&alternative.from, &alternative.name, &alternative.to,
+                               &alternative.condition, &alternative.action,
+                               &alternative.reads, &alternative.writes});
+      }
+      for (const Route& route : routes) {
+       const bool sources_active = std::all_of(
+          route.from->begin(), route.from->end(), [&](const StateBinding& source) {
+            const auto active = active_states_.find(source.context);
+            return active != active_states_.end() && active->second == source.state;
+          });
+       if (!sources_active) continue;
+       validate_event(transition, event, program.types);
+       Environment environment{values_, &event, {}, round_};
+       if (evaluate(*route.condition, environment).as_bool()) {
+         enabled.push_back(Enabled{&transition, route.case_name, route.from, route.to,
+                                   route.condition, route.action,
+                                   route.reads, route.writes});
+       }
+      }
     }
     if (enabled.empty()) {
-      throw Error("no transition accepts event '" + event.name + "' from state '" +
-                  current_state_ + "'");
+      throw Error("no transition accepts event '" + event.name + "' from active state set " +
+                  current_state());
     }
     if (enabled.size() != 1) {
-      throw Error("event '" + event.name + "' enables multiple transitions from state '" +
-                  current_state_ + "'");
+      throw Error("event '" + event.name +
+                  "' enables multiple transitions from active state set " + current_state());
     }
 
-    const Transition& transition = *enabled.front();
-    if (target_name.empty()) target_name = transition.to;
-    if (target_name != transition.to) {
-      throw Error("parallel transitions must enter the same target state");
-    }
-    const State& source = find_state(program, transition.from);
-    const State& target = find_state(program, transition.to);
+    const Enabled selected = enabled.front();
+    const Transition& transition = *selected.transition;
+    const State& source = find_state(program, selected.from->front().state);
     Environment environment{values_, &event, {}, round_};
-    Prepared decision{&transition, {}, {}, {}};
-    for (const std::string& field : transition.reads) {
+    Prepared decision{&transition, selected.case_name, selected.from, selected.to,
+                      selected.reads, selected.writes, {}, {}, {}, {}};
+    for (const std::string& field : *selected.reads) {
       const auto writers = last_writers_.find(field);
       if (writers != last_writers_.end()) {
         decision.causal_predecessors.insert(writers->second.begin(), writers->second.end());
       }
     }
-    if (transition.from != transition.to) {
-      decision.writes = initial_values(target);
-    }
-    for (const Assignment& assignment : transition.assignments) {
-      Value value = evaluate(assignment.value, environment);
-      const Field& field = find_field(target, assignment.field);
-      if (!value_matches_type(value, field.type, program.types)) {
-        throw Error("assignment to '" + assignment.field + "' has the wrong type");
+    for (const TransitionTarget& target : *selected.to) {
+      const State& target_state = find_state(program, target.binding.state);
+      const bool legacy_single = selected.from->size() == 1U && selected.to->size() == 1U;
+      decision.targets.emplace(target.binding.context, target.binding.state);
+      const auto active = active_states_.find(target.binding.context);
+      if (active == active_states_.end() || active->second != target.binding.state) {
+        for (const auto& [field, value] : initial_values(target_state)) {
+          decision.writes.insert_or_assign(
+              legacy_single ? field : state_key(target.binding.context, field), value);
+        }
       }
-      decision.writes.insert_or_assign(assignment.field, std::move(value));
+      for (const Assignment& assignment : target.assignments) {
+        Value value = evaluate(assignment.value, environment);
+        const Field& field = find_field(target_state, assignment.field);
+        if (!value_matches_type(value, field.type, program.types)) {
+          throw Error("assignment to '" + assignment.field + "' has the wrong type");
+        }
+        decision.writes.insert_or_assign(
+            legacy_single ? assignment.field
+                          : state_key(target.binding.context, assignment.field),
+            std::move(value));
+      }
     }
-    if (transition.action) {
+    if (*selected.action) {
       std::unordered_set<std::string> labels;
-      build_plan(transition.action, environment, source, decision.actions, labels);
+      build_plan(*selected.action, environment, source, decision.actions, labels);
       std::sort(decision.actions.dependencies.begin(), decision.actions.dependencies.end());
       decision.actions.dependencies.erase(
           std::unique(decision.actions.dependencies.begin(), decision.actions.dependencies.end()),
@@ -3611,9 +4611,29 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     prepared.push_back(std::move(decision));
   }
 
-  const State& target = find_state(program, target_name);
-  std::map<std::string, Value, std::less<>> next =
-      target_name == current_state_ ? values_ : initial_values(target);
+  std::map<std::string, std::string, std::less<>> next_active = active_states_;
+  for (const Prepared& decision : prepared) {
+    for (const auto& [context, target] : decision.targets) {
+      const auto [found, inserted] = next_active.insert_or_assign(context, target);
+      static_cast<void>(found);
+      static_cast<void>(inserted);
+      for (const Prepared& other : prepared) {
+        const auto conflicting = other.targets.find(context);
+        if (conflicting != other.targets.end() && conflicting->second != target) {
+          throw Error("parallel transitions choose different states for @" + context);
+        }
+      }
+    }
+  }
+  std::map<std::string, Value, std::less<>> next = values_;
+  for (const auto& [context, target_state] : next_active) {
+    const auto previous = active_states_.find(context);
+    if (previous == active_states_.end() || previous->second == target_state) continue;
+    const State& old_state = find_state(program, previous->second);
+    for (const Field& field : old_state.fields) {
+      next.erase(active_states_.size() == 1U ? field.name : state_key(context, field.name));
+    }
+  }
   std::map<std::string, std::vector<Value>, std::less<>> candidates;
   for (const Prepared& decision : prepared) {
     for (const auto& [field, value] : decision.writes) {
@@ -3625,7 +4645,13 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
       next.insert_or_assign(name, values.front());
       continue;
     }
-    const Field& field = find_field(target, name);
+    const std::size_t dot = name.find('.');
+    const std::string context =
+        dot == std::string::npos && next_active.size() == 1U
+            ? next_active.begin()->first
+            : (dot == std::string::npos ? "" : name.substr(0, dot));
+    const std::string field_name = dot == std::string::npos ? name : name.substr(dot + 1U);
+    const Field& field = find_field(find_state(program, next_active.at(context)), field_name);
     if (field.merge == Field::Merge::Reject) {
       throw Error("parallel transitions write the same field '" + name + "'");
     }
@@ -3653,7 +4679,10 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     }
     next.insert_or_assign(name, Value(std::move(merged)));
   }
-  verify_invariants(target, next, round_ + 1U);
+  for (const auto& [context, state_name] : next_active) {
+    const State& state = find_state(program, state_name);
+    verify_invariants(state, local_state_values(next, context, state), round_ + 1U);
+  }
 
   ParallelStepResult result;
   result.round = round_ + 1U;
@@ -3664,13 +4693,16 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     StepResult step_result;
     step_result.round = result.round;
     step_result.id = "r" + std::to_string(result.round) + ":" + std::to_string(index);
+    step_result.case_name = *decision.case_name;
     step_result.transition = decision.transition->name;
-    step_result.from_state = decision.transition->from;
-    step_result.to_state = decision.transition->to;
+    if (!step_result.case_name.empty()) step_result.transition += "." + step_result.case_name;
+    step_result.from_state = binding_set_text(*decision.from);
+    step_result.to_state = target_set_text(*decision.to);
+    step_result.active_states = next_active;
     step_result.state = next;
     step_result.actions = std::move(decision.actions);
-    step_result.reads = decision.transition->reads;
-    step_result.writes = decision.transition->writes;
+    step_result.reads = *decision.read_set;
+    step_result.writes = *decision.write_set;
     step_result.causal_predecessors = std::move(decision.causal_predecessors);
     result.transitions.push_back(std::move(step_result));
   }
@@ -3686,8 +4718,55 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
   }
 
   ++round_;
-  current_state_ = target_name;
+  active_states_ = std::move(next_active);
   values_ = std::move(next);
+
+  for (auto& [name, trace] : captured_traces_) {
+    static_cast<void>(name);
+    auto belongs = [&](std::string_view field) {
+      if (trace.captured_contexts.empty()) return true;
+      return std::any_of(trace.captured_contexts.begin(), trace.captured_contexts.end(),
+                         [&](const std::string& context) {
+                           return context.empty() || field.starts_with(context + ".") ||
+                                  (active_states_.size() == 1U &&
+                                   active_states_.begin()->first == context &&
+                                   field.find('.') == std::string_view::npos);
+                         });
+    };
+    const auto path_selected = [&](const StepResult& step_result) {
+      return trace.captured_paths.empty() ||
+             trace.captured_paths.contains(step_result.transition);
+    };
+    if (trace.mode == TraceCaptureMode::Projected && !trace.captured_paths.empty() &&
+        std::none_of(result.transitions.begin(), result.transitions.end(), path_selected)) {
+      continue;
+    }
+    ParallelStepResult captured = result;
+    if (trace.mode == TraceCaptureMode::Projected) {
+      captured.transitions.erase(
+          std::remove_if(captured.transitions.begin(), captured.transitions.end(),
+                         [&](const StepResult& step_result) {
+                           const bool touches_context = trace.captured_contexts.empty() ||
+                               std::any_of(step_result.reads.begin(), step_result.reads.end(), belongs) ||
+                               std::any_of(step_result.writes.begin(), step_result.writes.end(), belongs);
+                           return !path_selected(step_result) || !touches_context;
+                         }),
+          captured.transitions.end());
+      if (captured.transitions.empty()) continue;
+    }
+    for (auto it = captured.state.begin(); it != captured.state.end();) {
+      if (!belongs(it->first)) it = captured.state.erase(it);
+      else ++it;
+    }
+    for (StepResult& step_result : captured.transitions) {
+      for (auto it = step_result.state.begin(); it != step_result.state.end();) {
+        if (!belongs(it->first)) it = step_result.state.erase(it);
+        else ++it;
+      }
+    }
+    trace.rounds.push_back(std::move(captured));
+    trace.final_state = trace.rounds.back().state;
+  }
   return result;
 }
 
@@ -3696,7 +4775,25 @@ StepResult Engine::step(const Event& event) {
   return std::move(result.transitions.front());
 }
 
-std::string Engine::current_state() const { return current_state_; }
+std::string Engine::current_state() const {
+  if (active_states_.size() == 1U && active_states_.begin()->first.empty()) {
+    return active_states_.begin()->second;
+  }
+  std::string result = "{";
+  bool first = true;
+  for (const auto& [context, state] : active_states_) {
+    if (!first) result += ", ";
+    first = false;
+    result += state;
+    if (!context.empty()) result += "@" + context;
+  }
+  return result + "}";
+}
+const std::map<std::string, std::string, std::less<>>& Engine::current_states() const noexcept {
+  return active_states_;
+}
+
+const std::string& Engine::initial_context() const noexcept { return initial_context_; }
 std::uint64_t Engine::current_round() const noexcept { return round_; }
 const std::map<std::string, Value, std::less<>>& Engine::values() const { return values_; }
 
@@ -3724,6 +4821,186 @@ TraceResult replay_trace(const Program& program, const EventTrace& trace) {
   const TraceResult second = run_trace(program, trace);
   if (first != second) throw Error("DTESSL EventTrace replay diverged");
   return first;
+}
+
+std::vector<std::string> declared_traces(const Program& program) {
+  if (program.empty()) throw Error("cannot inspect traces of an empty program");
+  std::vector<std::string> result;
+  for (const TraceDeclaration& trace : program.implementation()->traces) {
+    result.push_back(trace.name);
+  }
+  return result;
+}
+
+std::vector<std::string> declared_procedures(const Program& program) {
+  if (program.empty()) throw Error("cannot inspect procedures of an empty program");
+  std::vector<std::string> result;
+  for (const auto& [name, procedure] : program.implementation()->procedures) {
+    static_cast<void>(procedure);
+    result.push_back(name);
+  }
+  return result;
+}
+
+TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
+  if (program.empty()) throw Error("cannot run a trace from an empty program");
+  const auto& traces = program.implementation()->traces;
+  const auto found = std::find_if(traces.begin(), traces.end(),
+                                  [&](const TraceDeclaration& trace) {
+                                    return trace.name == name;
+                                  });
+  if (found == traces.end()) throw Error("unknown trace '" + std::string(name) + "'");
+  if (!found->has_replay) {
+    throw Error("trace '" + std::string(name) +
+                "' has no replay section; inspect its native Engine capture instead");
+  }
+  struct NamedReplayExecution {
+    TraceResult logical;
+    TraceSnapshot snapshot;
+  };
+  const auto execute = [&]() {
+    if (found->events.rounds.size() > event_trace_round_limit) {
+      throw Error("DTESSL replay exceeds round limit");
+    }
+    Engine engine(program);
+    NamedReplayExecution execution;
+    for (const EventBatch& batch : found->events.rounds) {
+      if (batch.events.empty()) throw Error("DTESSL replay contains an empty event batch");
+      if (batch.events.size() > event_batch_size_limit) {
+        throw Error("DTESSL replay batch exceeds event limit");
+      }
+      execution.logical.rounds.push_back(engine.step_parallel(batch.events));
+    }
+    execution.logical.final_state_name = engine.current_state();
+    execution.logical.final_state = engine.values();
+    if (found->has_capture) {
+      execution.snapshot = engine.captured_trace(found->name, true);
+      return execution;
+    }
+    execution.snapshot.name = found->name;
+    execution.snapshot.root_context = found->root_context;
+    execution.snapshot.mode = TraceCaptureMode::Static;
+    execution.snapshot.closed = true;
+    execution.snapshot.rounds = execution.logical.rounds;
+    execution.snapshot.final_state = execution.logical.final_state;
+    if (!execution.logical.rounds.empty()) {
+      for (const auto& [context, state] :
+           execution.logical.rounds.back().transitions.front().active_states) {
+        static_cast<void>(state);
+        execution.snapshot.captured_contexts.insert(context);
+      }
+    }
+    return execution;
+  };
+  const NamedReplayExecution execution = execute();
+  const NamedReplayExecution replayed = execute();
+  if (execution.logical != replayed.logical || execution.snapshot != replayed.snapshot) {
+    throw Error("named replay diverged");
+  }
+  return execution.snapshot;
+}
+
+namespace {
+
+std::vector<ClaimEvaluation> evaluate_trace_claims(
+    const Program::Impl& program, const TraceSnapshot& trace) {
+  FunctionScope function_scope(program.functions);
+  std::vector<ClaimEvaluation> results;
+  for (const ClaimDeclaration& claim : program.claims) {
+    if (claim.trace != trace.name) continue;
+    ClaimEvaluation result;
+    result.name = claim.name;
+    result.trace = trace.name;
+    if (claim.kind == ClaimDeclaration::Kind::CountAtMost) {
+      std::uint64_t count = 0;
+      for (const ParallelStepResult& round : trace.rounds) {
+        count += static_cast<std::uint64_t>(std::count_if(
+            round.transitions.begin(), round.transitions.end(),
+            [&](const StepResult& step) {
+              return step.transition == claim.transition ||
+                     (claim.transition.find('.') == std::string::npos &&
+                      step.transition.starts_with(claim.transition + "."));
+            }));
+        if (count > claim.limit) {
+          result.status = ClaimStatus::Violated;
+          result.witness_round = round.round;
+          result.detail = "transition count exceeded " + std::to_string(claim.limit);
+          break;
+        }
+      }
+      if (result.status != ClaimStatus::Violated) {
+        result.status = trace.closed ? ClaimStatus::Satisfied : ClaimStatus::Pending;
+        result.detail = trace.closed ? "closed trace stayed within count bound"
+                                     : "open trace may still exceed count bound";
+      }
+    } else {
+      bool witness = false;
+      for (const ParallelStepResult& round : trace.rounds) {
+        Environment environment{round.state, nullptr, {}, round.round};
+        const bool value = evaluate(claim.predicate, environment).as_bool();
+        const bool decisive = claim.kind == ClaimDeclaration::Kind::Always ? !value : value;
+        if (!decisive) continue;
+        witness = true;
+        result.witness_round = round.round;
+        result.status = claim.kind == ClaimDeclaration::Kind::Always
+                            ? ClaimStatus::Violated
+                            : ClaimStatus::Satisfied;
+        result.detail = claim.kind == ClaimDeclaration::Kind::Always
+                            ? "predicate is false"
+                            : "predicate became true";
+        break;
+      }
+      if (!witness) {
+        if (!trace.closed) {
+          result.status = ClaimStatus::Pending;
+          result.detail = "open trace has no decisive witness yet";
+        } else if (claim.kind == ClaimDeclaration::Kind::Always) {
+          result.status = ClaimStatus::Satisfied;
+          result.detail = "predicate holds throughout the closed trace";
+        } else {
+          result.status = ClaimStatus::Violated;
+          result.detail = "closed trace ended without a witness";
+        }
+      }
+    }
+    if (!trace.causal_gaps.empty() && result.status == ClaimStatus::Satisfied) {
+      result.status = ClaimStatus::Pending;
+      result.detail = "projected trace has causal gaps; satisfaction is not conclusive";
+    }
+    results.push_back(std::move(result));
+  }
+  return results;
+}
+
+}  // namespace
+
+TraceSnapshot Engine::captured_trace(std::string_view name, bool close) const {
+  const auto found = captured_traces_.find(name);
+  if (found == captured_traces_.end()) {
+    throw Error("unknown dynamic trace '" + std::string(name) + "'");
+  }
+  TraceSnapshot result = found->second;
+  if (close) result.closed = true;
+  return result;
+}
+
+std::vector<ClaimEvaluation> Engine::evaluate_claims(
+    std::string_view trace_name, bool close) const {
+  return evaluate_trace_claims(*program_.implementation(), captured_trace(trace_name, close));
+}
+
+std::vector<ClaimEvaluation> evaluate_named_trace(
+    const Program& program, std::string_view name) {
+  return evaluate_trace_claims(*program.implementation(), run_named_trace(program, name));
+}
+
+std::string_view claim_status_name(ClaimStatus status) noexcept {
+  switch (status) {
+    case ClaimStatus::Satisfied: return "satisfied";
+    case ClaimStatus::Violated: return "violated";
+    case ClaimStatus::Pending: return "pending";
+  }
+  return "unknown";
 }
 
 std::string value_text(const Value& value) {
@@ -4020,13 +5297,42 @@ FeatureSet required_features(const Program& program) {
     }
     for (const ExprPtr& invariant : state.invariants) collect_features(invariant, result);
   }
+  for (const auto& [name, function] : implementation.functions) {
+    static_cast<void>(name);
+    for (const Parameter& parameter : function.parameters) {
+      collect_type_features(parameter.type, result);
+    }
+    collect_type_features(function.result, result);
+    collect_features(function.body, result);
+  }
   for (const Transition& transition : implementation.transitions) {
     collect_features(transition.condition, result);
-    for (const Assignment& assignment : transition.assignments) {
-      collect_features(assignment.value, result);
+    const auto collect_targets = [&](const std::vector<TransitionTarget>& targets) {
+      for (const TransitionTarget& target : targets) {
+        for (const Assignment& assignment : target.assignments) {
+          collect_features(assignment.value, result);
+        }
+      }
+    };
+    collect_targets(transition.to);
+    for (const TransitionAlternative& alternative : transition.alternatives) {
+      collect_features(alternative.condition, result);
+      collect_targets(alternative.to);
+      collect_action_features(alternative.action, result);
     }
     collect_action_features(transition.action, result);
   }
+  if (std::any_of(implementation.transitions.begin(), implementation.transitions.end(),
+                  [](const Transition& transition) {
+                    return transition.from.size() > 1U || transition.to.size() > 1U ||
+                           !transition.alternatives.empty();
+                  })) {
+    result.insert(LanguageFeature::CompositeStateSet);
+  }
+  if (!implementation.traces.empty()) result.insert(LanguageFeature::TypedTrace);
+  if (!implementation.claims.empty()) result.insert(LanguageFeature::TraceClaims);
+  if (!implementation.functions.empty()) result.insert(LanguageFeature::PureFunctions);
+  if (!implementation.procedures.empty()) result.insert(LanguageFeature::ProcedureEntry);
   return result;
 }
 
@@ -4037,10 +5343,24 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
   for (const State& state : implementation.states) {
     for (const ExprPtr& invariant : state.invariants) collect_search_plans(invariant, plans);
   }
+  for (const auto& [name, function] : implementation.functions) {
+    static_cast<void>(name);
+    collect_search_plans(function.body, plans);
+  }
   for (const Transition& transition : implementation.transitions) {
     collect_search_plans(transition.condition, plans);
-    for (const Assignment& assignment : transition.assignments) {
-      collect_search_plans(assignment.value, plans);
+    const auto collect_targets = [&](const std::vector<TransitionTarget>& targets) {
+      for (const TransitionTarget& target : targets) {
+        for (const Assignment& assignment : target.assignments) {
+          collect_search_plans(assignment.value, plans);
+        }
+      }
+    };
+    collect_targets(transition.to);
+    for (const TransitionAlternative& alternative : transition.alternatives) {
+      collect_search_plans(alternative.condition, plans);
+      collect_targets(alternative.to);
+      collect_action_search_plans(alternative.action, plans);
     }
     collect_action_search_plans(transition.action, plans);
   }
@@ -4080,6 +5400,11 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::TypedActionPorts: return "typed-action-ports";
     case LanguageFeature::LogicalNames: return "logical-names";
     case LanguageFeature::DirectRelationBinding: return "direct-relation-binding";
+    case LanguageFeature::CompositeStateSet: return "composite-state-set";
+    case LanguageFeature::TypedTrace: return "typed-trace";
+    case LanguageFeature::TraceClaims: return "trace-claims";
+    case LanguageFeature::PureFunctions: return "pure-functions";
+    case LanguageFeature::ProcedureEntry: return "procedure-entry";
   }
   return "unknown";
 }

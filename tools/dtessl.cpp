@@ -358,10 +358,13 @@ void repl_help() {
       << "  :check | :highlight      parse/verify or list semantic highlight spans\n"
       << "  :load PATH | :write [PATH]\n"
       << "  :run EVENT [name=value]  execute against the current logical state\n"
+      << "  :traces | :trace NAME     list or inspect native traces\n"
+      << "  :procedures               list named initial configurations\n"
+      << "  :claims NAME [close]      evaluate trace claims\n"
       << "  :reset                   rebuild the engine from edited source\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.2.3 syntax:\n"
+      << "\ncore v0.3.0 syntax:\n"
       << "  name T / T(atom)         nominal logical names\n"
       << "  ~T / ~(A,B) / ~{...}     finite relations and literals\n"
       << "  item ~ relation          membership/binding in E/A/select\n"
@@ -486,6 +489,43 @@ int repl(std::optional<std::string> initial_path) {
         const auto before = engine->values();
         const dtessl::StepResult result = engine->step(parse_event(words, 1));
         print_repl_result(before, result, color);
+      } else if (command == ":traces") {
+        const dtessl::Program program = dtessl::parse(document.source());
+        for (const std::string& name : dtessl::declared_traces(program)) {
+          std::cout << name << '\n';
+        }
+      } else if (command == ":procedures") {
+        const dtessl::Program program = dtessl::parse(document.source());
+        for (const std::string& name : dtessl::declared_procedures(program)) {
+          std::cout << name << '\n';
+        }
+      } else if (command == ":trace") {
+        if (words.size() != 2) throw dtessl::Error("usage: :trace NAME");
+        if (!engine) engine.emplace(dtessl::parse(document.source()));
+        dtessl::TraceSnapshot trace;
+        try {
+          trace = engine->captured_trace(words[1]);
+        } catch (const dtessl::Error&) {
+          trace = dtessl::run_named_trace(dtessl::parse(document.source()), words[1]);
+        }
+        std::cout << trace.name << " rounds=" << trace.rounds.size()
+                  << (trace.closed ? " closed\n" : " open\n");
+      } else if (command == ":claims") {
+        if (words.size() < 2 || words.size() > 3) {
+          throw dtessl::Error("usage: :claims NAME [close]");
+        }
+        if (!engine) engine.emplace(dtessl::parse(document.source()));
+        const bool close = words.size() == 3 && words[2] == "close";
+        std::vector<dtessl::ClaimEvaluation> claims;
+        try {
+          claims = engine->evaluate_claims(words[1], close);
+        } catch (const dtessl::Error&) {
+          claims = dtessl::evaluate_named_trace(dtessl::parse(document.source()), words[1]);
+        }
+        for (const dtessl::ClaimEvaluation& claim : claims) {
+          std::cout << claim.name << ' ' << dtessl::claim_status_name(claim.status)
+                    << " round=" << claim.witness_round << " " << claim.detail << '\n';
+        }
       } else if (command == ":history") {
         const auto& history = editor.history();
         for (std::size_t index = 0; index < history.size(); ++index) {
@@ -528,12 +568,16 @@ void usage(std::ostream& out) {
       << "  dtessl repl [program.dtessl]\n"
       << "  dtessl highlight <program.dtessl>\n"
       << "  dtessl check <program.dtessl>\n"
+      << "  dtessl traces <program.dtessl>\n"
+      << "  dtessl procedures <program.dtessl>\n"
+      << "  dtessl trace <program.dtessl> <Trace>\n"
+      << "  dtessl claims <program.dtessl> <Trace>\n"
       << "  dtessl run <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.2.3: name T, T(atom), ~T, ~(A,B), ~{...}, item ~ relation,\n"
-      << "             E/A/select ... ~ ..., [T], [], [value], list[...]\n";
+      << "core v0.3.0: case (state-set) -> (state-set), path-local where/set/do,\n"
+      << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
 }
 
 }  // namespace
@@ -610,6 +654,38 @@ int main(int argc, char** argv) {
       return 0;
     }
     const dtessl::Program program = dtessl::parse(read_file(argv[2]));
+    if (command == "traces") {
+      if (argc != 3) throw dtessl::Error("traces does not accept extra arguments");
+      for (const std::string& name : dtessl::declared_traces(program)) std::cout << name << '\n';
+      return 0;
+    }
+    if (command == "procedures") {
+      if (argc != 3) throw dtessl::Error("procedures does not accept extra arguments");
+      for (const std::string& name : dtessl::declared_procedures(program)) {
+        std::cout << name << '\n';
+      }
+      return 0;
+    }
+    if (command == "trace") {
+      if (argc != 4) throw dtessl::Error("usage: dtessl trace <program.dtessl> <Trace>");
+      const dtessl::TraceSnapshot trace = dtessl::run_named_trace(program, argv[3]);
+      std::cout << "trace " << trace.name << " closed rounds=" << trace.rounds.size() << '\n';
+      for (const dtessl::ParallelStepResult& round : trace.rounds) {
+        for (const dtessl::StepResult& step : round.transitions) {
+          std::cout << dtessl::result_text(step);
+        }
+      }
+      return 0;
+    }
+    if (command == "claims") {
+      if (argc != 4) throw dtessl::Error("usage: dtessl claims <program.dtessl> <Trace>");
+      for (const dtessl::ClaimEvaluation& claim :
+           dtessl::evaluate_named_trace(program, argv[3])) {
+        std::cout << claim.name << ' ' << dtessl::claim_status_name(claim.status)
+                  << " round=" << claim.witness_round << " " << claim.detail << '\n';
+      }
+      return 0;
+    }
     if (command == "features") {
       if (argc != 3) throw dtessl::Error("features does not accept event arguments");
       for (const dtessl::LanguageFeature feature : dtessl::required_features(program)) {

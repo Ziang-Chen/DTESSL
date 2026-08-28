@@ -3,6 +3,34 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.3.0
+
+- Added orthogonal typed state axes: every `@context` has exactly one initial
+  state and the Engine exposes the complete active-state map.
+- Added primary transition syntax `case (source-set) -> (target-set):` with
+  conjunctive state sets, repeated alternative paths, atomic multi-axis commit
+  and path-local `where`, `set @ context` and `do`.
+- Added optional case names with stable `Transition.caseName` identities for
+  path-selective dynamic capture and exact transition-count claims.
+- Added finite source patterns `{A, B} @ context` and `_ @ context`; patterns
+  expand to bounded executable alternatives, exact targets remain mandatory,
+  and overlapping enabled paths fail as deterministic ambiguity.
+- Retained legacy single-state `from/to/where/do` as v0 compatibility input.
+- Added source-declared static typed EventTrace and dynamic `closed` or
+  `projected` native Engine capture scoped by explicit `@context`.
+- Static trace input is spelled `replay:`; one trace may declare replay followed
+  by capture, while the reverse order is rejected.
+- Added pure, total, non-recursive typed expression `function` declarations.
+- Added `procedure` as a named Engine entry configuration containing only an
+  initial context and initial orthogonal state set. Procedure startup and trace
+  replay are separate; global transitions perform all subsequent progress.
+- Added `Claim` with `always`, `eventually`, transition count bounds, logical
+  implication and `satisfied/violated/pending` finite-prefix semantics.
+- Added `traces`, `trace` and `claims` CLI commands plus REPL trace inspection
+  and claim evaluation.
+- Added composite scheduler/trace example, atomic state-set tests, pattern
+  ambiguity rejection, projection-gap checks and CLI conformance tests.
+
 ## v0.2.3
 
 - Added a public language-service API with UTF-8 byte ranges, syntax classes,

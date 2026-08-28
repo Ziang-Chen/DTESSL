@@ -8,17 +8,16 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: integrate and gate `v0.2.3` on a DTESSL-only branch
+- Current target: gate `v0.3.0` composite state and native trace on a DTESSL-only branch
 - Stop orders: none
 
 ## Current state
 
-**Integration candidate.** `v0.2.3` combines the compact core logical surface
-with the shared production-parser language service, versioned editor model,
-structured diagnostics, semantic highlighting and interactive REPL. The merged
-standard, `-Werror`, ASan/UBSan, installed CLI, non-interactive command and real
-PTY REPL gates pass; branch push is the remaining handoff step. This is not the
-complete DTESSL design described in `LANGUAGE_DESIGN.md`.
+**State/trace candidate.** `v0.3.0` adds orthogonal `@context` state axes,
+path-local `case` rewrites, native trace capture and finite-prefix claims while
+retaining the v0.2.3 language workbench. Standard, `-Werror` and ASan/UBSan
+evidence passes 21/21 in each configuration; scoped commit/push is pending. This is not the complete
+DTESSL design in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
@@ -27,9 +26,8 @@ complete DTESSL design described in `LANGUAGE_DESIGN.md`.
   language service, CLI/REPL, examples, tests and documentation.
 - Non-goals: `main`, tags, ChenVM/chenRT, other repositories or task threads,
   LSP transport, ambient authority and runtime nondeterminism.
-- Current exit gate: merge the exact core commit into the tooling branch,
-  pass standard/`-Werror`/ASan+UBSan, non-interactive CLI and PTY REPL gates,
-  then commit, push and leave the worktree clean.
+- Current exit gate: pass parser/verifier/runtime and CLI trace/claim tests plus
+  standard/`-Werror`/ASan+UBSan, then commit, push and leave the worktree clean.
 
 ## Evidence matrix
 
@@ -56,7 +54,7 @@ complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | Merged CMake/generated header/test at `0.2.3` | Built and installed CLI report `v0.2.3` | pass |
+| Version identity | CMake/generated header target `0.3.0` | Built CLI reports `v0.3.0` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
 | Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
 | Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
@@ -72,7 +70,11 @@ complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Editor document model | Monotonic versions, validated UTF-8 byte ranges and non-overlapping snapshot edits | Replace and stale-version tests pass | pass |
 | Located diagnostics | Lex/parse/semantic categories retain source ranges and stable codes | Parser and wrong-type assignment locations asserted | pass |
 | REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and engine invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and two-round fancy run | pass |
-| Multi-state transition model | Specification exists | Implementation absent | missing |
+| Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
+| Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
+| Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
+| Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
+| Procedure entry boundary | Parser accepts only initial context/state configuration; explicit Engine startup test proves later dispatch uses global transitions | Trace replay is tested not to select a same-model procedure implicitly | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
@@ -96,9 +98,9 @@ complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 
 ## Next corrective focus
 
-1. Push the fully gated `v0.2.3` integration commit and verify the worktree is
-   clean and the remote branch resolves to the same exact SHA.
-2. Resume `v0.3.0` typed derived data, state sets and explicit shared inputs.
+1. Finish standard, `-Werror` and ASan/UBSan gates for `v0.3.0`, then push the
+   scoped branch and verify its exact SHA.
+2. Resume typed derived data and explicit shared inputs as the next slice.
 3. Preserve the permanent native Program/EventTrace-only validation boundary.
 4. Keep external projection producers separate from DTESSL verification.
 5. Reject any claim that the full language is complete until all roadmap gates
@@ -145,3 +147,10 @@ complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 - 2026-08-28: merged standard, `-Werror` and ASan/UBSan suites pass 17/17;
   installed check/replay, non-interactive check/highlight/run/replay, legacy
   compatibility and real PTY history/cursor/source-edit/fancy-run gates pass.
+- 2026-08-28: `v0.3.0` candidate replaces the redundant `when` wrapper with
+  repeated path-local `case (source-set)->(target-set):`, adds exact/set/wildcard
+  topology matching, atomic orthogonal state commit, native trace scopes and
+  three-valued finite-prefix claims.
+- 2026-08-28: fixed procedure as an entry configuration only: initial context
+  plus initial state combination. It is neither a trace nor a transition
+  container; only explicit Engine startup applies it.

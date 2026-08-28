@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; the next state-model gate remains `v0.3.0`.
+`v0.2.3`; current state/trace candidate: `v0.3.0`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -38,12 +38,12 @@ No v1/v2 feature, adapter or solver may weaken this invariant.
 | `v0.2.0` | Relation and deterministic search | Relation/join/project/compose/closure, `E/A`, `select ... by lex`, static and runtime search plans, ambiguity/budget adversarial tests |
 | `v0.2.1` | Declared semantic projection | Canonical SemanticDescriptor, typed action ports, descriptor-to-DTESSL generator, source map/digests, coverage/gaps and native EventTrace replay without runtime-log adapters |
 | `v0.2.3` | Core logical surface and language workbench | First-class nominal names, `~` direct relations and binding, `[T]` options, explicit list literals and multiline values, plus production-parser diagnostics/highlighting, versioned text edits and interactive REPL; protocol transport remains out of scope |
-| `v0.3.0` | Full state theory | `data/derive/invariant`, state sets, explicit shared inputs, trace/history relations, transition occurrence claims |
-| `v0.4.0` | Whole-system transition relations | Multi-component `from/to`, typed before/after patterns, independent/dependent targets, lifecycle/completion library axes, atomic commit tests |
+| `v0.3.0` | Composite state and native trace | Orthogonal `@context` axes, `case (source-set)->(target-set)`, exact/set/wildcard source patterns, path-local guard/update/ActionPlan, atomic commit, pure helpers, procedure-only entry configurations, static/dynamic typed traces and finite-prefix claims |
+| `v0.4.0` | Derived/shared state theory | `data/derive/invariant`, explicit shared inputs, richer typed before/after destructuring, lifecycle/completion library axes and state-data dependency checks |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |
-| `v0.7.0` | Claims and monitors | `claim`, implication, trace projection/redaction, monitor automata, unknown/failed/proved status and evidence metadata |
-| `v0.8.0` | Native trace, replay and migration | Versioned DTESSL EventTrace, logical replay, state/schema migration, executable/source digests and compatibility corpus |
+| `v0.7.0` | Monitor automata and assurance | Compile existing claims/invariants to monitor automata, trace redaction, evidence metadata and refinement-oriented statuses |
+| `v0.8.0` | Trace migration and compatibility | Versioned native trace/state schema migration, executable/source digests and compatibility corpus |
 | `v0.9.0` | Foundation hardening | Parser/search limits, fuzzing, differential determinism, failure recovery, benchmarks and release candidate documentation |
 
 Milestone 0 exits only when the complete language design is represented in the

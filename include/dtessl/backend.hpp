@@ -36,6 +36,11 @@ enum class LanguageFeature {
   TypedActionPorts,
   LogicalNames,
   DirectRelationBinding,
+  CompositeStateSet,
+  TypedTrace,
+  TraceClaims,
+  PureFunctions,
+  ProcedureEntry,
 };
 
 using FeatureSet = std::set<LanguageFeature>;
