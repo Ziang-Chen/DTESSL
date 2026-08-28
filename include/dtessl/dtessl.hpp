@@ -66,7 +66,9 @@ struct ActionPlan {
 };
 
 struct StepResult {
-  std::uint64_t tick{0};
+  // A round is one atomic simulation batch, not a per-transition clock.
+  // Independent transitions in the same batch share this value.
+  std::uint64_t round{0};
   std::string transition;
   std::string from_state;
   std::string to_state;
@@ -74,6 +76,14 @@ struct StepResult {
   ActionPlan actions;
 
   friend bool operator==(const StepResult&, const StepResult&) = default;
+};
+
+struct ParallelStepResult {
+  std::uint64_t round{0};
+  std::vector<StepResult> transitions;
+  std::map<std::string, Value, std::less<>> state;
+
+  friend bool operator==(const ParallelStepResult&, const ParallelStepResult&) = default;
 };
 
 class Error : public std::runtime_error {
@@ -113,12 +123,19 @@ class Engine {
   // returned ActionPlan; this standalone engine never performs ambient I/O.
   [[nodiscard]] StepResult step(const Event& event);
 
+  // Evaluates every event against one immutable before snapshot and commits
+  // non-conflicting field updates atomically in one discrete round. Concurrent
+  // writes to the same field are rejected until an explicit merge relation is
+  // available in the language.
+  [[nodiscard]] ParallelStepResult step_parallel(const std::vector<Event>& events);
+
   [[nodiscard]] std::string current_state() const;
+  [[nodiscard]] std::uint64_t current_round() const noexcept;
   [[nodiscard]] const std::map<std::string, Value, std::less<>>& values() const;
 
  private:
   Program program_;
-  std::uint64_t tick_{0};
+  std::uint64_t round_{0};
   std::string current_state_;
   std::map<std::string, Value, std::less<>> values_;
 };

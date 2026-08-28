@@ -1,4 +1,6 @@
 #include "dtessl/dtessl.hpp"
+#include "dtessl/scratch_pool.hpp"
+#include "dtessl/version.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -12,7 +14,8 @@ state Scheduler @ local initial:
   credits: int = 2
   workers: set<string> = {"worker-a", "worker-b"}
   busy: set<string> = {}
-  last_event_at: int = 0
+  last_round: int = 0
+  note: string = ""
   invariant:
     credits >= 0 and count(workers) = 2 and count(busy) <= count(workers)
 
@@ -22,7 +25,7 @@ transition Schedule @ Submit(task: string, worker: string):
     mode = "Waiting"
     credits = before.credits - 1
     busy = insert(before.busy, worker)
-    last_event_at = now
+    last_round = round
   where:
     before.mode = "Idle"
     and exists item in before.workers where item = worker
@@ -35,11 +38,20 @@ transition Complete @ Done(task: string, worker: string):
     mode = "Idle"
     credits = before.credits + 1
     busy = erase(before.busy, worker)
-    last_event_at = now
+    last_round = round
   where:
     before.mode = "Waiting"
   do:
     completed: $ipc.complete(task)
+
+transition Mark @ Note(text: string):
+  from Scheduler
+  to Scheduler:
+    note = text
+  where:
+    before.mode = "Idle"
+  do:
+    noted: $log.note(text)
 )DTESSL";
 
 [[noreturn]] void fail(const std::string& message) {
@@ -54,19 +66,21 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
+  require(dtessl::version == "0.0.1", "compiled version must be v0.0.1");
   const dtessl::Program program = dtessl::parse(source);
   dtessl::Event submit{"Submit", {{"task", dtessl::Value("task-1")},
                                     {"worker", dtessl::Value("worker-a")}}};
 
   dtessl::Engine engine(program);
   const dtessl::StepResult first = engine.step(submit);
-  require(first.tick == 1, "the first accepted event must advance logical time to one");
+  require(first.round == 1, "the first accepted batch must advance the round to one");
   require(first.transition == "Schedule", "wrong transition selected");
   require(first.state.at("mode").as_string() == "Waiting", "state update was not committed");
   require(first.state.at("credits").as_int() == 1, "integer update is wrong");
   require(first.state.at("busy").as_string_set().values.contains("worker-a"),
           "set resource update is wrong");
-  require(first.state.at("last_event_at").as_int() == 0, "now must expose the pre-step tick");
+  require(first.state.at("last_round").as_int() == 0,
+          "round must expose the pre-batch simulation round");
   require(first.actions.calls.size() == 3, "action plan must contain three calls");
   require(first.actions.dependencies.size() == 2, "serial/parallel DAG is wrong");
   require(first.actions.dependencies[0] == std::pair<std::size_t, std::size_t>{0, 1},
@@ -79,11 +93,11 @@ int main() {
   dtessl::Event done{"Done", {{"task", dtessl::Value("task-1")},
                                 {"worker", dtessl::Value("worker-a")}}};
   const dtessl::StepResult second = engine.step(done);
-  require(second.tick == 2 && second.state.at("mode").as_string() == "Idle",
+  require(second.round == 2 && second.state.at("mode").as_string() == "Idle",
           "second event did not evolve the state");
   require(second.state.at("busy").as_string_set().values.empty(),
           "set resource release is wrong");
-  require(second.state.at("last_event_at").as_int() == 1, "logical time did not advance");
+  require(second.state.at("last_round").as_int() == 1, "simulation round did not advance");
 
   dtessl::Engine replay(program);
   require(replay.step(submit) == first, "fresh replay must be byte-for-byte deterministic");
@@ -98,6 +112,42 @@ int main() {
     rejected = true;
   }
   require(rejected, "a failed relational predicate must disable the transition");
+
+  dtessl::Engine parallel_engine(program);
+  const dtessl::ParallelStepResult parallel = parallel_engine.step_parallel(
+      {submit, dtessl::Event{"Note", {{"text", dtessl::Value("same-round")}}}});
+  require(parallel.round == 1 && parallel.transitions.size() == 2,
+          "parallel transitions must share one simulation round");
+  require(parallel.state.at("mode").as_string() == "Waiting" &&
+              parallel.state.at("note").as_string() == "same-round",
+          "disjoint parallel writes were not committed atomically");
+  require(parallel.transitions[0].round == parallel.transitions[1].round,
+          "parallel decisions must not receive an artificial total order");
+
+  bool conflict = false;
+  try {
+    dtessl::Engine conflicting(program);
+    static_cast<void>(conflicting.step_parallel(
+        {dtessl::Event{"Note", {{"text", dtessl::Value("a")}}},
+         dtessl::Event{"Note", {{"text", dtessl::Value("b")}}}}));
+  } catch (const dtessl::Error&) {
+    conflict = true;
+  }
+  require(conflict, "parallel writes need an explicit merge relation");
+
+  dtessl::ScratchPool pool(64, 128);
+  struct Pair {
+    std::int64_t first;
+    std::int64_t second;
+  };
+  Pair* pair = pool.make<Pair>(7, 9);
+  require(pair->first == 7 && pair->second == 9, "scratch pool construction failed");
+  void* first_allocation = pair;
+  require(pool.used() >= sizeof(Pair) && pool.reserved() == 64,
+          "scratch pool accounting is wrong");
+  pool.reset();
+  require(pool.make<Pair>(1, 2) == first_allocation,
+          "scratch pool must reuse retained blocks after reset");
 
   constexpr std::string_view invalid_types = R"DTESSL(
 state Broken initial:

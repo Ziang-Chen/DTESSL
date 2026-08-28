@@ -1,4 +1,5 @@
 #include "dtessl/dtessl.hpp"
+#include "dtessl/version.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -51,6 +52,7 @@ dtessl::Event parse_event(int argc, char** argv, int start) {
 void usage(std::ostream& out) {
   out << "DTESSL (戴特赛尔) - Discrete-Time Event System Simulation Language\n\n"
       << "usage:\n"
+      << "  dtessl version\n"
       << "  dtessl check <program.dtessl>\n"
       << "  dtessl run <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n";
@@ -65,6 +67,11 @@ int main(int argc, char** argv) {
       return argc < 2 ? 2 : 0;
     }
     const std::string command = argv[1];
+    if (command == "version") {
+      if (argc != 2) throw dtessl::Error("version does not accept arguments");
+      std::cout << "dtessl v" << dtessl::version << '\n';
+      return 0;
+    }
     if (argc < 3) {
       usage(std::cerr);
       return 2;

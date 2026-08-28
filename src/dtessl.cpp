@@ -780,7 +780,7 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
   switch (expr->kind) {
     case Expr::Kind::Literal: return value_type(*expr->literal);
     case Expr::Kind::Name: {
-      if (expr->text == "now") return DataType::Int;
+      if (expr->text == "round") return DataType::Int;
       std::string name = expr->text;
       if (name.starts_with("before.")) {
         name = name.substr(name.find('.') + 1);
@@ -960,7 +960,7 @@ struct Environment {
   const std::map<std::string, Value, std::less<>>& state;
   const Event* event{nullptr};
   std::map<std::string, Value, std::less<>> locals;
-  std::uint64_t tick{0};
+  std::uint64_t round{0};
 };
 
 Value evaluate(const ExprPtr& expr, Environment& environment);
@@ -984,11 +984,11 @@ int compare_values(const Value& left, const Value& right) {
 }
 
 Value resolve_name(const std::string& name, const Environment& environment) {
-  if (name == "now") {
-    if (environment.tick > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-      throw Error("logical time exceeds int range");
+  if (name == "round") {
+    if (environment.round > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+      throw Error("simulation round exceeds int range");
     }
-    return Value(static_cast<std::int64_t>(environment.tick));
+    return Value(static_cast<std::int64_t>(environment.round));
   }
   const auto local = environment.locals.find(name);
   if (local != environment.locals.end()) return local->second;
@@ -1111,8 +1111,8 @@ std::map<std::string, Value, std::less<>> initial_values(const State& state) {
 
 void verify_invariants(const State& state,
                        const std::map<std::string, Value, std::less<>>& values,
-                       std::uint64_t tick) {
-  Environment environment{values, nullptr, {}, tick};
+                       std::uint64_t round) {
+  Environment environment{values, nullptr, {}, round};
   for (const ExprPtr& invariant : state.invariants) {
     if (!evaluate(invariant, environment).as_bool()) {
       throw Error("invariant failed in state '" + state.name + "'");
@@ -1265,63 +1265,108 @@ Engine::Engine(Program program) : program_(std::move(program)) {
   values_ = initial_values(*initial);
 }
 
-StepResult Engine::step(const Event& event) {
+ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
+  if (events.empty()) throw Error("a parallel step needs at least one event");
+  if (round_ == std::numeric_limits<std::uint64_t>::max()) {
+    throw Error("simulation round overflow");
+  }
   const Program::Impl& program = *program_.implementation();
-  std::vector<const Transition*> enabled;
-  for (const Transition& transition : program.transitions) {
-    if (transition.from != current_state_ || transition.event != event.name) continue;
-    validate_event(transition, event);
-    Environment environment{values_, &event, {}, tick_};
-    if (evaluate(transition.condition, environment).as_bool()) enabled.push_back(&transition);
-  }
-  if (enabled.empty()) {
-    throw Error("no transition accepts event '" + event.name + "' from state '" + current_state_ + "'");
-  }
-  if (enabled.size() != 1) {
-    throw Error("event '" + event.name + "' enables multiple transitions from state '" +
-                current_state_ + "'");
-  }
+  struct Prepared {
+    const Transition* transition;
+    std::map<std::string, Value, std::less<>> writes;
+    ActionPlan actions;
+  };
+  std::vector<Prepared> prepared;
+  prepared.reserve(events.size());
+  std::string target_name;
 
-  const Transition& transition = *enabled.front();
-  const State& source = find_state(program, transition.from);
-  const State& target = find_state(program, transition.to);
-  std::map<std::string, Value, std::less<>> next =
-      transition.from == transition.to ? values_ : initial_values(target);
-  Environment environment{values_, &event, {}, tick_};
-  for (const Assignment& assignment : transition.assignments) {
-    Value value = evaluate(assignment.value, environment);
-    const Field& field = find_field(target, assignment.field);
-    if (value_type(value) != field.type) {
-      throw Error("assignment to '" + assignment.field + "' has the wrong type");
+  for (const Event& event : events) {
+    std::vector<const Transition*> enabled;
+    for (const Transition& transition : program.transitions) {
+      if (transition.from != current_state_ || transition.event != event.name) continue;
+      validate_event(transition, event);
+      Environment environment{values_, &event, {}, round_};
+      if (evaluate(transition.condition, environment).as_bool()) enabled.push_back(&transition);
     }
-    next.insert_or_assign(assignment.field, std::move(value));
-  }
-  verify_invariants(target, next, tick_ + 1);
+    if (enabled.empty()) {
+      throw Error("no transition accepts event '" + event.name + "' from state '" +
+                  current_state_ + "'");
+    }
+    if (enabled.size() != 1) {
+      throw Error("event '" + event.name + "' enables multiple transitions from state '" +
+                  current_state_ + "'");
+    }
 
-  ActionPlan plan;
-  if (transition.action) {
-    std::unordered_set<std::string> labels;
-    build_plan(transition.action, environment, source, plan, labels);
-    std::sort(plan.dependencies.begin(), plan.dependencies.end());
-    plan.dependencies.erase(std::unique(plan.dependencies.begin(), plan.dependencies.end()),
-                            plan.dependencies.end());
+    const Transition& transition = *enabled.front();
+    if (target_name.empty()) target_name = transition.to;
+    if (target_name != transition.to) {
+      throw Error("parallel transitions must enter the same target state");
+    }
+    const State& source = find_state(program, transition.from);
+    const State& target = find_state(program, transition.to);
+    Environment environment{values_, &event, {}, round_};
+    Prepared decision{&transition, {}, {}};
+    for (const Assignment& assignment : transition.assignments) {
+      Value value = evaluate(assignment.value, environment);
+      const Field& field = find_field(target, assignment.field);
+      if (value_type(value) != field.type) {
+        throw Error("assignment to '" + assignment.field + "' has the wrong type");
+      }
+      decision.writes.emplace(assignment.field, std::move(value));
+    }
+    if (transition.action) {
+      std::unordered_set<std::string> labels;
+      build_plan(transition.action, environment, source, decision.actions, labels);
+      std::sort(decision.actions.dependencies.begin(), decision.actions.dependencies.end());
+      decision.actions.dependencies.erase(
+          std::unique(decision.actions.dependencies.begin(), decision.actions.dependencies.end()),
+          decision.actions.dependencies.end());
+    }
+    prepared.push_back(std::move(decision));
   }
 
-  StepResult result;
-  result.tick = tick_ + 1;
-  result.transition = transition.name;
-  result.from_state = transition.from;
-  result.to_state = transition.to;
+  const State& target = find_state(program, target_name);
+  std::map<std::string, Value, std::less<>> next =
+      target_name == current_state_ ? values_ : initial_values(target);
+  std::unordered_set<std::string> written;
+  for (const Prepared& decision : prepared) {
+    for (const auto& [field, value] : decision.writes) {
+      if (!written.insert(field).second) {
+        throw Error("parallel transitions write the same field '" + field + "'");
+      }
+      next.insert_or_assign(field, value);
+    }
+  }
+  verify_invariants(target, next, round_ + 1U);
+
+  ParallelStepResult result;
+  result.round = round_ + 1U;
   result.state = next;
-  result.actions = std::move(plan);
+  result.transitions.reserve(prepared.size());
+  for (Prepared& decision : prepared) {
+    StepResult step_result;
+    step_result.round = result.round;
+    step_result.transition = decision.transition->name;
+    step_result.from_state = decision.transition->from;
+    step_result.to_state = decision.transition->to;
+    step_result.state = next;
+    step_result.actions = std::move(decision.actions);
+    result.transitions.push_back(std::move(step_result));
+  }
 
-  ++tick_;
-  current_state_ = transition.to;
+  ++round_;
+  current_state_ = target_name;
   values_ = std::move(next);
   return result;
 }
 
+StepResult Engine::step(const Event& event) {
+  ParallelStepResult result = step_parallel(std::vector<Event>{event});
+  return std::move(result.transitions.front());
+}
+
 std::string Engine::current_state() const { return current_state_; }
+std::uint64_t Engine::current_round() const noexcept { return round_; }
 const std::map<std::string, Value, std::less<>>& Engine::values() const { return values_; }
 
 std::string value_text(const Value& value) {
@@ -1346,7 +1391,7 @@ std::string value_text(const Value& value) {
 
 std::string result_text(const StepResult& result) {
   std::ostringstream out;
-  out << "tick " << result.tick << '\n';
+  out << "round " << result.round << '\n';
   out << "transition " << result.transition << '\n';
   out << "state " << result.from_state << " -> " << result.to_state << " {\n";
   for (const auto& [name, value] : result.state) {

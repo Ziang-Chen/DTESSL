@@ -1,0 +1,9 @@
+#pragma once
+
+#include <string_view>
+
+namespace dtessl {
+
+inline constexpr std::string_view version = "@DTESSL_VERSION@";
+
+}  // namespace dtessl

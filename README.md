@@ -1,8 +1,18 @@
-# DTESSL v0
+# DTESSL v0.0.1
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
 是无第三方依赖的 C++20 库与命令行工具。
+
+版本采用 `v里程碑.大特性.小特性`，不是 SemVer。完整设计、版本路线和当前证据分别见：
+
+- [语言总设计](docs/LANGUAGE_DESIGN.md)
+- [版本规则](docs/VERSIONING.md)
+- [实施路线](docs/ROADMAP.md)
+- [Goal contract](docs/GOAL_CONTRACT.md)
+- [项目 QA/QC](docs/PROJECT_QC.md)
+- [研究依据与项目推论](docs/REFERENCES.md)
+- [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
 
@@ -11,7 +21,9 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - `state` 定义一个有类型的状态空间、初值、上下文和不变量；
 - `transition` 定义一次事件能够引起的整体变化，以及变化后建议宿主执行的调用 DAG。
 
-每个成功事件把逻辑时间 `now` 从 `n` 推进到 `n + 1`。引擎按以下顺序工作：
+执行器以一组可并行事件为一个离散 `round`。同一 round 的 transition 都读取同一个
+before snapshot；写集不冲突时原子合并，冲突而没有显式 merge relation 时拒绝整组事件。
+因此 round 是模拟批次，不是“每个 transition 自增一次”的全局逻辑时钟。引擎按以下顺序工作：
 
 1. 用当前状态和事件参数求值 `where`；
 2. 要求恰好一个 transition 可用，否则拒绝事件；
@@ -66,7 +78,7 @@ event-pattern = Name "(" [ parameter { "," parameter } ] ")" ;
 parameter   = Name ":" type ;
 type        = "bool" | "int" | "string" | "set<string>" ;
 
-expression  = literal | name | "now" | "before." Name
+expression  = literal | name | "round" | "before." Name
             | unary | binary
             | "count" "(" expression ")"
             | ( "insert" | "erase" ) "(" expression "," expression ")"
@@ -121,6 +133,7 @@ v0 有精确的 `bool`、有符号 64 位 `int`、UTF-8 `string` 和规范排序
 cmake -S . -B build -DDTESSL_BUILD_TESTS=ON
 cmake --build build --target dtessl_cli dtessl_tests -j
 build/dtessl check examples/scheduler.dtessl
+build/dtessl version
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 ctest --test-dir build --output-on-failure

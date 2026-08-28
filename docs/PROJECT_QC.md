@@ -1,0 +1,85 @@
+# DTESSL Project QC Control
+
+Updated: 2026-08-28, Asia/Shanghai
+
+## Control metadata
+
+- Owner: Ziang-Chen
+- Target repository: `Ziang-Chen/DTESSL`
+- Integration repository: `Ziang-Chen/chenVirtualMachine`,
+  `external/DTESSL` submodule
+- Current target: `v0.0.1`
+- Stop orders: none
+
+## Current state
+
+**Candidate.** The minimal executable loop is implemented and locally verified.
+It is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
+
+## Current goal contract
+
+- North star: see `GOAL_CONTRACT.md`.
+- Allowed surface: language/compiler/simulator/tooling/docs/releases and pinned
+  ChenVM integration.
+- Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
+  universal bytecode and premature JIT.
+- Current exit gate: publish a clean, self-reporting `v0.0.1` with reproducible
+  standalone and submodule builds.
+
+## Evidence matrix
+
+| Requirement | Verification evidence | Validation evidence | Status |
+| --- | --- | --- | --- |
+| Independent C++ build | Standalone CMake build passes | Built from standalone clone layout | pass |
+| Typed state/transition loop | Unit test covers parse, verify and two serial steps | Scheduler example produces inspectable state | pass |
+| Parallel transition semantics | Same-snapshot disjoint merge and conflict rejection tests | No multi-component user model yet | candidate |
+| Deterministic action DAG | Dependency assertions and replay equality | CLI output shows serial fan-out | pass |
+| Relation predicate baseline | `exists`, membership and set updates tested | Unknown worker disables transition | pass |
+| No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
+| Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
+| Version identity | CMake/generated header/CLI/test at `0.0.1` | Tag not yet published | candidate |
+| Full relation/search design | Specification exists | Implementation absent | missing |
+| Multi-state transition model | Specification exists | Implementation absent | missing |
+| Typed host receipts/replay | Call plan baseline exists | Receipt protocol absent | missing |
+| Four AST projections | Architecture specified | Implementations absent | missing |
+
+## Gaps and blockers
+
+- P0 gap: source AST is currently internal and has no canonical serialized form.
+- P0 gap: value model is limited to four concrete types.
+- P0 gap: `exists` is boolean-only; no selected binding or relation algebra.
+- P0 gap: replay is one event and recomputes rather than consuming recorded
+  receipts.
+- P0 gap: same-round execution currently supports disjoint writes only; typed
+  confluence/merge relations and causal predecessor traces are not implemented.
+- P0 gap: backend/provider contracts are designed but wait on canonical AST.
+- P1 gap: no external user dogfood model beyond the bundled scheduler example.
+
+There is no external blocker for the `v0.0.1` gate.
+
+## Risks
+
+- Scope: implementing all domain dialects inside the core would bloat the
+  language. The P0/P1/P2 split is mandatory.
+- Verification: C++ implementation is still concentrated in one source file;
+  refactoring must follow semantic tests, not precede them.
+- Validation: syntax remains candidate until exercised on at least one
+  non-trivial user model.
+- Release: DTESSL tags and ChenVM submodule updates must remain ordered.
+
+## Next corrective focus
+
+1. Close and tag `v0.0.1`.
+2. Begin `v0.1.0` with canonical typed values and a golden codec before adding
+   more surface sugar.
+3. Reject any claim that the full language is complete until all roadmap gates
+   have evidence.
+
+## Decision log
+
+- 2026-08-28: DTESSL split into an independent repository; ChenVM consumes it as
+  a pinned external submodule.
+- 2026-08-28: version interpretation fixed as
+  `vMilestone.MajorFeature.MinorFeature`; first baseline is `v0.0.1`.
+- 2026-08-28: complete design partitioned into core, standard dialect and
+  external integration layers.
