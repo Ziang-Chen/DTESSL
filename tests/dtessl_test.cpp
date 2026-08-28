@@ -1118,14 +1118,15 @@ transition BreakInvariant @ Break():
 
 procedure RetryEntry @ system:
   initial (Idle @ scheduler, Retrying @ process)
+  inject Tick():
+    when (Idle @ scheduler, Retrying @ process)
 
 trace Happy:
   replay:
-    Dispatch.ready() @ RetryEntry
+    Tick() @ RetryEntry
   capture closed:
     state (Busy @ scheduler, Running @ process)
     transition (Dispatch.ready)
-    procedure (RetryEntry)
 
 trace ProcessView @ system:
   capture projected:
@@ -1213,9 +1214,17 @@ transition Add @ Increment(delta: int):
 
 procedure SessionA @ alpha:
   initial (Counter @ counter)
+  inject Increment(delta: int):
+    when (Counter @ counter)
+    where:
+      delta > 0
 
 procedure SessionB @ beta:
   initial (Counter @ counter)
+  inject Increment(delta: int):
+    when (Counter @ counter)
+    where:
+      delta > 0
 
 trace Interleaved:
   replay:
@@ -1250,8 +1259,31 @@ Claim Persisted @ Interleaved:
               persistent_trace.procedure_history.at("SessionB").back()
                       .procedure_revision == 1U &&
               persistent_trace.procedure_history.at("SessionB").back()
-                      .transitions.empty(),
+                      .transitions.empty() &&
+              persistent_trace.replayable &&
+              persistent_trace.procedure_artifacts.size() == 2U,
           "replay did not persist independent procedure state across global rounds");
+  const std::vector<dtessl::ProcedureArtifact> persistent_artifacts{
+      persistent_trace.procedure_artifacts.at("SessionA"),
+      persistent_trace.procedure_artifacts.at("SessionB")};
+  const dtessl::TraceSnapshot golden_replay = dtessl::replay_procedures(
+      persistent_program, persistent_artifacts,
+      {{1U, "SessionA", "Add.stay"}, {1U, "SessionB", "Add.stay"},
+       {2U, "SessionA", "Add.stay"}});
+  require(golden_replay.replayable && golden_replay.rounds == persistent_trace.rounds &&
+              golden_replay.procedure_states.at("SessionA").at("value").as_int() == 4 &&
+              golden_replay.procedure_states.at("SessionB").at("value").as_int() == 2,
+          "complete procedure artifact replay did not reconstruct searched decisions");
+  bool search_mismatch = false;
+  try {
+    static_cast<void>(dtessl::replay_procedures(
+        persistent_program, persistent_artifacts,
+        {{2U, "SessionA", "Add.missing"}}));
+  } catch (const dtessl::Error&) {
+    search_mismatch = true;
+  }
+  require(search_mismatch,
+          "search replay accepted an expected path that the engine did not derive");
   const auto persistent_claims =
       dtessl::evaluate_named_trace(persistent_program, "Interleaved");
   require(persistent_claims.size() == 1U &&

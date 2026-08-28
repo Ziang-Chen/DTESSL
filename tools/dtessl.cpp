@@ -669,7 +669,9 @@ int main(int argc, char** argv) {
     if (command == "trace") {
       if (argc != 4) throw dtessl::Error("usage: dtessl trace <program.dtessl> <Trace>");
       const dtessl::TraceSnapshot trace = dtessl::run_named_trace(program, argv[3]);
-      std::cout << "trace " << trace.name << " closed rounds=" << trace.rounds.size() << '\n';
+      std::cout << "trace " << trace.name << " closed rounds=" << trace.rounds.size()
+                << " replayable=" << (trace.replayable ? "yes" : "no")
+                << " procedures=" << trace.procedure_artifacts.size() << '\n';
       for (const dtessl::ParallelStepResult& round : trace.rounds) {
         for (const dtessl::StepResult& step : round.transitions) {
           std::cout << dtessl::result_text(step);

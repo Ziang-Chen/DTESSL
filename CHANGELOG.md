@@ -20,16 +20,18 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   `projected` native Engine capture scoped by explicit `@context`.
 - Static trace input is spelled `replay:`; one trace may declare replay followed
   by capture, while the reverse order is rejected.
-- Source replay now names transition occurrences/paths rather than raw events.
-  `Transition.case(...) @ Procedure` is lowered through the transition's typed
-  event schema and routed to persistent logical state in the language
-  RuntimeContext; execution must select the asserted path without bypassing
-  normal guards.
-- Golden correction: the transition-occurrence replay spelling above is now a
-  temporary v0 diagnostic/assertion surface, not the stable replay contract.
-  Stable replay consumes a complete procedure plus typed context-injection
-  history and recomputes the transition DAG. Capture filters must close into a
-  complete replayable procedure rather than expose a partial trace as replay.
+- Source replay accepts `Event(...) @ Procedure` typed context injections and
+  independently supports `Transition.case(...) @ Procedure` search assertions.
+  Both re-enter ordinary matching; an assertion can verify but never command a
+  transition path.
+- Added typed procedure-local `inject` admission with static `when` topology and
+  dynamic `where` predicates.
+- Added public persistent `RuntimeContext`, complete initial-state
+  `ProcedureArtifact`, deterministic artifact replay and derived-path search
+  expectations.
+- Closed capture now treats state/path/procedure filters as seeds and retains a
+  conservative whole-procedure causal/data closure. Projected capture is
+  explicitly non-replayable and emits no procedure artifact.
 - Added procedure-aware capture filters and immutable per-RoundId procedure
   frames, including idle rounds, with exact public lookup by procedure and
   RoundId.
@@ -40,9 +42,9 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   `field = expression @ context` assignments; `set @ context:` remains accepted
   as v0 compatibility syntax.
 - Added pure, total, non-recursive typed expression `function` declarations.
-- Added `procedure` as a named Engine entry configuration containing only an
-  initial context and initial orthogonal state set. Procedure startup and trace
-  replay are separate; global transitions perform all subsequent progress.
+- Added `procedure` as a named automaton instance containing an initial context,
+  initial orthogonal state set and context-admission rules. Global transitions
+  still perform every state change.
 - Added `Claim` with `always`, `eventually`, transition count bounds, logical
   implication and `satisfied/violated/pending` finite-prefix semantics.
 - Added `traces`, `trace` and `claims` CLI commands plus REPL trace inspection

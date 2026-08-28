@@ -157,6 +157,13 @@ if(DTESSL_BUILD_TESTS)
                    Happy)
   set_tests_properties(dtessl.composite_trace_run PROPERTIES
                        PASS_REGULAR_EXPRESSION "ProcessRunning@process")
+  add_test(NAME dtessl.composite_trace_replayable
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   trace
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/composite_trace.dtessl
+                   Happy)
+  set_tests_properties(dtessl.composite_trace_replayable PROPERTIES
+                       PASS_REGULAR_EXPRESSION "replayable=yes procedures=1")
   add_test(NAME dtessl.composite_procedures
            COMMAND $<TARGET_FILE:dtessl_cli>
                    procedures

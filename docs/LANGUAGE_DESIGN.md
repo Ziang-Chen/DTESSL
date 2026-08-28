@@ -47,28 +47,33 @@ inject typed context
 All transition nodes in one DAG layer share a `RoundId`. Procedure revision is
 only a local state version. Runtime traversal order cannot create logical time.
 
-A candidate compact injection surface is:
+The implemented minimal injection surface is:
 
 ```dtessl
 procedure Session @ system:
-  initial (Idle @ workflow) with initialContext
+  initial (Idle @ workflow)
 
-  inject Resume(input: ResumeContext):
+  inject Resume(session: SessionId):
     when (Waiting @ workflow)
     where:
-      input.session = session.id
+      session = workflow.owner
 ```
 
 `inject` declares what typed context may resume a quiescent procedure; it is not
-an imperative step. The exact context declaration/construction syntax remains
-to be frozen with the typed context model.
+an imperative step. Its parameters must exactly match an event schema used by a
+global transition. `when` is topology and `where` is a typed dynamic admission
+predicate. The admitted context is consumed as one event occurrence; the engine,
+not the replay source, selects the unique transition path.
 
-Filter closure starts from selected states, transition paths, procedures and
-time bounds, then walks backward over predecessor edges, state reads, context
-injections and required initial/snapshot state. The result carries the program
-digest, procedure identity, complete initial or checkpoint state, injection
-sequence, RoundIds, occurrence IDs and predecessor edges. Failure to close a
-dependency is a hard `not replayable` result, not a silent coverage gap.
+The v0.3 native closure is deliberately conservative: a selected state or path
+first identifies its owning procedure instances, then capture retains each
+whole procedure from declared initial state through every typed injection and
+every global RoundId, including idle frames. This is wider than a minimal
+backward slice but cannot omit a causal/data dependency. It emits a public
+`ProcedureArtifact` that `replay_procedures` re-admits and compares twice.
+`capture projected` emits no replay artifact and is explicitly not replayable.
+Checkpoint starts, canonical artifact serialization and program digests extend
+this contract later; they do not weaken the initial-state replay now implemented.
 
 ### Permanent system boundary (2026-08-28)
 
@@ -361,36 +366,39 @@ DTESSL inputs.
 
 ### Procedure entry, native trace and claims
 
-- `procedure P @ context: initial (...)` declares only an Engine entry
-  configuration: one initial context and a finite initial state combination.
-  It contains no events, transitions, replay, capture or ordered steps. Once
-  started, ordinary typed events are dispatched by the global transition set.
+- `procedure P @ context: initial (...)` declares one persistent automaton
+  instance entry: an initial context identity and finite initial state
+  combination. Its `inject Event(fields...)` rules admit typed context with
+  static `when` topology plus dynamic `where` predicates. It contains no
+  transitions, replay, capture or ordered steps.
 - A procedure is not a trace. The language RuntimeContext owns persistent
-  procedure instances; each replay occurrence explicitly names its target as
-  `Transition.case(...) @ Procedure`.
-- `trace T @ root: replay:` is a closed, source-authored transition-occurrence
-  trace. `Transition.case(...) @ Procedure` identifies both the expected path
-  and persistent procedure instance; its arguments use that transition's typed
-  event schema. The engine re-runs ordinary dispatch and rejects a round if
-  another path is selected, so replay never bypasses a guard or forces a state
-  rewrite.
+  procedure instances, injection history, state, local revisions and causal
+  frontier.
+- `trace T @ root: replay:` primarily lists `Event(...) @ Procedure` typed
+  context injections. The engine checks the procedure admission rule and
+  searches the global transition set. `Transition.case(...) @ Procedure` is
+  also retained as search replay: it derives the same event input and asserts
+  that the named path was selected. The assertion never commands a jump.
 - One replay source line is one 1-based discrete round and `|` joins
   simultaneous transition occurrences.
 - RoundId is a causal-DAG layer shared by all simultaneous occurrences, never a
   per-transition or per-procedure increment. Procedure revision is separate;
   stable occurrence identity plus predecessor edges carry happens-before.
-- Capture lowers to `CaptureFilter{states, transitions, procedures}`. A captured
-  procedure retains one immutable frame for every global RoundId, including
-  idle frames, and can be queried by `(trace, procedure, RoundId)`. RoundId is a
-  semantic identifier so a future logical-ID representation need not change
-  the lookup model.
+- Capture lowers to `CaptureFilter{states, transitions, procedures}`. Closed
+  capture treats this filter as a seed, identifies matching procedure
+  instances and conservatively retains each complete procedure from initial
+  state through all typed injections and RoundIds. It emits replayable
+  `ProcedureArtifact` values. A captured procedure retains one immutable frame
+  for every global RoundId, including idle frames, and can be queried by
+  `(trace, procedure, RoundId)`.
 - A trace may put `capture closed/projected:` after `replay:` to declare both a
   replay input and a capture projection; the section order is semantic and
   cannot be reversed.
 - `trace T @ root: capture closed:` retains every native Engine round while
   projecting state to the declared `state @ context` axes.
-- `capture projected` retains only decisions touching those axes and records a
-  causal gap. It is useful for inspection, not conclusive global assurance.
+- `capture projected` retains only decisions touching those axes, records a
+  causal gap, sets `replayable=false` and emits no procedure artifact. It is
+  useful for inspection, not conclusive global assurance.
 - `Claim C @ T` currently supports `always`, `eventually` and
   `count Transition <= N`. A finite open trace returns `pending` unless it
   already contains a decisive counterexample or witness. A closed trace can

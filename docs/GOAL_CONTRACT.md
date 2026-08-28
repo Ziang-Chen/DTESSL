@@ -73,10 +73,10 @@ The project is complete only when all of the following are evidenced:
   atomic orthogonal state sets, path-local transition cases, native trace
   capture, finite-prefix claim evaluation, pure helper functions and procedure
   entry configurations.
-- A procedure contains only an initial context and initial state combination.
-  It owns no transitions, events, trace or execution steps; after explicit
-  startup, the language RuntimeContext persists its isolated typed state and
-  the global transition engine handles later typed occurrences.
+- A procedure contains an initial context identity, initial state combination
+  and typed context-admission rules. It owns no transitions, trace or ordered
+  execution steps; after startup, the language RuntimeContext persists its
+  isolated state and the global transition engine handles admitted occurrences.
 - Golden replay consumes a complete procedure artifact: initial/checkpoint
   state plus admitted typed context injections. Transition paths and the
   dynamic DAG are recomputed evidence, not replay commands.

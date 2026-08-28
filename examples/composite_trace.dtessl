@@ -31,10 +31,12 @@ transition Dispatch @ Tick():
 
 procedure DispatchRun @ system:
   initial (SchedulerIdle @ scheduler, ProcessRetrying @ process)
+  inject Tick():
+    when (SchedulerIdle @ scheduler, ProcessRetrying @ process)
 
 trace Happy:
   replay:
-    Dispatch.ready() @ DispatchRun
+    Tick() @ DispatchRun
   capture closed:
     state (SchedulerBusy @ scheduler, ProcessRunning @ process)
     transition (Dispatch.ready)

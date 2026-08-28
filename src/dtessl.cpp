@@ -43,7 +43,7 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "by", "lex", "match", "E", "A", "true", "false", "none", "some",
       "ok", "err", "round", "trace", "replay", "capture", "closed",
       "projected", "Claim", "always", "eventually", "case", "function",
-      "procedure", "initial"};
+      "procedure", "initial", "inject"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
@@ -526,9 +526,18 @@ struct ClaimDeclaration {
 };
 
 struct ProcedureDeclaration {
+  struct InjectionRule {
+    std::string event;
+    std::vector<Parameter> parameters;
+    std::vector<StateBinding> when;
+    ExprPtr condition{make_literal(Value(true))};
+    std::size_t line{0};
+    std::size_t column{0};
+  };
   std::string name;
   std::string initial_context;
   std::vector<StateBinding> initial_states;
+  std::vector<InjectionRule> injections;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -1963,24 +1972,41 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
       std::vector<std::string> paths;
       std::vector<std::string> procedures;
       for (;;) {
-        const std::string transition_name = identifier();
+        const std::string occurrence_name = identifier();
         std::string case_name;
         if (match(".")) case_name = identifier();
-        const Transition& transition = transition_for(transition_name, case_name);
+        const Transition* transition = nullptr;
+        bool search_expectation = !case_name.empty();
+        if (search_expectation) {
+          transition = &transition_for(occurrence_name, case_name);
+        } else {
+          const auto event = std::find_if(
+              transitions.begin(), transitions.end(), [&](const Transition& item) {
+                return item.event == occurrence_name;
+              });
+          if (event != transitions.end()) {
+            transition = &*event;
+          } else {
+            transition = &transition_for(occurrence_name, {});
+            search_expectation = true;
+          }
+        }
         Event event;
-        event.name = transition.event;
+        event.name = transition->event;
         expect("(");
-        for (std::size_t index = 0; index < transition.parameters.size(); ++index) {
+        for (std::size_t index = 0; index < transition->parameters.size(); ++index) {
           if (index != 0) expect(",");
-          event.fields.emplace(transition.parameters[index].name,
-                               initial_value(transition.parameters[index].type));
+          event.fields.emplace(transition->parameters[index].name,
+                               initial_value(transition->parameters[index].type));
         }
         expect(")");
         expect("@");
         const std::string procedure_name = identifier();
         batch.events.push_back(std::move(event));
-        paths.push_back(transition_name +
-                        (case_name.empty() ? "" : "." + case_name));
+        paths.push_back(search_expectation
+                            ? occurrence_name +
+                                  (case_name.empty() ? "" : "." + case_name)
+                            : "");
         procedures.push_back(procedure_name);
         if (!match("|")) break;
       }
@@ -2121,6 +2147,69 @@ ProcedureDeclaration Parser::procedure() {
     expect(")");
   }
   newline();
+  while (!at(TokenKind::Dedent)) {
+    const Token inject_start = peek();
+    expect("inject");
+    ProcedureDeclaration::InjectionRule rule;
+    rule.line = inject_start.line;
+    rule.column = inject_start.column;
+    rule.event = identifier();
+    expect("(");
+    if (!match(")")) {
+      do {
+        Parameter parameter;
+        const Token parameter_start = peek();
+        parameter.name = identifier();
+        parameter.line = parameter_start.line;
+        parameter.column = parameter_start.column;
+        expect(":");
+        parameter.type = type();
+        rule.parameters.push_back(std::move(parameter));
+      } while (match(","));
+      expect(")");
+    }
+    expect(":");
+    newline();
+    indent();
+    bool has_clause = false;
+    bool has_when = false;
+    bool has_where = false;
+    while (!at(TokenKind::Dedent)) {
+      if (match("when")) {
+        if (has_when) fail(peek(), "inject rule repeats when clause");
+        has_when = true;
+        expect("(");
+        if (!match(")")) {
+          do {
+            StateBinding binding;
+            const Token binding_start = peek();
+            binding.line = binding_start.line;
+            binding.column = binding_start.column;
+            binding.state = identifier();
+            expect("@");
+            binding.context = identifier();
+            rule.when.push_back(std::move(binding));
+          } while (match(","));
+          expect(")");
+        }
+        newline();
+        has_clause = true;
+        continue;
+      }
+      if (match("where")) {
+        if (has_where) fail(peek(), "inject rule repeats where clause");
+        has_where = true;
+        expect(":");
+        rule.condition = block_expression();
+        has_clause = true;
+        continue;
+      }
+      fail(peek(), "inject rule requires when and/or where");
+    }
+    dedent();
+    if (!has_clause) fail(inject_start, "inject rule requires when and/or where");
+    result.injections.push_back(std::move(rule));
+  }
   dedent();
   if (result.initial_states.empty()) {
     fail(start, "procedure requires at least one initial state");
@@ -3453,6 +3542,56 @@ void verify_program(Program::Impl& program) {
      collect_action_reads(*route.action, local_types, shadowed, *route.reads);
     }
   }
+  for (auto& [procedure_name, procedure] : program.procedures) {
+    static_cast<void>(procedure_name);
+    for (auto& rule : procedure.injections) {
+      const auto schema = event_schemas.find(rule.event);
+      if (schema == event_schemas.end()) {
+        throw Error("procedure inject references unknown event '" + rule.event + "'",
+                    rule.line, rule.column);
+      }
+      if (schema->second.size() != rule.parameters.size()) {
+        throw Error("inject event '" + rule.event + "' has the wrong schema",
+                    rule.line, rule.column);
+      }
+      TypeEnvironment event_types;
+      for (std::size_t index = 0; index < rule.parameters.size(); ++index) {
+        Parameter& parameter = rule.parameters[index];
+        const Parameter& expected = schema->second[index];
+        if (parameter.name != expected.name || parameter.type != expected.type) {
+          throw Error("inject event '" + rule.event + "' has the wrong schema",
+                      parameter.line, parameter.column);
+        }
+        if (!event_types.emplace(parameter.name, parameter.type).second) {
+          throw Error("duplicate inject parameter '" + parameter.name + "'",
+                      parameter.line, parameter.column);
+        }
+      }
+      TypeEnvironment state_types;
+      std::set<std::string, std::less<>> contexts;
+      for (StateBinding& binding : rule.when) {
+        const State& state = find_state(program, binding.state);
+        if (state.context != binding.context) {
+          throw Error("inject state '" + state.name + "' belongs to @" + state.context +
+                          ", not @" + binding.context,
+                      binding.line, binding.column);
+        }
+        if (!contexts.insert(binding.context).second) {
+          throw Error("inject when repeats @" + binding.context,
+                      binding.line, binding.column);
+        }
+        for (const Field& field : state.fields) {
+          state_types.emplace(state_key(binding.context, field.name), field.type);
+          if (rule.when.size() == 1U) state_types.emplace(field.name, field.type);
+        }
+      }
+      if (infer_type(rule.condition, state_types, event_types, {}, program.types).kind !=
+          DataType::Kind::Bool) {
+        throw Error("where clause in procedure inject '" + rule.event + "' must be bool",
+                    rule.condition->line, rule.condition->column);
+      }
+    }
+  }
   for (const State& state : program.states) {
     TypeEnvironment state_types;
     for (const Field& field : state.fields) state_types.emplace(field.name, field.type);
@@ -4336,6 +4475,52 @@ void validate_event(const Transition& transition, const Event& event,
   }
 }
 
+void admit_procedure_context(const Program::Impl& program,
+                             std::string_view procedure_name,
+                             const Engine& engine, const Event& event,
+                             std::uint64_t round_id) {
+  const auto procedure = program.procedures.find(procedure_name);
+  if (procedure == program.procedures.end()) {
+    throw Error("unknown procedure '" + std::string(procedure_name) + "'");
+  }
+  if (procedure->second.injections.empty()) {
+    throw Error("procedure '" + std::string(procedure_name) +
+                "' declares no typed context injection");
+  }
+  FunctionScope function_scope(program.functions);
+  std::size_t admitted = 0;
+  for (const auto& rule : procedure->second.injections) {
+    if (rule.event != event.name) continue;
+    if (event.fields.size() != rule.parameters.size()) continue;
+    bool schema_matches = true;
+    for (const Parameter& parameter : rule.parameters) {
+      const auto field = event.fields.find(parameter.name);
+      if (field == event.fields.end() ||
+          !value_matches_type(field->second, parameter.type, program.types)) {
+        schema_matches = false;
+        break;
+      }
+    }
+    if (!schema_matches) continue;
+    const bool states_match = std::all_of(
+        rule.when.begin(), rule.when.end(), [&](const StateBinding& binding) {
+          const auto active = engine.current_states().find(binding.context);
+          return active != engine.current_states().end() && active->second == binding.state;
+        });
+    if (!states_match) continue;
+    Environment environment{engine.values(), &event, {}, round_id - 1U};
+    if (evaluate(rule.condition, environment).as_bool()) ++admitted;
+  }
+  if (admitted == 0U) {
+    throw Error("procedure '" + std::string(procedure_name) +
+                "' rejects context '" + event.name + "' at " + engine.current_state());
+  }
+  if (admitted != 1U) {
+    throw Error("procedure '" + std::string(procedure_name) +
+                "' admits context '" + event.name + "' ambiguously");
+  }
+}
+
 std::string escape_string(std::string_view value) {
   std::string result = "\"";
   for (char ch : value) {
@@ -4986,6 +5171,174 @@ const std::string& Engine::initial_context() const noexcept { return initial_con
 std::uint64_t Engine::current_round() const noexcept { return round_; }
 const std::map<std::string, Value, std::less<>>& Engine::values() const { return values_; }
 
+struct RuntimeContext::Impl {
+  explicit Impl(Program source) : program(std::move(source)) {}
+
+  Program program;
+  std::uint64_t round{0};
+  std::map<std::string, std::unique_ptr<Engine>, std::less<>> engines;
+  std::map<std::string, std::uint64_t, std::less<>> revisions;
+  std::map<std::string, ProcedureArtifact, std::less<>> artifacts;
+  std::vector<ParallelStepResult> rounds;
+  std::map<std::string, std::vector<ProcedureTraceFrame>, std::less<>> history;
+};
+
+RuntimeContext::RuntimeContext(Program program)
+    : impl_(std::make_unique<Impl>(std::move(program))) {
+  if (impl_->program.empty()) throw Error("cannot construct an empty RuntimeContext");
+}
+
+RuntimeContext::~RuntimeContext() = default;
+RuntimeContext::RuntimeContext(RuntimeContext&&) noexcept = default;
+RuntimeContext& RuntimeContext::operator=(RuntimeContext&&) noexcept = default;
+
+void RuntimeContext::start(std::string_view procedure_name) {
+  const std::string name(procedure_name);
+  if (impl_->engines.contains(name)) {
+    throw Error("procedure '" + name + "' is already started");
+  }
+  const auto declaration = impl_->program.implementation()->procedures.find(name);
+  if (declaration == impl_->program.implementation()->procedures.end()) {
+    throw Error("unknown procedure '" + name + "'");
+  }
+  if (declaration->second.injections.empty()) {
+    throw Error("procedure '" + name + "' declares no typed context injection");
+  }
+  auto engine = std::make_unique<Engine>(
+      Engine::from_procedure(impl_->program, name));
+  ProcedureArtifact artifact;
+  artifact.procedure = name;
+  artifact.initial_context = declaration->second.initial_context;
+  for (const StateBinding& binding : declaration->second.initial_states) {
+    artifact.initial_states.emplace(binding.context, binding.state);
+  }
+  impl_->engines.emplace(name, std::move(engine));
+  impl_->revisions.emplace(name, 0U);
+  impl_->artifacts.emplace(name, std::move(artifact));
+}
+
+ParallelStepResult RuntimeContext::inject(
+    const std::vector<std::pair<std::string, Event>>& contexts) {
+  if (impl_->round == std::numeric_limits<std::uint64_t>::max()) {
+    throw Error("RuntimeContext round overflow");
+  }
+  return inject_at(contexts, impl_->round + 1U);
+}
+
+ParallelStepResult RuntimeContext::inject_at(
+    const std::vector<std::pair<std::string, Event>>& contexts,
+    std::uint64_t round_id) {
+  if (contexts.empty()) throw Error("a RuntimeContext round needs at least one context");
+  if (contexts.size() > event_batch_size_limit) {
+    throw Error("RuntimeContext round exceeds context limit");
+  }
+  if (round_id == 0U || round_id <= impl_->round) {
+    throw Error("RuntimeContext RoundId must advance monotonically");
+  }
+  std::map<std::string, std::vector<Event>, std::less<>> grouped;
+  for (const auto& [procedure, context] : contexts) {
+    const auto engine = impl_->engines.find(procedure);
+    if (engine == impl_->engines.end()) {
+      throw Error("procedure '" + procedure + "' is not started");
+    }
+    admit_procedure_context(*impl_->program.implementation(), procedure,
+                            *engine->second, context, round_id);
+    grouped[procedure].push_back(context);
+  }
+  for (auto& [procedure, events] : grouped) {
+    static_cast<void>(procedure);
+    std::stable_sort(events.begin(), events.end(), event_less);
+  }
+
+  ParallelStepResult aggregate;
+  aggregate.round = round_id;
+  std::map<std::string, Engine, std::less<>> candidates;
+  for (const auto& [procedure, events] : grouped) {
+    auto [candidate, inserted] = candidates.emplace(
+        procedure, *impl_->engines.at(procedure));
+    static_cast<void>(inserted);
+    ParallelStepResult local = candidate->second.step_parallel_at(events, round_id);
+    const std::uint64_t revision = impl_->revisions.at(procedure) + 1U;
+    for (StepResult& step : local.transitions) {
+      step.procedure = procedure;
+      step.procedure_revision = revision;
+      step.id = procedure + "/" + step.id;
+      std::set<std::string, std::less<>> predecessors;
+      for (const std::string& predecessor : step.causal_predecessors) {
+        predecessors.insert(procedure + "/" + predecessor);
+      }
+      step.causal_predecessors = std::move(predecessors);
+      aggregate.transitions.push_back(std::move(step));
+    }
+  }
+  for (auto& [procedure, candidate] : candidates) {
+    *impl_->engines.at(procedure) = std::move(candidate);
+    ++impl_->revisions.at(procedure);
+  }
+  std::sort(aggregate.transitions.begin(), aggregate.transitions.end(),
+            [](const StepResult& left, const StepResult& right) {
+              return std::tie(left.procedure, left.transition, left.id) <
+                     std::tie(right.procedure, right.transition, right.id);
+            });
+  const bool single = impl_->engines.size() == 1U;
+  for (const auto& [procedure, engine] : impl_->engines) {
+    for (const auto& [field, value] : engine->values()) {
+      aggregate.state.emplace(procedure + "." + field, value);
+      if (single) aggregate.state.emplace(field, value);
+    }
+  }
+  for (const auto& [procedure, events] : grouped) {
+    for (const Event& context : events) {
+      impl_->artifacts.at(procedure).injections.push_back(
+          ProcedureInjection{round_id, context});
+    }
+  }
+  for (const auto& [procedure, engine] : impl_->engines) {
+    ProcedureTraceFrame frame;
+    frame.round = round_id;
+    frame.procedure_revision = impl_->revisions.at(procedure);
+    frame.context = engine->initial_context();
+    frame.active_states = engine->current_states();
+    frame.state = engine->values();
+    for (const StepResult& step : aggregate.transitions) {
+      if (step.procedure == procedure) frame.transitions.push_back(step.transition);
+    }
+    impl_->history[procedure].push_back(std::move(frame));
+  }
+  impl_->round = round_id;
+  impl_->rounds.push_back(aggregate);
+  return aggregate;
+}
+
+std::uint64_t RuntimeContext::current_round() const noexcept { return impl_->round; }
+
+ProcedureArtifact RuntimeContext::artifact(std::string_view procedure) const {
+  const auto found = impl_->artifacts.find(procedure);
+  if (found == impl_->artifacts.end()) {
+    throw Error("procedure '" + std::string(procedure) + "' is not started");
+  }
+  return found->second;
+}
+
+TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
+  TraceSnapshot result;
+  result.name = std::string(name);
+  result.mode = TraceCaptureMode::Closed;
+  result.closed = true;
+  result.replayable = true;
+  result.rounds = impl_->rounds;
+  result.procedure_history = impl_->history;
+  result.procedure_artifacts = impl_->artifacts;
+  result.captured_procedures.clear();
+  for (const auto& [procedure, engine] : impl_->engines) {
+    result.captured_procedures.insert(procedure);
+    result.procedure_states.emplace(procedure, engine->values());
+    result.procedure_contexts.emplace(procedure, engine->initial_context());
+  }
+  if (!result.rounds.empty()) result.final_state = result.rounds.back().state;
+  return result;
+}
+
 TraceResult run_trace(const Program& program, const EventTrace& trace) {
   if (trace.rounds.size() > event_trace_round_limit) {
     throw Error("DTESSL EventTrace exceeds round limit");
@@ -5009,6 +5362,72 @@ TraceResult replay_trace(const Program& program, const EventTrace& trace) {
   const TraceResult first = run_trace(program, trace);
   const TraceResult second = run_trace(program, trace);
   if (first != second) throw Error("DTESSL EventTrace replay diverged");
+  return first;
+}
+
+TraceSnapshot replay_procedures(
+    const Program& program, const std::vector<ProcedureArtifact>& artifacts,
+    const std::vector<SearchExpectation>& expectations) {
+  if (artifacts.empty()) throw Error("procedure replay needs at least one artifact");
+  const auto execute = [&]() {
+    RuntimeContext runtime(program);
+    std::map<std::uint64_t,
+             std::vector<std::pair<std::string, Event>>> rounds;
+    std::set<std::string, std::less<>> names;
+    for (const ProcedureArtifact& artifact : artifacts) {
+      if (!names.insert(artifact.procedure).second) {
+        throw Error("procedure replay repeats artifact '" + artifact.procedure + "'");
+      }
+      const auto declaration = program.implementation()->procedures.find(artifact.procedure);
+      if (declaration == program.implementation()->procedures.end()) {
+        throw Error("procedure replay references unknown procedure '" +
+                    artifact.procedure + "'");
+      }
+      std::map<std::string, std::string, std::less<>> declared_states;
+      for (const StateBinding& binding : declaration->second.initial_states) {
+        declared_states.emplace(binding.context, binding.state);
+      }
+      if (artifact.initial_context != declaration->second.initial_context ||
+          artifact.initial_states != declared_states) {
+        throw Error("procedure artifact initial configuration does not match '" +
+                    artifact.procedure + "'");
+      }
+      runtime.start(artifact.procedure);
+      std::uint64_t previous = 0;
+      for (const ProcedureInjection& injection : artifact.injections) {
+        if (injection.round == 0U || injection.round < previous) {
+          throw Error("procedure artifact injection rounds must not decrease");
+        }
+        previous = injection.round;
+        rounds[injection.round].emplace_back(artifact.procedure, injection.context);
+      }
+    }
+    for (const auto& [round, contexts] : rounds) {
+      static_cast<void>(runtime.inject_at(contexts, round));
+    }
+    TraceSnapshot result = runtime.snapshot("procedure-replay");
+    for (const SearchExpectation& expected : expectations) {
+      const auto round = std::find_if(
+          result.rounds.begin(), result.rounds.end(), [&](const ParallelStepResult& item) {
+            return item.round == expected.round;
+          });
+      const bool found = round != result.rounds.end() && std::any_of(
+          round->transitions.begin(), round->transitions.end(),
+          [&](const StepResult& step) {
+            return step.procedure == expected.procedure &&
+                   step.transition == expected.transition;
+          });
+      if (!found) {
+        throw Error("search replay expectation did not match " + expected.procedure + "/" +
+                    expected.transition + " at RoundId " +
+                    std::to_string(expected.round));
+      }
+    }
+    return result;
+  };
+  const TraceSnapshot first = execute();
+  const TraceSnapshot second = execute();
+  if (first != second) throw Error("procedure replay diverged");
   return first;
 }
 
@@ -5100,8 +5519,12 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         events.reserve(indices.size());
         expected_paths.reserve(indices.size());
         for (const std::size_t index : indices) {
+          admit_procedure_context(*program.implementation(), procedure,
+                                  *engines.at(procedure), batch.events[index],
+                                  aggregate.round);
           events.push_back(batch.events[index]);
-          expected_paths.push_back(found->replay_paths.at(round_index).at(index));
+          const std::string& expected = found->replay_paths.at(round_index).at(index);
+          if (!expected.empty()) expected_paths.push_back(expected);
         }
         ParallelStepResult local = engines.at(procedure)->step_parallel_at(
             events, aggregate.round);
@@ -5123,7 +5546,11 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         }
         std::sort(actual_paths.begin(), actual_paths.end());
         std::sort(expected_paths.begin(), expected_paths.end());
-        if (actual_paths != expected_paths) {
+        const bool expectations_met = std::all_of(
+            expected_paths.begin(), expected_paths.end(), [&](const std::string& expected) {
+              return std::binary_search(actual_paths.begin(), actual_paths.end(), expected);
+            });
+        if (!expectations_met) {
           throw Error("replay round " + std::to_string(round_index + 1U) +
                       " selected a different transition path for procedure '" +
                       procedure + "'");
@@ -5135,7 +5562,7 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
                          std::tie(right.procedure, right.transition, right.id);
                 });
       aggregate.state = state_snapshot();
-      for (const std::string& procedure : found->captured_procedures) {
+      for (const std::string& procedure : referenced_procedures) {
         ProcedureTraceFrame frame;
         frame.round = aggregate.round;
         frame.procedure_revision = revisions.at(procedure);
@@ -5176,6 +5603,65 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
     }
     execution.snapshot.captured_paths = found->paths;
     execution.snapshot.captured_procedures = found->captured_procedures;
+    std::set<std::string, std::less<>> closure_procedures =
+        found->captured_procedures;
+    if (closure_procedures.empty()) {
+      for (const ParallelStepResult& round : execution.logical.rounds) {
+        for (const StepResult& step : round.transitions) {
+          const bool path_seed = found->paths.empty() || found->paths.contains(step.transition);
+          const bool state_seed = found->capture.empty() || std::any_of(
+              found->capture.begin(), found->capture.end(), [&](const StateBinding& binding) {
+                const auto active = step.active_states.find(binding.context);
+                return active != step.active_states.end() && active->second == binding.state;
+              });
+          if (path_seed && state_seed) closure_procedures.insert(step.procedure);
+        }
+      }
+    }
+    if (closure_procedures.empty() && found->capture.empty() && found->paths.empty()) {
+      closure_procedures = referenced_procedures;
+    }
+    if (!found->has_capture || found->capture_mode == TraceCaptureMode::Closed) {
+      execution.snapshot.captured_procedures = closure_procedures;
+      for (const std::string& procedure : closure_procedures) {
+        const auto declaration = program.implementation()->procedures.find(procedure);
+        if (declaration == program.implementation()->procedures.end()) continue;
+        ProcedureArtifact artifact;
+        artifact.procedure = procedure;
+        artifact.initial_context = declaration->second.initial_context;
+        for (const StateBinding& binding : declaration->second.initial_states) {
+          artifact.initial_states.emplace(binding.context, binding.state);
+        }
+        for (std::size_t round_index = 0; round_index < found->events.rounds.size();
+             ++round_index) {
+          const auto& procedures = found->replay_procedures.at(round_index);
+          for (std::size_t index = 0; index < procedures.size(); ++index) {
+            if (procedures[index] == procedure) {
+              artifact.injections.push_back(ProcedureInjection{
+                  static_cast<std::uint64_t>(round_index + 1U),
+                  found->events.rounds[round_index].events[index]});
+            }
+          }
+        }
+        std::stable_sort(
+            artifact.injections.begin(), artifact.injections.end(),
+            [](const ProcedureInjection& left, const ProcedureInjection& right) {
+              if (left.round != right.round) return left.round < right.round;
+              return event_less(left.context, right.context);
+            });
+        execution.snapshot.procedure_artifacts.emplace(procedure, std::move(artifact));
+      }
+      execution.snapshot.replayable =
+          !execution.snapshot.procedure_artifacts.empty();
+      for (auto history = execution.snapshot.procedure_history.begin();
+           history != execution.snapshot.procedure_history.end();) {
+        if (!closure_procedures.contains(history->first)) {
+          history = execution.snapshot.procedure_history.erase(history);
+        } else {
+          ++history;
+        }
+      }
+    }
     if (found->has_capture) {
       const auto local_field = [&](std::string_view field) {
         for (const std::string& procedure : referenced_procedures) {
@@ -5231,6 +5717,8 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
                            });
       };
       if (found->capture_mode == TraceCaptureMode::Projected) {
+        execution.snapshot.replayable = false;
+        execution.snapshot.procedure_artifacts.clear();
         execution.snapshot.causal_gaps.push_back(
             "projected capture omits decisions outside selected procedures, paths, or contexts");
       }

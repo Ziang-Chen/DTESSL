@@ -117,16 +117,19 @@ exact-state-set = "(" state-binding { "," state-binding } ")" ;
 state-binding = Name [ "@" Name ] ;
 procedure   = "procedure" Name "@" Name ":" INDENT
                 "initial" exact-state-set NEWLINE
+                { "inject" event-pattern ":" INDENT
+                    [ "when" exact-state-set NEWLINE ]
+                    [ "where" ":" INDENT expression DEDENT ]
+                  DEDENT }
               DEDENT ;
 trace       = "trace" Name [ "@" Name ] ":" INDENT
                 [ "replay" ":" INDENT replay-round { replay-round } DEDENT ]
                 [ "capture" ( "closed" | "projected" ) ":"
                     INDENT { capture-filter } DEDENT ]
               DEDENT ;
-replay-round = transition-occurrence
-                 { "|" transition-occurrence } NEWLINE ;
-transition-occurrence = qualified-name "(" [ literal { "," literal } ] ")"
-                        "@" Name ;
+replay-round = replay-occurrence { "|" replay-occurrence } NEWLINE ;
+replay-occurrence = ( event-name | qualified-transition-name )
+                    "(" [ literal { "," literal } ] ")" "@" Name ;
 capture-filter = "state" "(" [ state-binding { "," state-binding } ] ")" NEWLINE
                | "transition" "(" [ qualified-name { "," qualified-name } ] ")" NEWLINE
                | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE ;
@@ -189,12 +192,16 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
 `set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
 
-`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。replay 列出
-`Transition.caseName(...) @ Procedure` occurrence：一行就是一个 1-based causal
-round，`|` 分隔同 round occurrence。同 round 的跨 procedure transition 共享同一 RoundId，
-运行器的遍历顺序不能产生时间顺序。引擎从 transition 声明恢复其 typed event schema，
-在 RuntimeContext 中找到指定 procedure 的持久 logical state，重新执行完整匹配/守卫/不变量，并断言
-实际选中的正是该 path；replay 不直接强制改状态。动态
+`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。正式 replay
+输入是 `Event(...) @ Procedure` typed context injection；一行就是一个 1-based causal round，
+`|` 分隔同 round injection。同 round 的跨 procedure decision 共享同一 RoundId，运行器的
+遍历顺序不能产生时间顺序。引擎在 procedure 的 `inject` 规则上先用 `when` 检查静态状态组合、
+再用 `where` 检查动态值，然后重新搜索 transition、验证不变量并生成 ActionPlan。
+
+`Transition.caseName(...) @ Procedure` 仍是正式支持的搜索 replay 简写：参数按该 transition
+的 event schema 构造 typed context，同时断言搜索结果包含该 path。它只验证派生结果，绝不
+强制状态跳转。例如 `Tick() @ Run` 只 replay 输入；`Dispatch.ready() @ Run` replay 同一
+输入并检查 `Dispatch.ready` 被搜索出来。动态
 `capture closed/projected` 的 canonical AST 是 `CaptureFilter{states, transitions, procedures}`。
 捕获 procedure 会为每个全局 RoundId 保留不可变帧，包括该 procedure 本 round 空闲时的帧；
 公共 API 可按 `(trace, procedure, RoundId)` 精确访问。capture 只观察 DTESSL RuntimeContext
@@ -202,19 +209,20 @@ round，`|` 分隔同 round occurrence。同 round 的跨 procedure transition �
 `Claim` 对闭合 trace 返回 `satisfied/violated`；开放 trace 在没有反例或见证时返回
 `pending`。有 causal gap 的 projected trace 不得给出肯定的 `satisfied`。
 
-> Golden 语义修正：上述 `Transition.case(...) @ Procedure` 是当前 v0.3
-> 实验性输入，后续只作为重放后的 path assertion/派生证据。正式 replay
-> 的对象是完整 procedure：initial/checkpoint state + typed context injection history；
-> transition DAG 必须由语言搜索重新生成。capture filter 也必须自动做因果/数据闭包，
-> 产出可独立重放的 procedure，不能把残缺投影冒充 replay artifact。
-
 `procedure P @ context` 只命名一个 RuntimeContext 中的 logical instance 入口：`@ context` 是 initial context，
-`initial (...)` 是正交状态轴的 initial state 组合。它没有 transition、event、replay、
-capture 或步骤正文。启动后，active states、typed values、revision 和 causal frontier 在语言
-RuntimeContext 中持续存在，后续 occurrence 仍由全局 transition engine 自动匹配与推进；
+`initial (...)` 是正交状态轴的 initial state 组合。`inject Event(fields...)` 声明允许唤醒
+静止实例的 typed context；`when` 是静态状态组合，`where` 是动态值谓词，二者都不修改状态。
+procedure 没有 transition、replay、capture 或步骤正文。启动后，active states、typed values、
+revision、injection history 和 causal frontier 在语言 RuntimeContext 中持续存在，后续
+occurrence 仍由全局 transition engine 自动匹配与推进；
 `trace` 只是独立的测试/判定投影，不是 procedure 的步骤容器。`function` 是非递归、纯、总的
 typed expression 封装；只能读取
 参数，不能观察 `before`/`round`，不能修改状态或生成 ActionPlan。
+
+`capture closed` 对 filter 命中的 procedure 做保守的完整闭包：保留其声明初态、全部 typed
+injection、所有 RoundId（包括空闲帧）和派生 decision，输出 `ProcedureArtifact` 并标记
+`replayable=yes`。这比裁剪单条因果边更宽，但不会漏依赖。`capture projected` 只供观察，始终
+`replayable=no`，也不会生成可冒充完整重放输入的 artifact。
 
 `@` 只表达调用或定义所处的上下文，不授予权限。动作未写 `@` 时继承源 state 的上下文；
 写 `@ worker` 时，如果 `worker` 是 string 类型事件参数，就绑定到该参数的值，否则它是

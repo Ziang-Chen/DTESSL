@@ -183,6 +183,8 @@ struct ValueRelation {
 struct Event {
   std::string name;
   std::map<std::string, Value, std::less<>> fields;
+
+  friend bool operator==(const Event&, const Event&) = default;
 };
 
 struct ActionCall {
@@ -249,6 +251,37 @@ struct EventTrace {
   friend bool operator==(const EventTrace&, const EventTrace&) = default;
 };
 
+// A typed context admitted into one persistent procedure at a causal DAG
+// layer. It is input to logical replay; selected transitions are output.
+struct ProcedureInjection {
+  std::uint64_t round{0};
+  Event context;
+
+  friend bool operator==(const ProcedureInjection&, const ProcedureInjection&) = default;
+};
+
+// Complete replay input for one procedure. v0.3 artifacts start from the
+// declared initial configuration; checkpoint restoration is deliberately a
+// later extension of this same shape.
+struct ProcedureArtifact {
+  std::string procedure;
+  std::string initial_context;
+  std::map<std::string, std::string, std::less<>> initial_states;
+  std::vector<ProcedureInjection> injections;
+
+  friend bool operator==(const ProcedureArtifact&, const ProcedureArtifact&) = default;
+};
+
+// Optional evidence assertion for search replay. It verifies what the search
+// selected at a round, but never commands that transition to execute.
+struct SearchExpectation {
+  std::uint64_t round{0};
+  std::string procedure;
+  std::string transition;
+
+  friend bool operator==(const SearchExpectation&, const SearchExpectation&) = default;
+};
+
 struct TraceResult {
   std::vector<ParallelStepResult> rounds;
   std::string final_state_name;
@@ -290,6 +323,10 @@ struct TraceSnapshot {
   std::map<std::string, std::string, std::less<>> procedure_contexts;
   std::map<std::string, std::vector<ProcedureTraceFrame>, std::less<>>
       procedure_history;
+  // Present only when capture retained complete procedure closure. A projected
+  // view is useful for observation but is never labelled replayable.
+  std::map<std::string, ProcedureArtifact, std::less<>> procedure_artifacts;
+  bool replayable{false};
   std::vector<std::string> causal_gaps;
 
   friend bool operator==(const TraceSnapshot&, const TraceSnapshot&) = default;
@@ -388,12 +425,43 @@ class Engine {
   std::map<std::string, TraceSnapshot, std::less<>> captured_traces_;
 };
 
+// Persistent language-owned collection of isolated procedure instances.
+// The host may persist its artifacts, but it does not define their semantics.
+class RuntimeContext {
+ public:
+  explicit RuntimeContext(Program program);
+  ~RuntimeContext();
+  RuntimeContext(RuntimeContext&&) noexcept;
+  RuntimeContext& operator=(RuntimeContext&&) noexcept;
+  RuntimeContext(const RuntimeContext&) = delete;
+  RuntimeContext& operator=(const RuntimeContext&) = delete;
+
+  void start(std::string_view procedure);
+  [[nodiscard]] ParallelStepResult inject(
+      const std::vector<std::pair<std::string, Event>>& contexts);
+  [[nodiscard]] ParallelStepResult inject_at(
+      const std::vector<std::pair<std::string, Event>>& contexts,
+      std::uint64_t round_id);
+  [[nodiscard]] std::uint64_t current_round() const noexcept;
+  [[nodiscard]] ProcedureArtifact artifact(std::string_view procedure) const;
+  [[nodiscard]] TraceSnapshot snapshot(std::string_view name = "runtime") const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 [[nodiscard]] std::string value_text(const Value& value);
 [[nodiscard]] std::string result_text(const StepResult& result);
 // Native DTESSL replay only: Program + typed EventTrace. It never consumes a
 // runtime journal or provider receipt and never executes an ActionPlan.
 [[nodiscard]] TraceResult run_trace(const Program& program, const EventTrace& trace);
 [[nodiscard]] TraceResult replay_trace(const Program& program, const EventTrace& trace);
+// Replays complete procedure artifacts by re-admitting their typed contexts.
+// Search expectations are checked against derived decisions only.
+[[nodiscard]] TraceSnapshot replay_procedures(
+    const Program& program, const std::vector<ProcedureArtifact>& artifacts,
+    const std::vector<SearchExpectation>& expectations = {});
 [[nodiscard]] std::vector<std::string> declared_traces(const Program& program);
 [[nodiscard]] std::vector<std::string> declared_procedures(const Program& program);
 [[nodiscard]] TraceSnapshot run_named_trace(const Program& program,

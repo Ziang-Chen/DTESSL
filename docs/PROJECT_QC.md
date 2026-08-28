@@ -13,13 +13,12 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**Semantic correction required.** The current `v0.3.0` implementation passes
-21/21 standard, `-Werror` and ASan/UBSan suites, but its source replay still
-accepts asserted `Transition.case(...) @ Procedure` occurrences. That form is
-useful as derived evidence, yet violates the fixed golden rule that replay
-consumes complete procedures and typed context-injection history. The branch is
-not a release candidate until procedure replay, quiescent injection and capture
-closure replace that temporary surface.
+**Candidate.** The `v0.3.0` implementation now has two explicit, non-confused
+replay capabilities: typed context replay from complete initial-state procedure
+artifacts, and derived-path search assertions. Procedure-local `inject`
+admission and conservative closed-capture closure are implemented. Standard,
+`-Werror` and ASan/UBSan suites pass 22/22; the remaining handoff gate is the
+scoped commit/push and clean-tree check.
 
 ## Current goal contract
 
@@ -76,12 +75,13 @@ closure replace that temporary surface.
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
-| Procedure entry boundary | Parser accepts only initial context/state configuration; each replay occurrence must explicitly name its target procedure | Explicit Engine startup and named replay both dispatch through global transitions | pass |
+| Procedure entry boundary | Parser accepts initial context/state plus typed admission rules; no transition or ordered steps may be nested | Explicit Engine startup and RuntimeContext dispatch both use global transitions | pass |
 | Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle procedure frame remains queryable at the next global RoundId | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
-| Golden procedure replay | Replay must consume complete procedure state/checkpoint plus typed context-injection history; transitions are recomputed | Current source syntax still accepts transition occurrences | missing |
-| Quiescent context injection | Procedure-local typed injection with static `when` and dynamic `where`, without direct state mutation | Design fixed; parser/runtime absent | missing |
-| Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Current capture remains a projection with frames | missing |
+| Golden procedure replay | Replay consumes declared initial configuration plus typed context-injection history; transitions are recomputed | Public `ProcedureArtifact` replay is run twice and compared; wrong path expectation rejects | pass |
+| Search replay | A named transition path may be asserted only as derived evidence, never forced | `Transition.case(...) @ Procedure` and explicit `SearchExpectation` both re-enter ordinary search | pass |
+| Quiescent context injection | Procedure-local typed injection with static `when` and dynamic `where`, without direct state mutation | Parser/verifier/runtime exercise event-schema equality and dynamic admission | pass |
+| Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Closed path/state seed retains whole matching procedure; projected capture emits no artifact | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
@@ -172,3 +172,8 @@ closure replace that temporary surface.
   commands. Capture filters must close automatically into complete replayable
   procedures. Quiescent procedures resume only through typed `when`/`where`
   context injection.
+- 2026-08-28: implemented the correction without removing search replay.
+  `Event(...) @ Procedure` is typed replay input; `Transition.case(...) @
+  Procedure` is a derived-path assertion. RuntimeContext owns persistent
+  instances and complete initial-state artifacts; closed filters conservatively
+  retain whole-procedure closure, while projected traces are non-replayable.
