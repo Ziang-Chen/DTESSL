@@ -13,12 +13,13 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**Candidate.** The `v0.3.0` implementation now has two explicit, non-confused
+**Complete.** The `v0.3.0` implementation now has two explicit, non-confused
 replay capabilities: typed context replay from complete initial-state procedure
 artifacts, and derived-path search assertions. Procedure-local `inject`
 admission and conservative closed-capture closure are implemented. Standard,
-`-Werror` and ASan/UBSan suites pass 22/22; the remaining handoff gate is the
-scoped commit/push and clean-tree check.
+`-Werror` and ASan/UBSan suites pass 22/22. Implementation commit `d18845b` is
+pushed on `codex/composite-trace-claims-v0-3-0`; this QC closeout commit records
+the final handoff and clean-tree evidence.
 
 ## Current goal contract
 
