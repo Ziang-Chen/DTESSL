@@ -13,11 +13,12 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**Candidate.** The `v0.3.2` implementation permits multiple enabled candidates
+**Complete.** The `v0.3.2` implementation permits multiple enabled candidates
 only under an explicit exact-numeric after-state optimizer, selects the unique
 greatest score, rejects ties atomically, and retains the exactly-one rule for
 unannotated transitions. Standard, `-Werror` and ASan/UBSan suites pass 25/25;
-the scoped commit and pushed-SHA evidence remain before closeout.
+implementation commit `83eb39e` is pushed on
+`codex/optimized-transition-v0-3-2`; this closeout records that exact identity.
 
 ## Current goal contract
 
