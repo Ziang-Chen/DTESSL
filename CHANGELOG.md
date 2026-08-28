@@ -3,6 +3,15 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.1.1
+
+- Recursive `list<T>`, `set<T>`, `map<K,V>` and `bag<T>` type syntax and initial
+  values.
+- Canonical generic collection values with deterministic set/map/bag ordering.
+- Generic membership, existential search, count, set update and union merge.
+- Recursive canonical codec tags with depth/cardinality/byte limits.
+- Nested collection, execution, merge, roundtrip and malformed-order tests.
+
 ## v0.1.0
 
 - Canonical value format v1 for bool, int64, string and `set<string>`.

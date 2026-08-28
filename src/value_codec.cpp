@@ -8,7 +8,16 @@
 namespace dtessl {
 namespace {
 
-enum class Tag : std::uint8_t { Bool = 0, Int = 1, String = 2, StringSet = 3 };
+enum class Tag : std::uint8_t {
+  Bool = 0,
+  Int = 1,
+  String = 2,
+  StringSet = 3,
+  List = 4,
+  Set = 5,
+  Map = 6,
+  Bag = 7,
+};
 
 void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
   do {
@@ -31,7 +40,8 @@ class Decoder {
     if (bytes_.size() > limits_.max_bytes) throw Error("canonical value exceeds byte limit");
   }
 
-  Value value() {
+  Value value(std::size_t depth = 0) {
+    if (depth > limits_.max_depth) throw Error("canonical value exceeds depth limit");
     const std::uint8_t raw_tag = byte();
     switch (static_cast<Tag>(raw_tag)) {
       case Tag::Bool: {
@@ -64,6 +74,57 @@ class Decoder {
           set.values.insert(std::move(item));
         }
         return Value(std::move(set));
+      }
+      case Tag::List: {
+        const std::size_t count = collection_count();
+        ValueList list;
+        list.values.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+          list.values.push_back(value(depth + 1U));
+        }
+        return Value(std::move(list));
+      }
+      case Tag::Set: {
+        const std::size_t count = collection_count();
+        ValueSet set;
+        set.values.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+          Value item = value(depth + 1U);
+          if (!set.values.empty() && canonical_compare(set.values.back(), item) >= 0) {
+            throw Error("canonical generic set is not strictly sorted");
+          }
+          set.values.push_back(std::move(item));
+        }
+        return Value(std::move(set));
+      }
+      case Tag::Map: {
+        const std::size_t count = collection_count();
+        ValueMap map;
+        map.entries.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+          Value key = value(depth + 1U);
+          if (!map.entries.empty() && canonical_compare(map.entries.back().first, key) >= 0) {
+            throw Error("canonical map keys are not strictly sorted");
+          }
+          Value item = value(depth + 1U);
+          map.entries.emplace_back(std::move(key), std::move(item));
+        }
+        return Value(std::move(map));
+      }
+      case Tag::Bag: {
+        const std::size_t count = collection_count();
+        ValueBag bag;
+        bag.entries.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+          Value item = value(depth + 1U);
+          if (!bag.entries.empty() && canonical_compare(bag.entries.back().first, item) >= 0) {
+            throw Error("canonical bag values are not strictly sorted");
+          }
+          const std::size_t multiplicity = varuint();
+          if (multiplicity == 0) throw Error("canonical bag count must be positive");
+          bag.entries.emplace_back(std::move(item), static_cast<std::uint64_t>(multiplicity));
+        }
+        return Value(std::move(bag));
       }
     }
     throw Error("unknown canonical value tag");
@@ -108,6 +169,12 @@ class Decoder {
     return std::string(begin, size);
   }
 
+  std::size_t collection_count() {
+    const std::size_t count = varuint();
+    if (count > limits_.max_set_items) throw Error("canonical collection exceeds item limit");
+    return count;
+  }
+
   std::span<const std::uint8_t> bytes_;
   ValueCodecLimits limits_;
   std::size_t cursor_{0};
@@ -115,8 +182,9 @@ class Decoder {
 
 }  // namespace
 
-std::vector<std::uint8_t> encode_value(const Value& value) {
-  std::vector<std::uint8_t> output;
+void encode_into(const Value& value, std::vector<std::uint8_t>& output,
+                 const ValueCodecLimits& limits, std::size_t depth) {
+  if (depth > limits.max_depth) throw Error("canonical value exceeds depth limit");
   switch (value.kind()) {
     case Value::Kind::Bool:
       output.push_back(static_cast<std::uint8_t>(Tag::Bool));
@@ -139,7 +207,58 @@ std::vector<std::uint8_t> encode_value(const Value& value) {
       append_varuint(output, value.as_string_set().values.size());
       for (const std::string& item : value.as_string_set().values) append_string(output, item);
       break;
+    case Value::Kind::List:
+      output.push_back(static_cast<std::uint8_t>(Tag::List));
+      if (value.as_list().values.size() > limits.max_set_items) {
+        throw Error("canonical collection exceeds item limit");
+      }
+      append_varuint(output, value.as_list().values.size());
+      for (const Value& item : value.as_list().values) {
+        encode_into(item, output, limits, depth + 1U);
+      }
+      break;
+    case Value::Kind::Set:
+      output.push_back(static_cast<std::uint8_t>(Tag::Set));
+      if (value.as_set().values.size() > limits.max_set_items) {
+        throw Error("canonical collection exceeds item limit");
+      }
+      append_varuint(output, value.as_set().values.size());
+      for (const Value& item : value.as_set().values) {
+        encode_into(item, output, limits, depth + 1U);
+      }
+      break;
+    case Value::Kind::Map:
+      output.push_back(static_cast<std::uint8_t>(Tag::Map));
+      if (value.as_map().entries.size() > limits.max_set_items) {
+        throw Error("canonical collection exceeds item limit");
+      }
+      append_varuint(output, value.as_map().entries.size());
+      for (const auto& [key, item] : value.as_map().entries) {
+        encode_into(key, output, limits, depth + 1U);
+        encode_into(item, output, limits, depth + 1U);
+      }
+      break;
+    case Value::Kind::Bag:
+      output.push_back(static_cast<std::uint8_t>(Tag::Bag));
+      if (value.as_bag().entries.size() > limits.max_set_items) {
+        throw Error("canonical collection exceeds item limit");
+      }
+      append_varuint(output, value.as_bag().entries.size());
+      for (const auto& [item, count] : value.as_bag().entries) {
+        encode_into(item, output, limits, depth + 1U);
+        if (count > std::numeric_limits<std::size_t>::max()) {
+          throw Error("bag count exceeds canonical platform limit");
+        }
+        append_varuint(output, static_cast<std::size_t>(count));
+      }
+      break;
   }
+  if (output.size() > limits.max_bytes) throw Error("canonical value exceeds byte limit");
+}
+
+std::vector<std::uint8_t> encode_value(const Value& value, ValueCodecLimits limits) {
+  std::vector<std::uint8_t> output;
+  encode_into(value, output, limits, 0);
   return output;
 }
 

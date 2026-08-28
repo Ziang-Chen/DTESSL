@@ -21,6 +21,10 @@ implemented in DTESSL `v0.1.0`. It is not the future canonical module format.
 | `01` | signed int64 | exactly eight bytes, big-endian two's complement |
 | `02` | string | varuint byte length followed by bytes |
 | `03` | set<string> | varuint count followed by count string payloads without string tags |
+| `04` | list | varuint count followed by canonical values in semantic order |
+| `05` | generic set | varuint count followed by strictly canonical-sorted values |
+| `06` | map | varuint count followed by strictly key-sorted key/value canonical pairs |
+| `07` | bag | varuint distinct-item count followed by sorted value/positive-varuint-count pairs |
 
 Unknown tags are invalid.
 
@@ -42,5 +46,6 @@ sets. Therefore `encode(decode(bytes)) == bytes` for every accepted sequence,
 and `decode(encode(value)) == value` for every supported value.
 
 Future kinds receive new tags. Existing tag meaning is immutable within format
-v1. Generic collections, records and exact rationals are introduced in later
-`v0.1.x` releases together with additional golden vectors.
+v1. Records and exact rationals are introduced in later `v0.1.x` releases with
+additional golden vectors. Recursive decoding is bounded by maximum depth,
+collection cardinality, string size and total bytes.

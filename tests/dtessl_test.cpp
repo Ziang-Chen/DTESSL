@@ -21,8 +21,15 @@ state Scheduler @ local initial:
   note: string = ""
   tags: set<string> = {} merge union
   tag_count: int = 0
+  numbers: set<int> = {3, 1} merge union
+  queue: list<string> = ["a", "b"]
+  weights: map<string, int> = {"a": 1, "b": 2}
+  inventory: bag<string> = bag{"cpu": 2, "gpu": 1}
+  nested: list<set<int>> = [{2, 1}, {4, 3}]
   invariant:
     credits >= 0 and count(workers) = 2 and count(busy) <= count(workers)
+    and count(numbers) >= 2 and count(queue) = 2 and count(weights) = 2
+    and count(inventory) = 2 and count(nested) = 2
 
 transition Schedule @ Submit(task: string, worker: string):
   from Scheduler
@@ -67,6 +74,11 @@ transition SnapshotTags @ Snapshot():
   from Scheduler
   to Scheduler:
     tag_count = count(before.tags)
+
+transition AddNumber @ Number(value: int):
+  from Scheduler
+  to Scheduler:
+    numbers = insert(before.numbers, value)
 )DTESSL";
 
 [[noreturn]] void fail(const std::string& message) {
@@ -81,7 +93,7 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.1.0", "compiled version must be v0.1.0");
+  require(dtessl::version == "0.1.1", "compiled version must be v0.1.1");
   const auto roundtrip = [](const dtessl::Value& value) {
     const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
     require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
@@ -92,6 +104,41 @@ int main() {
   roundtrip(dtessl::Value(std::int64_t{-42}));
   roundtrip(dtessl::Value("hello"));
   roundtrip(dtessl::Value(dtessl::StringSet{{"alpha", "beta"}}));
+  const dtessl::Value generic_set(
+      dtessl::ValueSet{{dtessl::Value(std::int64_t{2}), dtessl::Value(std::int64_t{1})}});
+  const dtessl::Value generic_list(dtessl::ValueList{
+      {dtessl::Value(true), generic_set, dtessl::Value("nested")}});
+  const dtessl::Value generic_map(dtessl::ValueMap{{
+      {dtessl::Value("items"), generic_list},
+      {dtessl::Value("name"), dtessl::Value("demo")},
+  }});
+  const dtessl::Value generic_bag(dtessl::ValueBag{{
+      {dtessl::Value("x"), 2},
+      {dtessl::Value("x"), 3},
+      {dtessl::Value("y"), 1},
+  }});
+  roundtrip(generic_set);
+  roundtrip(generic_list);
+  roundtrip(generic_map);
+  roundtrip(generic_bag);
+  require(generic_set.as_set().values.front().as_int() == 1,
+          "generic set did not canonicalize element order");
+  require(generic_bag.as_bag().entries.front().second == 5,
+          "generic bag did not combine duplicate multiplicities");
+  std::vector<std::uint8_t> unsorted_generic_set{5, 2};
+  const std::vector<std::uint8_t> encoded_two =
+      dtessl::encode_value(dtessl::Value(std::int64_t{2}));
+  const std::vector<std::uint8_t> encoded_one =
+      dtessl::encode_value(dtessl::Value(std::int64_t{1}));
+  unsorted_generic_set.insert(unsorted_generic_set.end(), encoded_two.begin(), encoded_two.end());
+  unsorted_generic_set.insert(unsorted_generic_set.end(), encoded_one.begin(), encoded_one.end());
+  bool generic_order_rejected = false;
+  try {
+    static_cast<void>(dtessl::decode_value(unsorted_generic_set));
+  } catch (const dtessl::Error&) {
+    generic_order_rejected = true;
+  }
+  require(generic_order_rejected, "decoder accepted an unsorted generic set");
   require(dtessl::encode_value(dtessl::Value(std::int64_t{42})) ==
               std::vector<std::uint8_t>({1, 0, 0, 0, 0, 0, 0, 0, 42}),
           "canonical int golden bytes changed");
@@ -239,6 +286,18 @@ int main() {
           "the next round did not observe the merged value");
   require(snapshot.causal_predecessors.size() == 2,
           "a merged field must retain every same-round causal writer");
+
+  dtessl::Engine generic_collections(program);
+  const dtessl::ParallelStepResult numbers = generic_collections.step_parallel(
+      {dtessl::Event{"Number", {{"value", dtessl::Value(std::int64_t{4})}}},
+       dtessl::Event{"Number", {{"value", dtessl::Value(std::int64_t{5})}}}});
+  require(numbers.state.at("numbers").as_set().values.size() == 4 &&
+              numbers.state.at("numbers").as_set().values.front().as_int() == 1,
+          "generic set execution or union merge failed");
+  require(numbers.state.at("weights").as_map().entries.size() == 2 &&
+              numbers.state.at("inventory").as_bag().entries.size() == 2 &&
+              numbers.state.at("nested").as_list().values.size() == 2,
+          "generic collection initial values were not preserved");
 
   dtessl::ScratchPool pool(64, 128);
   struct Pair {

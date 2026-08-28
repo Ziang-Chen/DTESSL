@@ -1,4 +1,4 @@
-# DTESSL v0.1.0
+# DTESSL v0.1.1
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -78,7 +78,11 @@ transition  = "transition" Name "@" event-pattern ":" INDENT
               DEDENT ;
 event-pattern = Name "(" [ parameter { "," parameter } ] ")" ;
 parameter   = Name ":" type ;
-type        = "bool" | "int" | "string" | "set<string>" ;
+type        = "bool" | "int" | "string"
+            | "list" "<" type ">"
+            | "set" "<" type ">"
+            | "map" "<" type "," type ">"
+            | "bag" "<" type ">" ;
 
 expression  = literal | name | "round" | "before." Name
             | unary | binary
@@ -106,7 +110,8 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 
 ## 值、谓词与搜索
 
-v0 有精确的 `bool`、有符号 64 位 `int`、UTF-8 `string` 和规范排序的 `set<string>`。
+当前有精确的 `bool`、有符号 64 位 `int`、UTF-8 `string`，以及可递归组合的
+`list<T>/set<T>/map<K,V>/bag<T>`。集合、map key 与 bag item 使用规范值顺序。
 支持：
 
 - 布尔运算 `and/or/not`；

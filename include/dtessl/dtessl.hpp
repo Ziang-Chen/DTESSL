@@ -12,6 +12,12 @@
 
 namespace dtessl {
 
+class Value;
+struct ValueList;
+struct ValueSet;
+struct ValueMap;
+struct ValueBag;
+
 struct StringSet {
   std::set<std::string, std::less<>> values;
 
@@ -20,21 +26,29 @@ struct StringSet {
 
 class Value {
  public:
-  enum class Kind { Bool, Int, String, StringSet };
+  enum class Kind { Bool, Int, String, StringSet, List, Set, Map, Bag };
 
   Value(bool value);
   Value(std::int64_t value);
   Value(std::string value);
   Value(const char* value);
   Value(StringSet value);
+  Value(ValueList value);
+  Value(ValueSet value);
+  Value(ValueMap value);
+  Value(ValueBag value);
 
   [[nodiscard]] Kind kind() const noexcept;
   [[nodiscard]] bool as_bool() const;
   [[nodiscard]] std::int64_t as_int() const;
   [[nodiscard]] const std::string& as_string() const;
   [[nodiscard]] const StringSet& as_string_set() const;
+  [[nodiscard]] const ValueList& as_list() const;
+  [[nodiscard]] const ValueSet& as_set() const;
+  [[nodiscard]] const ValueMap& as_map() const;
+  [[nodiscard]] const ValueBag& as_bag() const;
 
-  friend bool operator==(const Value&, const Value&) = default;
+  friend bool operator==(const Value& left, const Value& right);
 
  private:
   Kind kind_;
@@ -42,6 +56,34 @@ class Value {
   std::int64_t int_value_{0};
   std::string string_value_;
   StringSet set_value_;
+  std::shared_ptr<const ValueList> list_value_;
+  std::shared_ptr<const ValueSet> generic_set_value_;
+  std::shared_ptr<const ValueMap> map_value_;
+  std::shared_ptr<const ValueBag> bag_value_;
+};
+
+// Total canonical order used by generic sets, maps, bags and codecs. It is a
+// representation order, not a user-visible numeric or semantic comparison.
+[[nodiscard]] int canonical_compare(const Value& left, const Value& right);
+
+struct ValueList {
+  std::vector<Value> values;
+  friend bool operator==(const ValueList&, const ValueList&) = default;
+};
+
+struct ValueSet {
+  std::vector<Value> values;
+  friend bool operator==(const ValueSet&, const ValueSet&) = default;
+};
+
+struct ValueMap {
+  std::vector<std::pair<Value, Value>> entries;
+  friend bool operator==(const ValueMap&, const ValueMap&) = default;
+};
+
+struct ValueBag {
+  std::vector<std::pair<Value, std::uint64_t>> entries;
+  friend bool operator==(const ValueBag&, const ValueBag&) = default;
 };
 
 struct Event {

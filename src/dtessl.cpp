@@ -145,7 +145,7 @@ std::vector<Token> lex(std::string_view source) {
           cursor += 2;
           continue;
         }
-        static constexpr std::string_view symbols = "@:$,|(){}<>=+-.";
+        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.";
         if (symbols.find(static_cast<char>(ch)) != std::string_view::npos) {
           result.push_back({TokenKind::Symbol, std::string(1, static_cast<char>(ch)), line_number,
                             column});
@@ -172,7 +172,33 @@ std::vector<Token> lex(std::string_view source) {
   return result;
 }
 
-enum class DataType { Bool, Int, String, StringSet };
+struct DataType {
+  enum class Kind { Bool, Int, String, List, Set, Map, Bag };
+
+  Kind kind{Kind::Bool};
+  std::shared_ptr<DataType> first;
+  std::shared_ptr<DataType> second;
+
+  explicit DataType(Kind value = Kind::Bool) : kind(value) {}
+  DataType(Kind value, DataType nested)
+      : kind(value), first(std::make_shared<DataType>(std::move(nested))) {}
+  DataType(Kind value, DataType key, DataType item)
+      : kind(value),
+        first(std::make_shared<DataType>(std::move(key))),
+        second(std::make_shared<DataType>(std::move(item))) {}
+
+  friend bool operator==(const DataType& left, const DataType& right) {
+    if (left.kind != right.kind) return false;
+    if (static_cast<bool>(left.first) != static_cast<bool>(right.first) ||
+        static_cast<bool>(left.second) != static_cast<bool>(right.second)) return false;
+    return (!left.first || *left.first == *right.first) &&
+           (!left.second || *left.second == *right.second);
+  }
+};
+
+DataType bool_type() { return DataType(DataType::Kind::Bool); }
+DataType int_type() { return DataType(DataType::Kind::Int); }
+DataType string_type() { return DataType(DataType::Kind::String); }
 
 struct Expr {
   enum class Kind { Literal, Name, Unary, Binary, Exists, Count, SetInsert, SetErase };
@@ -559,25 +585,45 @@ struct Program::Impl {
 namespace {
 
 DataType Parser::type() {
-  if (match("bool")) return DataType::Bool;
-  if (match("int")) return DataType::Int;
-  if (match("string")) return DataType::String;
+  if (match("bool")) return bool_type();
+  if (match("int")) return int_type();
+  if (match("string")) return string_type();
+  if (match("list")) {
+    expect("<");
+    DataType item = type();
+    expect(">");
+    return DataType(DataType::Kind::List, std::move(item));
+  }
   if (match("set")) {
     expect("<");
-    expect("string");
+    DataType item = type();
     expect(">");
-    return DataType::StringSet;
+    return DataType(DataType::Kind::Set, std::move(item));
   }
-  fail(peek(), "expected bool, int, string, or set<string>");
+  if (match("map")) {
+    expect("<");
+    DataType key = type();
+    expect(",");
+    DataType item = type();
+    expect(">");
+    return DataType(DataType::Kind::Map, std::move(key), std::move(item));
+  }
+  if (match("bag")) {
+    expect("<");
+    DataType item = type();
+    expect(">");
+    return DataType(DataType::Kind::Bag, std::move(item));
+  }
+  fail(peek(), "expected bool, int, string, list, set, map, or bag type");
 }
 
 Value Parser::initial_value(DataType expected_type) {
-  if (expected_type == DataType::Bool) {
+  if (expected_type.kind == DataType::Kind::Bool) {
     if (match("true")) return Value(true);
     if (match("false")) return Value(false);
     fail(peek(), "expected boolean literal");
   }
-  if (expected_type == DataType::Int) {
+  if (expected_type.kind == DataType::Kind::Int) {
     bool negative = match("-");
     if (!at(TokenKind::Integer)) fail(peek(), "expected integer literal");
     const Token token = take();
@@ -586,18 +632,73 @@ Value Parser::initial_value(DataType expected_type) {
     if (parsed.ec != std::errc{}) fail(token, "integer is out of range");
     return Value(negative ? -value : value);
   }
-  if (expected_type == DataType::String) {
+  if (expected_type.kind == DataType::Kind::String) {
     if (!at(TokenKind::String)) fail(peek(), "expected string literal");
     return Value(take().text);
   }
+  if (expected_type.kind == DataType::Kind::List) {
+    expect("[");
+    ValueList value;
+    if (!match("]")) {
+      do {
+        value.values.push_back(initial_value(*expected_type.first));
+      } while (match(","));
+      expect("]");
+    }
+    return Value(std::move(value));
+  }
+  if (expected_type.kind == DataType::Kind::Set) {
+    expect("{");
+    if (expected_type.first->kind == DataType::Kind::String) {
+      StringSet value;
+      if (!match("}")) {
+        do {
+          Value item = initial_value(*expected_type.first);
+          if (!value.values.insert(item.as_string()).second) {
+            fail(tokens_[cursor_ - 1], "duplicate set element");
+          }
+        } while (match(","));
+        expect("}");
+      }
+      return Value(std::move(value));
+    }
+    ValueSet value;
+    if (!match("}")) {
+      do {
+        value.values.push_back(initial_value(*expected_type.first));
+      } while (match(","));
+      expect("}");
+    }
+    return Value(std::move(value));
+  }
+  if (expected_type.kind == DataType::Kind::Map) {
+    expect("{");
+    ValueMap value;
+    if (!match("}")) {
+      do {
+        Value key = initial_value(*expected_type.first);
+        expect(":");
+        Value item = initial_value(*expected_type.second);
+        value.entries.emplace_back(std::move(key), std::move(item));
+      } while (match(","));
+      expect("}");
+    }
+    return Value(std::move(value));
+  }
+  expect("bag");
   expect("{");
-  StringSet value;
+  ValueBag value;
   if (!match("}")) {
     do {
-      if (!at(TokenKind::String)) fail(peek(), "set<string> needs string elements");
-      if (!value.values.insert(take().text).second) {
-        fail(tokens_[cursor_ - 1], "duplicate set element");
-      }
+      Value item = initial_value(*expected_type.first);
+      expect(":");
+      if (!at(TokenKind::Integer)) fail(peek(), "bag multiplicity must be a positive integer");
+      const Token token = take();
+      std::uint64_t count = 0;
+      const auto parsed = std::from_chars(token.text.data(), token.text.data() + token.text.size(),
+                                          count);
+      if (parsed.ec != std::errc{} || count == 0) fail(token, "invalid bag multiplicity");
+      value.entries.emplace_back(std::move(item), count);
     } while (match(","));
     expect("}");
   }
@@ -664,7 +765,7 @@ State Parser::state() {
       result.invariants.push_back(block_expression());
       continue;
     }
-    Field field{"", DataType::Bool, Value(false), Field::Merge::Reject};
+    Field field{"", bool_type(), Value(false), Field::Merge::Reject};
     field.name = identifier();
     expect(":");
     field.type = type();
@@ -674,8 +775,8 @@ State Parser::state() {
       if (match("equal")) field.merge = Field::Merge::Equal;
       else if (match("union")) field.merge = Field::Merge::Union;
       else fail(peek(), "expected equal or union merge relation");
-      if (field.merge == Field::Merge::Union && field.type != DataType::StringSet) {
-        fail(tokens_[cursor_ - 1], "union merge needs set<string>");
+      if (field.merge == Field::Merge::Union && field.type.kind != DataType::Kind::Set) {
+        fail(tokens_[cursor_ - 1], "union merge needs a set type");
       }
     }
     newline();
@@ -769,12 +870,59 @@ const State& find_state(const Program::Impl& program, std::string_view name) {
 
 DataType value_type(const Value& value) {
   switch (value.kind()) {
-    case Value::Kind::Bool: return DataType::Bool;
-    case Value::Kind::Int: return DataType::Int;
-    case Value::Kind::String: return DataType::String;
-    case Value::Kind::StringSet: return DataType::StringSet;
+    case Value::Kind::Bool: return bool_type();
+    case Value::Kind::Int: return int_type();
+    case Value::Kind::String: return string_type();
+    case Value::Kind::StringSet:
+      return DataType(DataType::Kind::Set, string_type());
+    case Value::Kind::List:
+      if (value.as_list().values.empty()) throw Error("cannot infer empty list type");
+      return DataType(DataType::Kind::List, value_type(value.as_list().values.front()));
+    case Value::Kind::Set:
+      if (value.as_set().values.empty()) throw Error("cannot infer empty set type");
+      return DataType(DataType::Kind::Set, value_type(value.as_set().values.front()));
+    case Value::Kind::Map:
+      if (value.as_map().entries.empty()) throw Error("cannot infer empty map type");
+      return DataType(DataType::Kind::Map, value_type(value.as_map().entries.front().first),
+                      value_type(value.as_map().entries.front().second));
+    case Value::Kind::Bag:
+      if (value.as_bag().entries.empty()) throw Error("cannot infer empty bag type");
+      return DataType(DataType::Kind::Bag, value_type(value.as_bag().entries.front().first));
   }
   throw Error("invalid value kind");
+}
+
+bool value_matches_type(const Value& value, const DataType& type) {
+  switch (type.kind) {
+    case DataType::Kind::Bool: return value.kind() == Value::Kind::Bool;
+    case DataType::Kind::Int: return value.kind() == Value::Kind::Int;
+    case DataType::Kind::String: return value.kind() == Value::Kind::String;
+    case DataType::Kind::List:
+      if (value.kind() != Value::Kind::List) return false;
+      return std::all_of(value.as_list().values.begin(), value.as_list().values.end(),
+                         [&](const Value& item) { return value_matches_type(item, *type.first); });
+    case DataType::Kind::Set:
+      if (value.kind() == Value::Kind::StringSet) {
+        return type.first->kind == DataType::Kind::String;
+      }
+      if (value.kind() != Value::Kind::Set) return false;
+      return std::all_of(value.as_set().values.begin(), value.as_set().values.end(),
+                         [&](const Value& item) { return value_matches_type(item, *type.first); });
+    case DataType::Kind::Map:
+      if (value.kind() != Value::Kind::Map) return false;
+      return std::all_of(value.as_map().entries.begin(), value.as_map().entries.end(),
+                         [&](const auto& entry) {
+                           return value_matches_type(entry.first, *type.first) &&
+                                  value_matches_type(entry.second, *type.second);
+                         });
+    case DataType::Kind::Bag:
+      if (value.kind() != Value::Kind::Bag) return false;
+      return std::all_of(value.as_bag().entries.begin(), value.as_bag().entries.end(),
+                         [&](const auto& entry) {
+                           return value_matches_type(entry.first, *type.first);
+                         });
+  }
+  return false;
 }
 
 const Field& find_field(const State& state, std::string_view name) {
@@ -794,7 +942,7 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
   switch (expr->kind) {
     case Expr::Kind::Literal: return value_type(*expr->literal);
     case Expr::Kind::Name: {
-      if (expr->text == "round") return DataType::Int;
+      if (expr->text == "round") return int_type();
       std::string name = expr->text;
       if (name.starts_with("before.")) {
         name = name.substr(name.find('.') + 1);
@@ -809,7 +957,7 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
     }
     case Expr::Kind::Unary: {
       const DataType operand = infer_type(expr->left, state, event, std::move(locals));
-      const DataType required = expr->text == "not" ? DataType::Bool : DataType::Int;
+      const DataType required = expr->text == "not" ? bool_type() : int_type();
       if (operand != required) throw Error("wrong operand type for '" + expr->text + "'");
       return required;
     }
@@ -817,53 +965,56 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
       const DataType left = infer_type(expr->left, state, event, locals);
       const DataType right = infer_type(expr->right, state, event, std::move(locals));
       if (expr->text == "and" || expr->text == "or") {
-        if (left != DataType::Bool || right != DataType::Bool) {
+        if (left.kind != DataType::Kind::Bool || right.kind != DataType::Kind::Bool) {
           throw Error("logical operators need bool operands");
         }
-        return DataType::Bool;
+        return bool_type();
       }
       if (expr->text == "in") {
-        if (left != DataType::String || right != DataType::StringSet) {
-          throw Error("membership needs string in set<string>");
+        if (right.kind != DataType::Kind::Set || left != *right.first) {
+          throw Error("membership item type does not match set element type");
         }
-        return DataType::Bool;
+        return bool_type();
       }
       if (expr->text == "+" || expr->text == "-") {
-        if (left != DataType::Int || right != DataType::Int) {
+        if (left.kind != DataType::Kind::Int || right.kind != DataType::Kind::Int) {
           throw Error("arithmetic operators need int operands");
         }
-        return DataType::Int;
+        return int_type();
       }
       if (left != right) throw Error("comparison operands have different types");
       if ((expr->text == "<" || expr->text == "<=" || expr->text == ">" ||
            expr->text == ">=") &&
-          left != DataType::Int && left != DataType::String) {
+          left.kind != DataType::Kind::Int && left.kind != DataType::Kind::String) {
         throw Error("ordered comparison needs int or string operands");
       }
-      return DataType::Bool;
+      return bool_type();
     }
     case Expr::Kind::Exists: {
-      if (infer_type(expr->left, state, event, locals) != DataType::StringSet) {
-        throw Error("exists currently needs a set<string> domain");
-      }
-      locals.insert_or_assign(expr->text, DataType::String);
-      if (infer_type(expr->right, state, event, std::move(locals)) != DataType::Bool) {
+      const DataType domain = infer_type(expr->left, state, event, locals);
+      if (domain.kind != DataType::Kind::Set) throw Error("exists needs a finite set domain");
+      locals.insert_or_assign(expr->text, *domain.first);
+      if (infer_type(expr->right, state, event, std::move(locals)).kind !=
+          DataType::Kind::Bool) {
         throw Error("exists predicate must be bool");
       }
-      return DataType::Bool;
+      return bool_type();
     }
     case Expr::Kind::Count:
-      if (infer_type(expr->left, state, event, std::move(locals)) != DataType::StringSet) {
-        throw Error("count currently needs set<string>");
+      if (const DataType collection = infer_type(expr->left, state, event, std::move(locals));
+          collection.kind != DataType::Kind::List && collection.kind != DataType::Kind::Set &&
+          collection.kind != DataType::Kind::Map && collection.kind != DataType::Kind::Bag) {
+        throw Error("count needs a finite collection");
       }
-      return DataType::Int;
+      return int_type();
     case Expr::Kind::SetInsert:
     case Expr::Kind::SetErase:
-      if (infer_type(expr->left, state, event, locals) != DataType::StringSet ||
-          infer_type(expr->right, state, event, std::move(locals)) != DataType::String) {
-        throw Error("insert/erase need (set<string>, string)");
+      const DataType collection = infer_type(expr->left, state, event, locals);
+      if (collection.kind != DataType::Kind::Set ||
+          infer_type(expr->right, state, event, std::move(locals)) != *collection.first) {
+        throw Error("insert/erase item type must match finite set element type");
       }
-      return DataType::StringSet;
+      return collection;
   }
   throw Error("invalid expression");
 }
@@ -882,14 +1033,16 @@ void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironm
     static_cast<void>(infer_type(argument, state, event, {}));
   }
   if (const auto parameter = event.find(action->context);
-      parameter != event.end() && parameter->second != DataType::String) {
+      parameter != event.end() && parameter->second.kind != DataType::Kind::String) {
     throw Error("action context event field must be string");
   }
   if (action->context.starts_with("before.")) {
     const std::string field = action->context.substr(action->context.find('.') + 1);
     const auto found = state.find(field);
     if (found == state.end()) throw Error("unknown context field '" + field + "'");
-    if (found->second != DataType::String) throw Error("action context field must be string");
+    if (found->second.kind != DataType::Kind::String) {
+      throw Error("action context field must be string");
+    }
   }
 }
 
@@ -987,7 +1140,8 @@ void verify_program(Program::Impl& program) {
         }
       }
     }
-    if (infer_type(transition.condition, state_types, event_types, {}) != DataType::Bool) {
+    if (infer_type(transition.condition, state_types, event_types, {}).kind !=
+        DataType::Kind::Bool) {
       throw Error("where clause in transition '" + transition.name + "' must be bool");
     }
     std::unordered_set<std::string> assigned;
@@ -1019,7 +1173,7 @@ void verify_program(Program::Impl& program) {
     TypeEnvironment state_types;
     for (const Field& field : state.fields) state_types.emplace(field.name, field.type);
     for (const ExprPtr& invariant : state.invariants) {
-      if (infer_type(invariant, state_types, {}, {}) != DataType::Bool) {
+      if (infer_type(invariant, state_types, {}, {}).kind != DataType::Kind::Bool) {
         throw Error("invariant in state '" + state.name + "' must be bool");
       }
     }
@@ -1048,21 +1202,73 @@ int compare_values(const Value& left, const Value& right) {
       return left.as_string() < right.as_string() ? -1
              : left.as_string() > right.as_string() ? 1 : 0;
     case Value::Kind::StringSet:
-      throw Error("sets only support equality and membership");
+    case Value::Kind::List:
+    case Value::Kind::Set:
+    case Value::Kind::Map:
+    case Value::Kind::Bag:
+      throw Error("composite values only support equality in ordered expressions");
   }
   throw Error("invalid comparison");
+}
+
+template <class LeftIterator, class RightIterator, class CompareItem>
+int lexicographic_order(LeftIterator left, LeftIterator left_end,
+                        RightIterator right, RightIterator right_end,
+                        CompareItem compare_item) {
+  while (left != left_end && right != right_end) {
+    const int order = compare_item(*left, *right);
+    if (order != 0) return order;
+    ++left;
+    ++right;
+  }
+  if (left == left_end && right == right_end) return 0;
+  return left == left_end ? -1 : 1;
 }
 
 int canonical_value_order(const Value& left, const Value& right) {
   if (left.kind() != right.kind()) {
     return static_cast<int>(left.kind()) < static_cast<int>(right.kind()) ? -1 : 1;
   }
-  if (left.kind() != Value::Kind::StringSet) return compare_values(left, right);
-  const auto& lhs = left.as_string_set().values;
-  const auto& rhs = right.as_string_set().values;
-  if (std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(), rhs.end())) return -1;
-  if (std::lexicographical_compare(rhs.begin(), rhs.end(), lhs.begin(), lhs.end())) return 1;
-  return 0;
+  if (left.kind() == Value::Kind::StringSet) {
+    const auto& lhs = left.as_string_set().values;
+    const auto& rhs = right.as_string_set().values;
+    return lexicographic_order(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                               [](const std::string& a, const std::string& b) {
+                                 return a < b ? -1 : a > b ? 1 : 0;
+                               });
+  }
+  if (left.kind() == Value::Kind::List) {
+    const auto& lhs = left.as_list().values;
+    const auto& rhs = right.as_list().values;
+    return lexicographic_order(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                               canonical_value_order);
+  }
+  if (left.kind() == Value::Kind::Set) {
+    const auto& lhs = left.as_set().values;
+    const auto& rhs = right.as_set().values;
+    return lexicographic_order(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                               canonical_value_order);
+  }
+  if (left.kind() == Value::Kind::Map) {
+    const auto& lhs = left.as_map().entries;
+    const auto& rhs = right.as_map().entries;
+    return lexicographic_order(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                               [](const auto& a, const auto& b) {
+                                 const int key = canonical_value_order(a.first, b.first);
+                                 return key != 0 ? key : canonical_value_order(a.second, b.second);
+                               });
+  }
+  if (left.kind() == Value::Kind::Bag) {
+    const auto& lhs = left.as_bag().entries;
+    const auto& rhs = right.as_bag().entries;
+    return lexicographic_order(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                               [](const auto& a, const auto& b) {
+                                 const int key = canonical_value_order(a.first, b.first);
+                                 if (key != 0) return key;
+                                 return a.second < b.second ? -1 : a.second > b.second ? 1 : 0;
+                               });
+  }
+  return compare_values(left, right);
 }
 
 bool event_less(const Event& left, const Event& right) {
@@ -1133,7 +1339,14 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       if (expr->text == "=" || expr->text == "==") return Value(equal_values(left, right));
       if (expr->text == "!=") return Value(!equal_values(left, right));
       if (expr->text == "in") {
-        return Value(right.as_string_set().values.contains(left.as_string()));
+        if (right.kind() == Value::Kind::StringSet) {
+          return Value(right.as_string_set().values.contains(left.as_string()));
+        }
+        const auto& values = right.as_set().values;
+        return Value(std::binary_search(values.begin(), values.end(), left,
+                                        [](const Value& a, const Value& b) {
+                                          return canonical_compare(a, b) < 0;
+                                        }));
       }
       if (expr->text == "+" || expr->text == "-") {
         const std::int64_t lhs = left.as_int();
@@ -1163,25 +1376,41 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
     }
     case Expr::Kind::Exists: {
       const Value domain_value = evaluate(expr->left, environment);
-      const StringSet& domain = domain_value.as_string_set();
       const auto previous = environment.locals.find(expr->text);
       const std::optional<Value> saved = previous == environment.locals.end()
                                              ? std::nullopt
                                              : std::optional<Value>(previous->second);
-      for (const std::string& item : domain.values) {
-        environment.locals.insert_or_assign(expr->text, Value(item));
-        if (evaluate(expr->right, environment).as_bool()) {
-          if (saved) environment.locals.insert_or_assign(expr->text, *saved);
-          else environment.locals.erase(expr->text);
-          return Value(true);
+      const auto test_item = [&](const Value& item) {
+        environment.locals.insert_or_assign(expr->text, item);
+        return evaluate(expr->right, environment).as_bool();
+      };
+      bool found = false;
+      if (domain_value.kind() == Value::Kind::StringSet) {
+        for (const std::string& item : domain_value.as_string_set().values) {
+          if (test_item(Value(item))) { found = true; break; }
+        }
+      } else {
+        for (const Value& item : domain_value.as_set().values) {
+          if (test_item(item)) { found = true; break; }
         }
       }
       if (saved) environment.locals.insert_or_assign(expr->text, *saved);
       else environment.locals.erase(expr->text);
-      return Value(false);
+      return Value(found);
     }
     case Expr::Kind::Count: {
-      const std::size_t size = evaluate(expr->left, environment).as_string_set().values.size();
+      const Value collection = evaluate(expr->left, environment);
+      std::size_t size = 0;
+      switch (collection.kind()) {
+        case Value::Kind::StringSet: size = collection.as_string_set().values.size(); break;
+        case Value::Kind::List: size = collection.as_list().values.size(); break;
+        case Value::Kind::Set: size = collection.as_set().values.size(); break;
+        case Value::Kind::Map: size = collection.as_map().entries.size(); break;
+        case Value::Kind::Bag: size = collection.as_bag().entries.size(); break;
+        case Value::Kind::Bool:
+        case Value::Kind::Int:
+        case Value::Kind::String: throw Error("count needs a finite collection");
+      }
       if (size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
         throw Error("set size exceeds int range");
       }
@@ -1189,10 +1418,24 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
     }
     case Expr::Kind::SetInsert:
     case Expr::Kind::SetErase: {
-      StringSet result = evaluate(expr->left, environment).as_string_set();
-      const std::string item = evaluate(expr->right, environment).as_string();
-      if (expr->kind == Expr::Kind::SetInsert) result.values.insert(item);
-      else result.values.erase(item);
+      const Value collection = evaluate(expr->left, environment);
+      const Value item = evaluate(expr->right, environment);
+      if (collection.kind() == Value::Kind::StringSet) {
+        StringSet result = collection.as_string_set();
+        if (expr->kind == Expr::Kind::SetInsert) result.values.insert(item.as_string());
+        else result.values.erase(item.as_string());
+        return Value(std::move(result));
+      }
+      ValueSet result = collection.as_set();
+      if (expr->kind == Expr::Kind::SetInsert) {
+        result.values.push_back(item);
+      } else {
+        result.values.erase(
+            std::remove_if(result.values.begin(), result.values.end(), [&](const Value& value) {
+              return canonical_compare(value, item) == 0;
+            }),
+            result.values.end());
+      }
       return Value(std::move(result));
     }
   }
@@ -1285,7 +1528,7 @@ void validate_event(const Transition& transition, const Event& event) {
     if (found == event.fields.end()) {
       throw Error("event '" + event.name + "' is missing field '" + parameter.name + "'");
     }
-    if (value_type(found->second) != parameter.type) {
+    if (!value_matches_type(found->second, parameter.type)) {
       throw Error("event field '" + parameter.name + "' has the wrong type");
     }
   }
@@ -1314,6 +1557,52 @@ Value::Value(std::int64_t value) : kind_(Kind::Int), int_value_(value) {}
 Value::Value(std::string value) : kind_(Kind::String), string_value_(std::move(value)) {}
 Value::Value(const char* value) : Value(std::string(value)) {}
 Value::Value(StringSet value) : kind_(Kind::StringSet), set_value_(std::move(value)) {}
+Value::Value(ValueList value)
+    : kind_(Kind::List), list_value_(std::make_shared<const ValueList>(std::move(value))) {}
+Value::Value(ValueSet value) : kind_(Kind::Set) {
+  std::sort(value.values.begin(), value.values.end(),
+            [](const Value& left, const Value& right) {
+              return canonical_compare(left, right) < 0;
+            });
+  value.values.erase(
+      std::unique(value.values.begin(), value.values.end(),
+                  [](const Value& left, const Value& right) {
+                    return canonical_compare(left, right) == 0;
+                  }),
+      value.values.end());
+  generic_set_value_ = std::make_shared<const ValueSet>(std::move(value));
+}
+Value::Value(ValueMap value) : kind_(Kind::Map) {
+  std::sort(value.entries.begin(), value.entries.end(), [](const auto& left, const auto& right) {
+    return canonical_compare(left.first, right.first) < 0;
+  });
+  const auto duplicate = std::adjacent_find(
+      value.entries.begin(), value.entries.end(), [](const auto& left, const auto& right) {
+        return canonical_compare(left.first, right.first) == 0;
+      });
+  if (duplicate != value.entries.end()) throw Error("duplicate generic map key");
+  map_value_ = std::make_shared<const ValueMap>(std::move(value));
+}
+Value::Value(ValueBag value) : kind_(Kind::Bag) {
+  std::sort(value.entries.begin(), value.entries.end(), [](const auto& left, const auto& right) {
+    return canonical_compare(left.first, right.first) < 0;
+  });
+  ValueBag normalized;
+  for (auto& [item, count] : value.entries) {
+    if (count == 0) throw Error("generic bag count must be positive");
+    if (!normalized.entries.empty() &&
+        canonical_compare(normalized.entries.back().first, item) == 0) {
+      if (count > std::numeric_limits<std::uint64_t>::max() -
+                      normalized.entries.back().second) {
+        throw Error("generic bag count overflow");
+      }
+      normalized.entries.back().second += count;
+    } else {
+      normalized.entries.emplace_back(std::move(item), count);
+    }
+  }
+  bag_value_ = std::make_shared<const ValueBag>(std::move(normalized));
+}
 
 Value::Kind Value::kind() const noexcept { return kind_; }
 bool Value::as_bool() const {
@@ -1331,6 +1620,41 @@ const std::string& Value::as_string() const {
 const StringSet& Value::as_string_set() const {
   if (kind_ != Kind::StringSet) throw Error("expected set<string> value");
   return set_value_;
+}
+const ValueList& Value::as_list() const {
+  if (kind_ != Kind::List) throw Error("expected list value");
+  return *list_value_;
+}
+const ValueSet& Value::as_set() const {
+  if (kind_ != Kind::Set) throw Error("expected generic set value");
+  return *generic_set_value_;
+}
+const ValueMap& Value::as_map() const {
+  if (kind_ != Kind::Map) throw Error("expected map value");
+  return *map_value_;
+}
+const ValueBag& Value::as_bag() const {
+  if (kind_ != Kind::Bag) throw Error("expected bag value");
+  return *bag_value_;
+}
+
+bool operator==(const Value& left, const Value& right) {
+  if (left.kind_ != right.kind_) return false;
+  switch (left.kind_) {
+    case Value::Kind::Bool: return left.bool_value_ == right.bool_value_;
+    case Value::Kind::Int: return left.int_value_ == right.int_value_;
+    case Value::Kind::String: return left.string_value_ == right.string_value_;
+    case Value::Kind::StringSet: return left.set_value_ == right.set_value_;
+    case Value::Kind::List: return *left.list_value_ == *right.list_value_;
+    case Value::Kind::Set: return *left.generic_set_value_ == *right.generic_set_value_;
+    case Value::Kind::Map: return *left.map_value_ == *right.map_value_;
+    case Value::Kind::Bag: return *left.bag_value_ == *right.bag_value_;
+  }
+  return false;
+}
+
+int canonical_compare(const Value& left, const Value& right) {
+  return canonical_value_order(left, right);
 }
 
 Error::Error(std::string message, std::size_t line, std::size_t column)
@@ -1422,7 +1746,7 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     for (const Assignment& assignment : transition.assignments) {
       Value value = evaluate(assignment.value, environment);
       const Field& field = find_field(target, assignment.field);
-      if (value_type(value) != field.type) {
+      if (!value_matches_type(value, field.type)) {
         throw Error("assignment to '" + assignment.field + "' has the wrong type");
       }
       decision.writes.insert_or_assign(assignment.field, std::move(value));
@@ -1464,10 +1788,19 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
       next.insert_or_assign(name, values.front());
       continue;
     }
-    StringSet merged = next.at(name).as_string_set();
+    if (next.at(name).kind() == Value::Kind::StringSet) {
+      StringSet merged = next.at(name).as_string_set();
+      for (const Value& value : values) {
+        const StringSet& candidate = value.as_string_set();
+        merged.values.insert(candidate.values.begin(), candidate.values.end());
+      }
+      next.insert_or_assign(name, Value(std::move(merged)));
+      continue;
+    }
+    ValueSet merged = next.at(name).as_set();
     for (const Value& value : values) {
-      const StringSet& candidate = value.as_string_set();
-      merged.values.insert(candidate.values.begin(), candidate.values.end());
+      const auto& candidate = value.as_set().values;
+      merged.values.insert(merged.values.end(), candidate.begin(), candidate.end());
     }
     next.insert_or_assign(name, Value(std::move(merged)));
   }
@@ -1533,6 +1866,40 @@ std::string value_text(const Value& value) {
       }
       result += "}";
       return result;
+    }
+    case Value::Kind::List: {
+      std::string result = "[";
+      for (std::size_t index = 0; index < value.as_list().values.size(); ++index) {
+        if (index != 0) result += ", ";
+        result += value_text(value.as_list().values[index]);
+      }
+      return result + "]";
+    }
+    case Value::Kind::Set: {
+      std::string result = "{";
+      for (std::size_t index = 0; index < value.as_set().values.size(); ++index) {
+        if (index != 0) result += ", ";
+        result += value_text(value.as_set().values[index]);
+      }
+      return result + "}";
+    }
+    case Value::Kind::Map: {
+      std::string result = "{";
+      for (std::size_t index = 0; index < value.as_map().entries.size(); ++index) {
+        if (index != 0) result += ", ";
+        result += value_text(value.as_map().entries[index].first) + ": " +
+                  value_text(value.as_map().entries[index].second);
+      }
+      return result + "}";
+    }
+    case Value::Kind::Bag: {
+      std::string result = "bag{";
+      for (std::size_t index = 0; index < value.as_bag().entries.size(); ++index) {
+        if (index != 0) result += ", ";
+        result += value_text(value.as_bag().entries[index].first) + ": " +
+                  std::to_string(value.as_bag().entries[index].second);
+      }
+      return result + "}";
     }
   }
   throw Error("invalid value kind");
@@ -1621,6 +1988,15 @@ void collect_action_features(const std::shared_ptr<ActionExpr>& action,
   for (const auto& child : action->children) collect_action_features(child, features);
 }
 
+void collect_type_features(const DataType& type, FeatureSet& features) {
+  if (type.kind == DataType::Kind::List || type.kind == DataType::Kind::Set ||
+      type.kind == DataType::Kind::Map || type.kind == DataType::Kind::Bag) {
+    features.insert(LanguageFeature::FiniteCollections);
+  }
+  if (type.first) collect_type_features(*type.first, features);
+  if (type.second) collect_type_features(*type.second, features);
+}
+
 }  // namespace
 
 FeatureSet required_features(const Program& program) {
@@ -1629,7 +2005,7 @@ FeatureSet required_features(const Program& program) {
   const Program::Impl& implementation = *program.implementation();
   for (const State& state : implementation.states) {
     for (const Field& field : state.fields) {
-      if (field.type == DataType::StringSet) result.insert(LanguageFeature::FiniteStringSet);
+      collect_type_features(field.type, result);
       if (field.merge == Field::Merge::Equal) result.insert(LanguageFeature::EqualMerge);
       if (field.merge == Field::Merge::Union) result.insert(LanguageFeature::UnionMerge);
     }
@@ -1661,7 +2037,7 @@ BackendCompatibility negotiate_backend(const Program& program,
 std::string_view feature_name(LanguageFeature feature) noexcept {
   switch (feature) {
     case LanguageFeature::TypedState: return "typed-state";
-    case LanguageFeature::FiniteStringSet: return "finite-string-set";
+    case LanguageFeature::FiniteCollections: return "finite-collections";
     case LanguageFeature::ExistentialSearch: return "existential-search";
     case LanguageFeature::PureSetUpdate: return "pure-set-update";
     case LanguageFeature::ActionDag: return "action-dag";

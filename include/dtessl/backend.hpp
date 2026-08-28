@@ -18,7 +18,7 @@ enum class Projection {
 
 enum class LanguageFeature {
   TypedState,
-  FiniteStringSet,
+  FiniteCollections,
   ExistentialSearch,
   PureSetUpdate,
   ActionDag,
