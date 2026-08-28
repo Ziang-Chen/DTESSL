@@ -49,6 +49,15 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   implication and `satisfied/violated/pending` finite-prefix semantics.
 - Added `traces`, `trace` and `claims` CLI commands plus REPL trace inspection
   and claim evaluation.
+- Refreshed the REPL around Golden procedure semantics: persistent `:start` and
+  typed `:inject`, same-RoundId multi-procedure injection, live runtime
+  inspection, closed capture and complete artifact replay with re-derived
+  decisions.
+- Split declared `:trace`/`:claims` execution from legacy dynamic
+  `:trace-live`/`:claims-live`, preventing an unrun Engine capture from
+  masquerading as an empty procedure replay.
+- Added `procedure_replay.dtessl`, demonstrating isolated persistent instances,
+  atomic interleaved injection, complete capture, artifact replay and claims.
 - Added composite scheduler/trace example, atomic state-set tests, pattern
   ambiguity rejection, projection-gap checks and CLI conformance tests.
 

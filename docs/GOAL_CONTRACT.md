@@ -68,7 +68,7 @@ The project is complete only when all of the following are evidenced:
 ## Current v0.3.0 state/trace boundary
 
 - Work is restricted to the DTESSL repository and the
-  `codex/composite-trace-claims-v0-3-0` branch.
+  `codex/repl-procedure-demos-v0-3-0` branch.
 - The slice must preserve the v0.2.3 logical/workbench surface while adding
   atomic orthogonal state sets, path-local transition cases, native trace
   capture, finite-prefix claim evaluation, pure helper functions and procedure
@@ -89,7 +89,8 @@ The project is complete only when all of the following are evidenced:
 - RoundId is derived from the dynamic causal DAG layer, while per-procedure
   revision is a distinct state-version counter.
 - Completion requires parser/verifier/runtime/CLI evidence plus standard,
-  `-Werror` and ASan/UBSan gates, followed by a scoped commit and push.
+  REPL/PTY, `-Werror` and ASan/UBSan gates, followed by a scoped commit and
+  push.
 - This slice does not authorize changes to `main`, tags, chenRT, ChenVM or any
   other task thread.
 

@@ -1,8 +1,9 @@
 # DTESSL Language Service and REPL
 
-DTESSL v0.2.3 integrates the language-workbench foundation with the compact
-core logical syntax. The CLI REPL uses it today and editor/LSP adapters can use
-the same API later. It does not implement Language Server Protocol transport.
+DTESSL v0.3.0 integrates the language workbench with compact core logic and the
+language-owned procedure RuntimeContext. The CLI REPL uses it today and
+editor/LSP adapters can use the same API later. It does not implement Language
+Server Protocol transport.
 
 ## One language pipeline
 
@@ -80,16 +81,22 @@ The workbench supports:
 - `:append`, `:insert`, `:replace`, `:delete` with multi-line blocks;
 - `:undo`, `:redo`, `:history`;
 - `:load`, `:write`;
-- `:reset` and `:run Event field=value` for persistent logical execution.
+- `:reset` and `:run Event field=value` for legacy single-Engine execution;
+- `:start`, `:inject`, `:runtime`, `:capture` and `:replay-procedures` for
+  persistent procedure instances and complete artifact replay;
+- `:trace`/`:claims` for declared source traces, kept distinct from
+  `:trace-live`/`:claims-live` dynamic Engine capture.
 
 Interactive `:run` output is a presentation-layer decision card showing only
 state deltas plus reads, writes, causal predecessors and the ActionPlan DAG.
+Procedure `:inject` renders a RoundId card containing every injected procedure,
+re-derived decision, procedure revision, qualified state delta and ActionPlan.
 The core `result_text` representation remains stable and unstyled for tests,
 logs and machine comparison.
 
 A single `.` terminates a multi-line edit block. Any non-command input is
-appended as one source line. Editing invalidates the current engine so an event
-can never execute against stale source.
+appended as one source line. Editing invalidates both the legacy Engine and the
+procedure RuntimeContext, so neither can execute against stale source.
 
 ## LSP continuation boundary
 

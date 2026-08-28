@@ -1239,6 +1239,19 @@ Claim Persisted @ Interleaved:
 )DTESSL";
   const dtessl::Program persistent_program =
       dtessl::parse(persistent_procedure_replay);
+  const dtessl::LanguageAnalysis procedure_language_analysis =
+      dtessl::analyze_source(persistent_procedure_replay, "test://procedure", 4);
+  require(procedure_language_analysis.valid() &&
+              std::any_of(
+                  procedure_language_analysis.highlights.begin(),
+                  procedure_language_analysis.highlights.end(),
+                  [&](const dtessl::HighlightToken& token) {
+                    return token.syntax == dtessl::SyntaxClass::Keyword &&
+                           persistent_procedure_replay.substr(
+                               token.range.start.offset,
+                               token.range.end.offset - token.range.start.offset) == "when";
+                  }),
+          "procedure admission did not pass production parsing and keyword highlighting");
   const dtessl::TraceSnapshot persistent_trace =
       dtessl::run_named_trace(persistent_program, "Interleaved");
   require(persistent_trace.rounds.size() == 2U &&

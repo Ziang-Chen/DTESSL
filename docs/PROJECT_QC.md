@@ -8,18 +8,20 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: gate `v0.3.0` composite state and native trace on a DTESSL-only branch
+- Current target: expose `v0.3.0` procedure runtime, capture and replay through
+  the DTESSL REPL and bundled examples
 - Stop orders: none
 
 ## Current state
 
-**Complete.** The `v0.3.0` implementation now has two explicit, non-confused
-replay capabilities: typed context replay from complete initial-state procedure
-artifacts, and derived-path search assertions. Procedure-local `inject`
-admission and conservative closed-capture closure are implemented. Standard,
-`-Werror` and ASan/UBSan suites pass 22/22. Implementation commit `d18845b` is
-pushed on `codex/composite-trace-claims-v0-3-0`; this QC closeout commit records
-the final handoff and clean-tree evidence.
+**Complete.** The `v0.3.0` REPL now exposes the persistent
+`RuntimeContext` directly: procedure startup, typed single- or multi-procedure
+injection, live runtime inspection, closed capture and complete artifact replay.
+Declared source traces/claims are deliberately separate from live legacy Engine
+captures so a source trace cannot be shadowed by an empty dynamic capture.
+The new two-procedure example and REPL smoke cover shared RoundId behavior and
+qualified state. Standard, `-Werror` and ASan/UBSan suites pass 26/26; a real PTY
+passes history recall and the full procedure capture/replay flow.
 
 ## Current goal contract
 
@@ -71,15 +73,15 @@ the final handoff and clean-tree evidence.
 | Shared language pipeline | `analyze_source` runs the production lexer/parser/verifier; valid core fixture asserts `name`, `~`, option and `list` spans | CLI highlight and REPL check agree with `dtessl check` fixtures | pass |
 | Editor document model | Monotonic versions, validated UTF-8 byte ranges and non-overlapping snapshot edits | Replace and stale-version tests pass | pass |
 | Located diagnostics | Lex/parse/semantic categories retain source ranges and stable codes | Parser and wrong-type assignment locations asserted | pass |
-| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and engine invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and two-round fancy run | pass |
+| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and both Engine/RuntimeContext invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and fancy procedure rounds | pass |
 | Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
 | Procedure entry boundary | Parser accepts initial context/state plus typed admission rules; no transition or ordered steps may be nested | Explicit Engine startup and RuntimeContext dispatch both use global transitions | pass |
-| Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle procedure frame remains queryable at the next global RoundId | pass |
+| Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | REPL multi-injection displays one shared RoundId, qualified deltas and retained per-instance revisions | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
-| Golden procedure replay | Replay consumes declared initial configuration plus typed context-injection history; transitions are recomputed | Public `ProcedureArtifact` replay is run twice and compared; wrong path expectation rejects | pass |
+| Golden procedure replay | Replay consumes declared initial configuration plus typed context-injection history; transitions are recomputed | Public API replay plus `:capture`/`:replay-procedures` report matching rounds, decisions and procedure histories | pass |
 | Search replay | A named transition path may be asserted only as derived evidence, never forced | `Transition.case(...) @ Procedure` and explicit `SearchExpectation` both re-enter ordinary search | pass |
 | Quiescent context injection | Procedure-local typed injection with static `when` and dynamic `where`, without direct state mutation | Parser/verifier/runtime exercise event-schema equality and dynamic admission | pass |
 | Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Closed path/state seed retains whole matching procedure; projected capture emits no artifact | pass |
@@ -91,8 +93,6 @@ the final handoff and clean-tree evidence.
 - P0 gap: source AST is currently internal and has no canonical serialized form.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
-
-- P0 handoff gate: record the pushed integration-branch SHA and clean status.
 
 ## Risks
 
@@ -106,12 +106,10 @@ the final handoff and clean-tree evidence.
 
 ## Next corrective focus
 
-1. Finish standard, `-Werror` and ASan/UBSan gates for `v0.3.0`, then push the
-   scoped branch and verify its exact SHA.
-2. Resume typed derived data and explicit shared inputs as the next slice.
-3. Preserve the permanent native Program/EventTrace-only validation boundary.
-4. Keep external projection producers separate from DTESSL verification.
-5. Reject any claim that the full language is complete until all roadmap gates
+1. Resume typed derived data and explicit shared inputs as the next slice.
+2. Preserve the permanent native Program/EventTrace-only validation boundary.
+3. Keep external projection producers separate from DTESSL verification.
+4. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
 ## Decision log
@@ -178,3 +176,8 @@ the final handoff and clean-tree evidence.
   Procedure` is a derived-path assertion. RuntimeContext owns persistent
   instances and complete initial-state artifacts; closed filters conservatively
   retain whole-procedure closure, while projected traces are non-replayable.
+- 2026-08-28: exposed Golden procedure semantics in the REPL with atomic
+  multi-procedure `:inject`, `:runtime`, `:capture` and
+  `:replay-procedures`. Declared `:trace`/`:claims` are separated from explicit
+  `:trace-live`/`:claims-live`; standard, `-Werror` and ASan/UBSan pass 26/26,
+  and real PTY history/capture/replay evidence passes.
