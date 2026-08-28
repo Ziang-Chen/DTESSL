@@ -3,6 +3,30 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.3.5
+
+- Replaced the two ad-hoc Claim cases with one typed temporal AST and
+  deterministic `ClaimMonitor` compiler for `always`, `eventually`, `until`,
+  `within` and `since`.
+- Added standard derived predicates `never`, `before` and `weak_until`; they
+  lower to the five core operators before Solver execution.
+- Added explicit `Claim name @ trace|state|procedure Target` bindings and
+  optional multi-context scope declarations while retaining legacy `@ Trace`
+  input compatibility.
+- Added finite-trace evaluation including logical Round 0 and on-demand
+  `StateExpand × ClaimMonitor` exploration with immediate, deadlock and lasso
+  counterexamples. `since` uses recurrence bits and `within`/count use bounded
+  monitor counters instead of retaining trace prefixes.
+- Added procedure-local anonymous `(source-set)->(target-set)` automaton edges.
+  They lower into the same verified Transition AST and are explored only for
+  their owning procedure.
+- Added transition `ensure` temporal obligations. They activate after a
+  selected edge and participate in the Product automaton; they never predict
+  the future to enable runtime execution.
+- Added Product/monitor metrics, temporal feature negotiation, runnable finite
+  trace and procedure examples, positive and counterexample tests, and fixed
+  `<` comparison parsing so it is not confused with constructor type arguments.
+
 ## v0.3.4
 
 - Added `Solver` as the high-performance semantic layer between the verified

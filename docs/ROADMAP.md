@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; current Solver candidate: `v0.3.4`.
+`v0.2.3`; current temporal Solver candidate: `v0.3.5`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -29,9 +29,10 @@ instance; replay consumes complete procedure state/checkpoint and typed
 transition-occurrence injections, then recomputes selected cases. Case lists
 are evidence, not commands. A capture filter must be closed over causal/data
 dependencies into a complete replayable procedure or fail as not replayable.
-Quiescent procedures resume only when a typed TransitionId occurrence is added
-to their pending set; static state topology and dynamic `where` remain runtime
-search, not procedure-local admission syntax.
+Named external transitions enter a procedure only through typed TransitionId
+occurrences. Procedure-local anonymous transitions are explicit model edges
+explored by the Solver; they are not inferred admissions, external events or
+ordered workflow steps. Static topology and dynamic `where` remain distinct.
 
 ## Milestone 0 — semantic foundation
 
@@ -52,6 +53,7 @@ search, not procedure-local admission syntax.
 | `v0.3.2` | Explicit optimized transition choice | `transition @ scope [optimized_score=...]`, exact numeric after-state scoring, unique maximum selection, tie rejection, replay-visible optimization evidence and preserved exactly-one behavior when no optimizer is declared |
 | `v0.3.3` | Compact automaton surface | Single-line `;`-terminated `state/trans/procedure/trace` AST, graph-derived state axes, typed scalar defaults and direct lowering into the formal verifier/runtime/replay pipeline |
 | `v0.3.4` | Built-in Solver seam | Frontend/backend-independent semantic layer, dense transition-group matching, canonical dynamic Configuration encoding, content deduplication, StateExpand graph, bounded safety/eventuality counterexample search and reference/dense parity benchmarks |
+| `v0.3.5` | Temporal ClaimMonitor product | Typed `trace/state/procedure` Claim targets, `always/eventually/until/within/since`, derived `never/before/weak_until`, procedure-local anonymous transition edges, transition obligations, StateExpand × ClaimMonitor search, finite/deadlock/lasso counterexamples and cross-context examples |
 | `v0.4.0` | Derived/shared state theory | `data/derive/invariant`, explicit shared inputs, richer typed before/after destructuring, lifecycle/completion library axes and state-data dependency checks |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |

@@ -48,3 +48,45 @@ are source facts; the indented DTESSL rules are project inferences.
   global virtual time are backend strategies. They must not change source
   transition semantics, and optimistic execution requires checkpoint/rollback
   evidence before it can be enabled.
+
+## Temporal logic and automata products
+
+- Moshe Y. Vardi and Pierre Wolper, “An Automata-Theoretic Approach to
+  Automatic Program Verification,” LICS 1986.
+  [Author-hosted paper](https://www.cs.rice.edu/~vardi/papers/lics86.pdf).
+  The paper translates a temporal specification to an automaton and reduces
+  finite-state program verification to an automata-language/product problem.
+
+  DTESSL inference: the language AST contains temporal formulas, while the
+  Solver owns their monitor automata and the on-demand
+  `StateExpand × ClaimMonitor` graph. Product state is not added to source
+  `state` declarations.
+
+- C. Courcoubetis, M. Vardi, P. Wolper and M. Yannakakis, “Memory Efficient
+  Algorithms for the Verification of Temporal Properties,” CAV 1990 / FMSD
+  1992. [Author-hosted paper](https://orbi.uliege.be/bitstream/2268/177132/1/CVWY%20CAV%2090.pdf).
+  The paper reduces verification to emptiness of the program/property product
+  Büchi automaton and studies SCC-avoiding/nested-search memory tradeoffs.
+
+  DTESSL inference: v0.3.5 materializes only reached Product nodes and detects
+  pending liveness cycles on that graph. Alternative nested DFS, SCC and
+  probabilistic bitstate backends may optimize the same semantics later.
+
+- Giuseppe De Giacomo and Moshe Y. Vardi, “Linear Temporal Logic and Linear
+  Dynamic Logic on Finite Traces,” IJCAI 2013.
+  [Author manuscript](https://www.diag.uniroma1.it/degiacom/papers/2013/IJCAI13dv.pdf).
+  The paper gives finite-trace temporal semantics and relates LTLf/LDLf to
+  finite-state automata.
+
+  DTESSL inference: native closed Trace claims use finite-trace semantics,
+  including logical Round 0. Open traces retain `pending` unless the observed
+  prefix already gives a decisive safety/bounded witness.
+
+- Gerard J. Holzmann, [SPIN theoretical background](https://spinroot.com/spin/theory.html)
+  and [never-claim reference](https://spinroot.com/spin/Man/never.html).
+  SPIN documents the use of Büchi/never automata, nested DFS, partial-order
+  reduction and bitstate hashing for temporal verification.
+
+  DTESSL inference: `Counterexample` remains the public artifact name; SPIN's
+  surface term `never claim` is not copied. `never(p)` is a derived DTESSL
+  predicate lowered to `always(not p)`.

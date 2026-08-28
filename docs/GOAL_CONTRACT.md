@@ -65,7 +65,7 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.3.4 Solver boundary
+## Current v0.3.5 temporal Solver boundary
 
 - Work is restricted to the DTESSL repository and the
   `codex/compact-automaton-v0-3-3` branch.
@@ -82,10 +82,13 @@ The project is complete only when all of the following are evidenced:
 - Multiple enabled candidates are accepted only when their transition declares
   one common `@scope [optimized_score=...]`; the unique greatest exact score is
   selected from candidate after-states and equal best scores reject atomically.
-- A procedure contains only an initial context identity and initial state
-  combination. It owns no nested transition, admission rule, trace or ordered
-  execution steps. Starting it creates a persistent isolated instance and
-  enters DTESSL's transition-search loop; an empty pending set is quiescence.
+- A procedure contains an initial context/state combination and may declare
+  anonymous local automaton transitions. Those declarations are unordered
+  graph edges scoped to the procedure, not admission rules, traces or workflow
+  steps. Named external work still requires typed TransitionId injection.
+- Claims bind explicitly to a trace, state or procedure. Their five primitive
+  temporal operators compile to finite monitor state, and verification explores
+  `StateExpand × ClaimMonitor`; derived temporal names do not add Solver cases.
 - Golden replay consumes a complete procedure artifact: initial/checkpoint
   state plus typed transition-occurrence injections. Transition paths and the
   dynamic DAG are recomputed evidence, not replay commands.

@@ -282,7 +282,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.3.4", "compiled version must be v0.3.4");
+  require(dtessl::version == "0.3.5", "compiled version must be v0.3.5");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1668,5 +1668,141 @@ Claim Later @ Model:
       dtessl::Solver(dtessl::parse(round_dependent_claim)).verify_claim("Later");
   require(round_result.status == dtessl::ClaimSolveStatus::Inconclusive,
           "Solver treated an unmodeled logical round as Configuration state");
+
+  constexpr std::string_view temporal_procedure = R"DTESSL(
+state Idle @ scheduler initial:
+  credits: int = 1
+  done: bool = false
+
+state Running @ scheduler:
+  credits: int = 1
+  done: bool = true
+
+state Cold @ process initial:
+  started: bool = false
+
+state Started @ process:
+  started: bool = true
+
+procedure Work @ system:
+  initial (Idle @ scheduler, Cold @ process)
+  (Idle @ scheduler, Cold @ process) -> (Running @ scheduler, Started @ process):
+    set @ scheduler:
+      done = true
+    set @ process:
+      started = true
+    ensure:
+      within(1, process.started)
+  (Running @ scheduler, Started @ process) -> (Running @ scheduler, Started @ process):
+    where:
+      true
+
+Claim Safe @ procedure Work @ (scheduler, process):
+  always(scheduler.credits >= 0)
+
+Claim Starts @ procedure Work @ (scheduler, process):
+  eventually(process.started)
+
+Claim HoldsUntilStart @ procedure Work:
+  until(not process.started, process.started)
+
+Claim StartsPromptly @ procedure Work:
+  within(1, process.started)
+
+Claim StartedSinceDone @ procedure Work:
+  eventually(since(process.started, scheduler.done))
+
+Claim NeverNegative @ procedure Work:
+  never(scheduler.credits < 0)
+
+Claim StartBeforeDone @ procedure Work:
+  before(not process.started, scheduler.done)
+
+Claim WaitWeakly @ procedure Work:
+  weak_until(not process.started, process.started)
+
+Claim ImpossibleWithinOne @ procedure Work:
+  within(1, scheduler.credits = 99)
+
+Claim ImpossibleUntil @ procedure Work:
+  until(scheduler.credits >= 0, scheduler.credits = 99)
+
+Claim InvalidHistory @ procedure Work:
+  always(since(process.started, scheduler.done))
+
+Claim SimultaneousIsNotBefore @ procedure Work:
+  before(process.started, scheduler.done)
+
+Claim RunningDone @ state Running @ (scheduler):
+  always(scheduler.done)
+)DTESSL";
+  const dtessl::Program temporal_program = dtessl::parse(temporal_procedure);
+  for (const std::string_view claim :
+       {"Safe", "Starts", "HoldsUntilStart", "StartsPromptly",
+        "StartedSinceDone", "NeverNegative", "StartBeforeDone", "WaitWeakly"}) {
+    const dtessl::ClaimSolveResult solved =
+        dtessl::Solver(temporal_program).verify_claim(claim);
+    require(solved.status == dtessl::ClaimSolveStatus::Verified &&
+                solved.explored_product_states != 0U &&
+                solved.claim_monitor_states != 0U,
+            std::string("temporal Claim did not verify: ") + std::string(claim));
+  }
+  const dtessl::ClaimSolveResult state_claim =
+      dtessl::Solver(temporal_program).verify_claim("RunningDone");
+  require(state_claim.status == dtessl::ClaimSolveStatus::Verified,
+          "typed @ state Claim did not evaluate its selected context");
+  for (const std::string_view claim :
+       {"ImpossibleWithinOne", "ImpossibleUntil", "InvalidHistory",
+        "SimultaneousIsNotBefore"}) {
+    const dtessl::ClaimSolveResult solved =
+        dtessl::Solver(temporal_program).verify_claim(claim);
+    require(solved.status == dtessl::ClaimSolveStatus::Counterexample &&
+                !solved.counterexample.empty(),
+            std::string("temporal counterexample was not found: ") +
+                std::string(claim));
+  }
+
+  constexpr std::string_view failing_transition_obligation = R"DTESSL(
+state Idle initial:
+  done: bool = false
+
+state Waiting:
+  done: bool = false
+
+transition Begin():
+  case start (Idle) -> (Waiting):
+    ensure:
+      eventually(done)
+  case wait (Waiting) -> (Waiting):
+    where:
+      true
+
+procedure Run @ local:
+  initial (Idle)
+
+trace Model:
+  replay:
+    inject Begin() @ Run -> Begin.start
+    inject Begin() @ Run -> Begin.wait
+  capture closed:
+    transition (Begin.start, Begin.wait)
+
+Claim ModelIsTyped @ Model:
+  always:
+    true
+)DTESSL";
+  const dtessl::ClaimSolveResult obligation_result = dtessl::Solver(
+      dtessl::parse(failing_transition_obligation)).verify_claim("ModelIsTyped");
+  require(obligation_result.status == dtessl::ClaimSolveStatus::Counterexample &&
+              !obligation_result.counterexample.empty(),
+          "transition temporal obligation did not participate in the Product automaton");
+  const auto obligation_trace = dtessl::evaluate_named_trace(
+      dtessl::parse(failing_transition_obligation), "Model");
+  require(std::any_of(obligation_trace.begin(), obligation_trace.end(),
+                      [](const dtessl::ClaimEvaluation& evaluation) {
+                        return evaluation.name == "Begin.start.ensure" &&
+                               evaluation.status == dtessl::ClaimStatus::Violated;
+                      }),
+          "finite Trace monitor did not evaluate a transition ensure obligation");
   return 0;
 }

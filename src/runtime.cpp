@@ -81,6 +81,7 @@ Engine Engine::from_procedure(Program program, std::string_view procedure_name,
   }
   const std::string initial_context = found->second.initial_context;
   Engine result(std::move(program), std::move(initial_states), encoding);
+  result.procedure_name_ = std::string(procedure_name);
   result.initial_context_ = initial_context;
   return result;
 }
@@ -190,6 +191,10 @@ ParallelStepResult Engine::step_inputs_at(
     }
     for (const std::size_t candidate_index : candidate_indices) {
       const Transition& transition = program.transitions[candidate_index];
+      if (!transition.procedure_scope.empty() &&
+          transition.procedure_scope != procedure_name_) {
+        continue;
+      }
       struct Route {
         const std::vector<StateBinding>* from;
         const std::string* case_name;
@@ -1221,16 +1226,155 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
 
 namespace {
 
+struct TemporalFrame {
+  const std::map<std::string, Value, std::less<>>* state;
+  std::uint64_t round;
+};
+
+using TemporalMemoKey = std::pair<const TemporalExpr*, std::size_t>;
+
+bool evaluate_temporal(const TemporalExprPtr& expression,
+                       const std::vector<TemporalFrame>& frames,
+                       std::size_t position,
+                       std::map<TemporalMemoKey, bool>& memo) {
+  if (!expression || position >= frames.size()) return false;
+  const TemporalMemoKey key{expression.get(), position};
+  if (const auto found = memo.find(key); found != memo.end()) return found->second;
+  const auto at = [&](const TemporalExprPtr& item, std::size_t index) {
+    return evaluate_temporal(item, frames, index, memo);
+  };
+  bool result = false;
+  switch (expression->kind) {
+    case TemporalExpr::Kind::Atom: {
+      Environment environment{*frames[position].state, nullptr, {},
+                              frames[position].round};
+      result = evaluate(expression->atom, environment).as_bool();
+      break;
+    }
+    case TemporalExpr::Kind::Not:
+      result = !at(expression->left, position);
+      break;
+    case TemporalExpr::Kind::And:
+      result = at(expression->left, position) && at(expression->right, position);
+      break;
+    case TemporalExpr::Kind::Or:
+      result = at(expression->left, position) || at(expression->right, position);
+      break;
+    case TemporalExpr::Kind::Always:
+      result = true;
+      for (std::size_t index = position; index < frames.size(); ++index) {
+        if (!at(expression->left, index)) {
+          result = false;
+          break;
+        }
+      }
+      break;
+    case TemporalExpr::Kind::Eventually:
+      for (std::size_t index = position; index < frames.size(); ++index) {
+        if (at(expression->left, index)) {
+          result = true;
+          break;
+        }
+      }
+      break;
+    case TemporalExpr::Kind::Until:
+      for (std::size_t index = position; index < frames.size(); ++index) {
+        if (at(expression->right, index)) {
+          result = true;
+          break;
+        }
+        if (!at(expression->left, index)) break;
+      }
+      break;
+    case TemporalExpr::Kind::Within: {
+      const std::size_t available = frames.size() - 1U - position;
+      const std::size_t distance = static_cast<std::size_t>(std::min<std::uint64_t>(
+          expression->bound, static_cast<std::uint64_t>(available)));
+      for (std::size_t index = position; index <= position + distance; ++index) {
+        if (at(expression->left, index)) {
+          result = true;
+          break;
+        }
+      }
+      break;
+    }
+    case TemporalExpr::Kind::Since:
+      for (std::size_t index = position + 1U; index-- > 0U;) {
+        if (at(expression->right, index)) {
+          result = true;
+          break;
+        }
+        if (!at(expression->left, index)) break;
+      }
+      break;
+  }
+  memo.emplace(key, result);
+  return result;
+}
+
+std::uint64_t temporal_witness_round(const TemporalExprPtr& expression,
+                                     const std::vector<TemporalFrame>& frames,
+                                     bool property_value,
+                                     std::map<TemporalMemoKey, bool>& memo) {
+  if (frames.empty()) return 0;
+  if (expression->kind == TemporalExpr::Kind::Always && !property_value) {
+    for (std::size_t index = 0; index < frames.size(); ++index) {
+      if (!evaluate_temporal(expression->left, frames, index, memo)) {
+        return frames[index].round;
+      }
+    }
+  }
+  if ((expression->kind == TemporalExpr::Kind::Eventually ||
+       expression->kind == TemporalExpr::Kind::Within) && property_value) {
+    for (std::size_t index = 0; index < frames.size(); ++index) {
+      if (evaluate_temporal(expression->left, frames, index, memo)) {
+        return frames[index].round;
+      }
+    }
+  }
+  return frames.back().round;
+}
+
 std::vector<ClaimEvaluation> evaluate_trace_claims(
     const Program::Impl& program, const TraceSnapshot& trace) {
   FunctionScope function_scope(program.functions);
+  std::map<std::string, Value, std::less<>> initial_state;
+  const auto declaration = std::find_if(
+      program.traces.begin(), program.traces.end(),
+      [&](const TraceDeclaration& item) { return item.name == trace.name; });
+  std::set<std::string, std::less<>> procedures;
+  if (declaration != program.traces.end()) {
+    for (const auto& round : declaration->replay_procedures) {
+      procedures.insert(round.begin(), round.end());
+    }
+  }
+  if (procedures.empty()) {
+    initial_state = Engine(Program(std::make_shared<Program::Impl>(program))).values();
+  } else {
+    const bool single = procedures.size() == 1U;
+    for (const std::string& procedure : procedures) {
+      const Engine initial = Engine::from_procedure(
+          Program(std::make_shared<Program::Impl>(program)), procedure);
+      for (const auto& [name, value] : initial.values()) {
+        initial_state.emplace(procedure + "." + name, value);
+        if (single) initial_state.emplace(name, value);
+      }
+    }
+  }
+  std::vector<TemporalFrame> frames;
+  frames.reserve(trace.rounds.size() + 1U);
+  frames.push_back(TemporalFrame{&initial_state, 0U});
+  for (const ParallelStepResult& round : trace.rounds) {
+    frames.push_back(TemporalFrame{&round.state, round.round});
+  }
   std::vector<ClaimEvaluation> results;
   for (const ClaimDeclaration& claim : program.claims) {
-    if (claim.trace != trace.name) continue;
+    if (claim.target_kind != ClaimDeclaration::TargetKind::Trace ||
+        claim.target != trace.name) continue;
     ClaimEvaluation result;
     result.name = claim.name;
     result.trace = trace.name;
-    if (claim.kind == ClaimDeclaration::Kind::CountAtMost) {
+    if (claim.count_at_most) {
       std::uint64_t count = 0;
       for (const ParallelStepResult& round : trace.rounds) {
         count += static_cast<std::uint64_t>(std::count_if(
@@ -1253,33 +1397,28 @@ std::vector<ClaimEvaluation> evaluate_trace_claims(
                                      : "open trace may still exceed count bound";
       }
     } else {
-      bool witness = false;
-      for (const ParallelStepResult& round : trace.rounds) {
-        Environment environment{round.state, nullptr, {}, round.round};
-        const bool value = evaluate(claim.predicate, environment).as_bool();
-        const bool decisive = claim.kind == ClaimDeclaration::Kind::Always ? !value : value;
-        if (!decisive) continue;
-        witness = true;
-        result.witness_round = round.round;
-        result.status = claim.kind == ClaimDeclaration::Kind::Always
-                            ? ClaimStatus::Violated
-                            : ClaimStatus::Satisfied;
-        result.detail = claim.kind == ClaimDeclaration::Kind::Always
-                            ? "predicate is false"
-                            : "predicate became true";
-        break;
+      std::map<TemporalMemoKey, bool> memo;
+      const bool value = evaluate_temporal(claim.property, frames, 0U, memo);
+      bool decisive = trace.closed;
+      if (!trace.closed && claim.property->kind == TemporalExpr::Kind::Always && !value) {
+        decisive = true;
+      } else if (!trace.closed &&
+                 (claim.property->kind == TemporalExpr::Kind::Eventually ||
+                  claim.property->kind == TemporalExpr::Kind::Within) && value) {
+        decisive = true;
+      } else if (!trace.closed &&
+                 claim.property->kind == TemporalExpr::Kind::Within &&
+                 frames.size() > claim.property->bound) {
+        decisive = true;
       }
-      if (!witness) {
-        if (!trace.closed) {
-          result.status = ClaimStatus::Pending;
-          result.detail = "open trace has no decisive witness yet";
-        } else if (claim.kind == ClaimDeclaration::Kind::Always) {
-          result.status = ClaimStatus::Satisfied;
-          result.detail = "predicate holds throughout the closed trace";
-        } else {
-          result.status = ClaimStatus::Violated;
-          result.detail = "closed trace ended without a witness";
-        }
+      if (!decisive) {
+        result.status = ClaimStatus::Pending;
+        result.detail = "open trace has no decisive temporal witness yet";
+      } else {
+        result.status = value ? ClaimStatus::Satisfied : ClaimStatus::Violated;
+        result.witness_round = temporal_witness_round(claim.property, frames, value, memo);
+        result.detail = value ? "temporal property holds on the typed trace"
+                              : "temporal property has a finite counterexample";
       }
     }
     if (!trace.causal_gaps.empty() && result.status == ClaimStatus::Satisfied) {
@@ -1287,6 +1426,57 @@ std::vector<ClaimEvaluation> evaluate_trace_claims(
       result.detail = "projected trace has causal gaps; satisfaction is not conclusive";
     }
     results.push_back(std::move(result));
+  }
+  const auto evaluate_obligation = [&](std::string path,
+                                       const TemporalExprPtr& property) {
+    if (!property) return;
+    ClaimEvaluation result;
+    result.name = path + ".ensure";
+    result.trace = trace.name;
+    bool observed = false;
+    bool all_hold = true;
+    for (std::size_t round_index = 0; round_index < trace.rounds.size();
+         ++round_index) {
+      const ParallelStepResult& round = trace.rounds[round_index];
+      const bool occurred = std::any_of(
+          round.transitions.begin(), round.transitions.end(),
+          [&](const StepResult& step) { return step.transition == path; });
+      if (!occurred) continue;
+      observed = true;
+      std::map<TemporalMemoKey, bool> memo;
+      if (!evaluate_temporal(property, frames, round_index + 1U, memo)) {
+        all_hold = false;
+        result.witness_round = round.round;
+        break;
+      }
+    }
+    if (!observed) return;
+    if (!trace.closed) {
+      result.status = ClaimStatus::Pending;
+      result.detail = "open trace cannot close the transition temporal obligation";
+    } else {
+      result.status = all_hold ? ClaimStatus::Satisfied : ClaimStatus::Violated;
+      result.detail = all_hold
+                          ? "all selected transition occurrences satisfy ensure"
+                          : "selected transition occurrence violates ensure";
+    }
+    if (!trace.causal_gaps.empty() && result.status == ClaimStatus::Satisfied) {
+      result.status = ClaimStatus::Pending;
+      result.detail = "projected trace has causal gaps; ensure is not conclusive";
+    }
+    results.push_back(std::move(result));
+  };
+  for (const Transition& transition : program.transitions) {
+    evaluate_obligation(
+        transition.name +
+            (transition.case_name.empty() ? "" : "." + transition.case_name),
+        transition.obligation);
+    for (const TransitionAlternative& alternative : transition.alternatives) {
+      evaluate_obligation(
+          transition.name +
+              (alternative.name.empty() ? "" : "." + alternative.name),
+          alternative.obligation);
+    }
   }
   return results;
 }

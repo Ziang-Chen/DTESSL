@@ -516,7 +516,7 @@ void repl_help() {
       << "  :reset                   rebuild legacy and procedure runtimes\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.3.4 syntax:\n"
+      << "\ncore v0.3.5 syntax:\n"
       << "  procedure/inject          persistent automaton + typed transition input\n"
       << "  replay/capture closed     transition replay + complete procedure closure\n"
       << "  name T / T(atom)         nominal logical names\n"
@@ -826,7 +826,8 @@ void usage(std::ostream& out) {
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.3.4: Solver/StateExpand, compact automata, indexed search, causal rounds,\n"
+      << "core v0.3.5: temporal ClaimMonitor product, Solver/StateExpand, compact automata,\n"
+      << "indexed search, causal rounds,\n"
       << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
 }
 
@@ -1031,6 +1032,8 @@ int main(int argc, char** argv) {
       std::cout << dtessl::claim_solve_status_name(verified.status)
                 << " claim=" << verified.claim
                 << " configurations=" << verified.explored_configurations
+                << " product=" << verified.explored_product_states
+                << " monitors=" << verified.claim_monitor_states
                 << " edges=" << verified.explored_edges
                 << " depth=" << verified.max_depth_reached << '\n'
                 << verified.detail << '\n';

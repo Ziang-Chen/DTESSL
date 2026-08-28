@@ -8,8 +8,8 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.3.4` built-in Solver and StateExpand over the
-  merged compact-automaton/runtime baseline
+- Current target: validate the `v0.3.5` temporal ClaimMonitor Product over the
+  merged Solver/compact-automaton/runtime baseline
 - Stop orders: none
 
 ## Current state
@@ -35,6 +35,12 @@ dynamic Configurations, gives the reachable transition graph the stable name
 `StateExpand`, adds dense-ID/reference parity benchmarks and searches bounded
 safety/eventuality counterexamples through the independent Solver layer.
 Standard, `-Werror`, and ASan/UBSan configurations each pass 35/35 tests.
+
+The `v0.3.5` candidate adds one temporal AST and ClaimMonitor compiler shared by
+finite Trace evaluation, procedure StateExpand Product search and transition
+obligations. It also adds explicit Claim targets, cross-context scopes and
+procedure-local anonymous automaton edges. Standard, `-Werror`, and
+ASan/UBSan configurations each pass 38/38 tests.
 
 ## Current goal contract
 
@@ -71,7 +77,7 @@ Standard, `-Werror`, and ASan/UBSan configurations each pass 35/35 tests.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.3.4` | Built CLI reports `v0.3.4` | pass |
+| Version identity | CMake/generated header target `0.3.5` | Built CLI reports `v0.3.5` | pass |
 | Solver semantic seam | Public Solver owns Configuration expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | StateExpand graph | Canonical Configuration codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Configuration digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
@@ -92,9 +98,11 @@ Standard, `-Werror`, and ASan/UBSan configurations each pass 35/35 tests.
 | REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and both Engine/RuntimeContext invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and fancy procedure rounds | pass |
 | Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
-| Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
+| Temporal Claim AST | always/eventually/until/within/since plus derived never/before/weak_until share typed predicate leaves | Finite trace and procedure examples exercise all primitives | pass |
+| ClaimMonitor Product | Configuration and monitor state have separate keys; deadlock/lasso/finite counterexamples are reconstructed | Positive and negative procedure claims plus transition obligation cycle tests pass | pass |
+| Finite-prefix claims | logical Round 0, temporal evaluation, count plus three statuses | Closed temporal trace CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
-| Procedure entry boundary | Parser accepts only initial context/state; no transition, admission rule or ordered steps may be nested | RuntimeContext startup is immediately quiescent with an empty pending set | pass |
+| Procedure entry boundary | Parser accepts initial context/state plus anonymous local automaton edges; ordered steps/admission scripts remain forbidden | Solver expands local edges only for the owning procedure | pass |
 | Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle frames plus REPL multi-injection/runtime inspection remain visible | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
 | Golden procedure replay | Replay consumes declared initial configuration plus typed transition-occurrence history; cases are recomputed | Public API and REPL replay report matching rounds, decisions and procedure histories | pass |

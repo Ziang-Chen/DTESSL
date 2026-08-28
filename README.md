@@ -1,4 +1,4 @@
-# DTESSL v0.3.4
+# DTESSL v0.3.5
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -28,9 +28,10 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - `record / variant / enum / newtype` 定义代数与名义领域类型；
 - `state` 定义一个有类型的状态空间、初值、上下文和不变量；
 - `transition` 的 `case (source-set) -> (target-set)` 定义原子状态集重写；
-- `procedure` 定义由 RuntimeContext 持有的持久自动机实例及 typed context 准入；
+- `procedure` 定义持久自动机实例的初态/上下文，并可内联定义匿名局部 transition；
 - `trace` 定义原生静态事件序列或按 `@context` 捕获的动态执行投影；
-- `Claim` 用 `always`、`eventually` 或 transition 次数约束判定 trace。
+- `Claim` 可绑定 `trace/state/procedure`，并以 `always/eventually/until/within/since`
+  判定有限 trace 或 StateExpand 路径。
 
 执行器以一组可并行事件为一个离散 `round`。同一 round 的 transition 都读取同一个
 before snapshot；写集不冲突时原子合并，冲突而没有显式 merge relation 时拒绝整组事件。
@@ -146,6 +147,7 @@ case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                     { Name "=" expression "@" Name NEWLINE }
                   DEDENT ]
                 [ "do" ":" INDENT action-expression DEDENT ]
+                [ "ensure" ":" INDENT temporal-expression DEDENT ]
               DEDENT ;
 state-pattern-set = "(" state-pattern { "," state-pattern } ")" ;
 state-pattern = ( Name | "{" Name { "," Name } "}" | "_" ) [ "@" Name ] ;
@@ -153,7 +155,15 @@ exact-state-set = "(" state-binding { "," state-binding } ")" ;
 state-binding = Name [ "@" Name ] ;
 procedure   = "procedure" Name "@" Name ":" INDENT
                 "initial" exact-state-set NEWLINE
+                { anonymous-transition }
               DEDENT ;
+anonymous-transition = state-pattern-set "->" exact-state-set ":" INDENT
+                         [ "where" ":" INDENT expression DEDENT ]
+                         [ "set" "@" Name ":" INDENT
+                             { Name "=" expression NEWLINE } DEDENT ]
+                         [ "do" ":" INDENT action-expression DEDENT ]
+                         [ "ensure" ":" INDENT temporal-expression DEDENT ]
+                       DEDENT ;
 trace       = "trace" Name [ "@" Name ] ":" INDENT
                 [ "replay" ":" INDENT replay-round { replay-round } DEDENT ]
                 [ "capture" ( "closed" | "projected" ) ":"
@@ -166,10 +176,21 @@ replay-occurrence = "inject" Name
 capture-filter = "state" "(" [ state-binding { "," state-binding } ] ")" NEWLINE
                | "transition" "(" [ qualified-name { "," qualified-name } ] ")" NEWLINE
                | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE ;
-claim       = "Claim" Name "@" Name ":" INDENT
-                ( ( "always" | "eventually" ) ":" INDENT expression DEDENT
+claim       = "Claim" Name "@" [ "trace" | "state" | "procedure" ] Name
+                [ "@" "(" Name { "," Name } ")" ] ":" INDENT
+                ( temporal-expression NEWLINE
+                | ( "always" | "eventually" ) ":" INDENT expression DEDENT
                 | "count" Name "<=" integer NEWLINE )
               DEDENT ;
+temporal-expression = expression
+                    | "always" "(" temporal-expression ")"
+                    | "eventually" "(" temporal-expression ")"
+                    | "until" "(" temporal-expression "," temporal-expression ")"
+                    | "within" "(" integer "," temporal-expression ")"
+                    | "since" "(" temporal-expression "," temporal-expression ")"
+                    | "never" "(" temporal-expression ")"
+                    | "before" "(" temporal-expression "," temporal-expression ")"
+                    | "weak_until" "(" temporal-expression "," temporal-expression ")" ;
 parameter   = Name ":" type ;
 type        = "bool" | "int" | "rational" | "string"
             | "[" type "]"
@@ -223,6 +244,12 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `Claim count` 精确引用；不写名字的单 path 仍使用 transition 名。v0 旧式
 `from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
 `set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
+
+`ensure:` 与 `where:` 不同：`where` 只看当前 Configuration 并决定边是否可用；
+`ensure` 在边发生后的 successor 上激活时序 obligation，由 finite Trace monitor 或
+`StateExpand × ClaimMonitor` 检查。执行器绝不会为了判断 `eventually` 而预知未来。
+Procedure 中直接写的 `(source-set) -> (target-set):` 是匿名局部 transition，Solver 只在
+该 Procedure 的状态空间中展开它；它不是按源码顺序执行的 workflow step。
 
 `transition Dispatch(task: Task)` 同时定义可注入的消息/transition 类型；不再需要另一套
 Event 名。旧式 `transition Dispatch @ Tick(task: Task)` 暂时保留给普通 Event API 兼容，
@@ -373,6 +400,8 @@ build/dtessl features examples/scheduler.dtessl
 build/dtessl plans examples/relations.dtessl
 build/dtessl bench examples/encoding/stage1_dense_state/ring_32.dtessl Advance 10000
 build/dtessl verify-claim examples/claims/safety_counterexample.dtessl NoFailure
+build/dtessl claims examples/temporal_trace.dtessl History
+build/dtessl verify-claim examples/temporal_procedure.dtessl StartedSinceDone
 build/dtessl highlight examples/scheduler.dtessl
 build/dtessl repl examples/scheduler.dtessl
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
@@ -397,10 +426,11 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.3.4 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.3.5 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
-它按 transition 展开动态 `Configuration`，形成 `StateExpand`，并搜索 Claim 反例；
+它按 transition 展开动态 `Configuration`，形成 `StateExpand`，再与有限
+`ClaimMonitor` 做按需 Product 并搜索 finite prefix / deadlock / lasso 反例；
 它不是 SMT/SAT 产品名称，也不执行 ActionPlan。
 下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
 与可替换 solver backend。

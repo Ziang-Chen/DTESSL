@@ -451,6 +451,7 @@ class Engine {
       std::uint64_t round_id);
   Program program_;
   SolverEncoding encoding_{SolverEncoding::DenseIds};
+  std::string procedure_name_;
   std::string initial_context_;
   std::uint64_t round_{0};
   std::vector<std::size_t> active_state_ids_;

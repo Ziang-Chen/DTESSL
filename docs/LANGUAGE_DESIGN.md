@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.3.4` Solver slice.
+- **Implemented**: accepted and executed through the `v0.3.5` temporal Solver slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -23,10 +23,11 @@ These rules override any earlier v0 experimental syntax or implementation:
    procedure filter as a seed. The language must compute causal and data
    dependency closure and emit a complete replayable procedure artifact. A
    partial projection may not claim to be replayable.
-4. A procedure begins with initial states plus initial context and immediately
-   enters the language runtime's search loop. An empty pending set is
-   quiescence. `inject Transition(...) @ Procedure` later adds one typed
-   transition occurrence; it neither mutates state nor chooses a case.
+4. A procedure begins with initial states plus initial context. Package
+   transitions and procedure-local anonymous transitions are automaton edges,
+   never an ordered workflow body. The Solver expands anonymous edges directly;
+   `inject Transition(...) @ Procedure` adds a typed occurrence for named
+   transitions and neither mutates state nor chooses a case.
 5. The language RuntimeContext owns procedure instances, state, revisions,
    pending injections and causal frontiers. Different procedures are isolated
    at `ProcedureId / Context / StateField`; safe shared storage is a later,
@@ -374,6 +375,10 @@ transition Assign @ Submit(task: Task):
   selection rules as relation search.
 - A transition that produces multiple unresolved decisions is invalid in
   runtime mode.
+- `ensure:` is a path-local temporal obligation activated on the selected
+  successor. It is checked by the Solver/monitor product and never used as an
+  oracle-like runtime guard. `where` remains the only current-Configuration
+  enablement predicate.
 
 ## 8. Guard, predicate, requires and scheduler
 
@@ -416,9 +421,9 @@ DTESSL inputs.
 
 - `procedure P @ context: initial (...)` declares one persistent automaton
   instance entry: an initial context identity and finite initial state
-  combination. It contains no nested transition, injection rule, replay,
-  capture or ordered steps. Starting it enters DTESSL's own search loop; with
-  no pending occurrence the instance is simply quiescent.
+  combination. It may contain anonymous `(source-set)->(target-set)` transition
+  declarations. They are scoped automaton edges with stable generated typed
+  identities, not ordered steps, replay data, capture rules or effects.
 - A procedure is not a trace. The language RuntimeContext owns persistent
   procedure instances, injection history, state, local revisions and causal
   frontier.
@@ -449,8 +454,14 @@ DTESSL inputs.
 - `capture projected` retains only decisions touching those axes, records a
   causal gap, sets `replayable=false` and emits no procedure artifact. It is
   useful for inspection, not conclusive global assurance.
-- `Claim C @ T` currently supports `always`, `eventually` and
-  `count Transition <= N`. A finite open trace returns `pending` unless it
+- `Claim C @ trace T`, `Claim C @ state S` and `Claim C @ procedure P`
+  distinguish finite evidence, a local declaration check and path exploration.
+  An optional `@ (context, ...)` records the explicit logical scope.
+- The core temporal basis is `always`, `eventually`, `until`, `within` and
+  `since`. `never`, `before` and `weak_until` are standard frontend definitions
+  lowered into that basis; ordinary typed `function` continues to define the
+  predicate leaves. `count Transition <= N` lowers to the same monitor product.
+  A finite open trace returns `pending` unless it
   already contains a decisive counterexample or witness. A closed trace can
   return `satisfied` or `violated`; positive satisfaction is downgraded to
   `pending` when projection gaps exist.
@@ -510,18 +521,30 @@ first bounded `ScratchPool` for trivially destructible temporary objects.
 
 ## 12. Claims and compositional automata
 
-Claims do not mutate state:
+Claims do not mutate state. Implemented v0.3.5 examples are:
 
-```text
-claim SessionBound:
-  A e in EventLog:
-    has(e.sessionID) -> E s in Sessions: s.id = e.sessionID
+```dtessl
+Claim Safe @ procedure Session @ (security, workflow):
+  always(security.credits >= 0)
+
+Claim Completes @ procedure Session:
+  within(8, workflow.done)
+
+Claim AuthorizedHistory @ trace Audit:
+  always(since(security.active, security.accepted))
 ```
 
-The monitor/explorer layers support product, synchronized event, projection,
-hiding, renaming, assume/guarantee, refinement mapping and monitor automata.
-Runtime-checkable claims lower to monitors; proof-oriented claims lower to
-bounded checks or external exporters. Unknown/unchecked is distinct from true.
+Predicate leaves reuse the state/transition expression, relation and finite
+search engine. The frontend lowers temporal structure to a typed AST; the
+Solver compiles the supported deterministic fragment to `ClaimMonitor`, then
+explores `StateExpand × ClaimMonitor`. A `since` subformula stores its recurrence
+bit, not a copy of the history. `eventually` and strong `until` use waiting
+deadlock/cycle detection; `within` uses a bounded counter. Unsupported nesting
+returns `inconclusive`, never an optimistic proof.
+
+Product, synchronized event, projection, hiding, renaming, assume/guarantee and
+refinement mapping beyond this Claim product remain later compositional
+automata work. Unknown/unchecked is distinct from true.
 
 ## 13. Backend and provider boundary
 

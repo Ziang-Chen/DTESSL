@@ -96,6 +96,11 @@ struct ClaimSolveResult {
   ClaimSolveStatus status{ClaimSolveStatus::Inconclusive};
   std::size_t explored_configurations{0};
   std::size_t explored_edges{0};
+  // Product nodes are (Configuration, ClaimMonitorState).  This can exceed
+  // explored_configurations for history-sensitive `since`, bounded `within`,
+  // and counting monitors without duplicating the base StateExpand node.
+  std::size_t explored_product_states{0};
+  std::size_t claim_monitor_states{0};
   std::size_t max_depth_reached{0};
   std::vector<CounterexampleFrame> counterexample;
   std::string detail;

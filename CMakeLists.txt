@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.3.4)
+set(DTESSL_VERSION 0.3.5)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -270,4 +270,24 @@ if(DTESSL_BUILD_TESTS)
                    Completes)
   set_tests_properties(dtessl.solver_eventually_verified PROPERTIES
                        PASS_REGULAR_EXPRESSION "verified claim=Completes configurations=2")
+  add_test(NAME dtessl.temporal_trace_claims
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   claims
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/temporal_trace.dtessl
+                   History)
+  set_tests_properties(dtessl.temporal_trace_claims PROPERTIES
+                       PASS_REGULAR_EXPRESSION "StartedSinceStart satisfied")
+  add_test(NAME dtessl.temporal_procedure_product
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/temporal_procedure.dtessl
+                   StartedSinceDone)
+  set_tests_properties(dtessl.temporal_procedure_product PROPERTIES
+                       PASS_REGULAR_EXPRESSION "verified claim=StartedSinceDone.*product=")
+  add_test(NAME dtessl.temporal_features
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   features
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/temporal_procedure.dtessl)
+  set_tests_properties(dtessl.temporal_features PROPERTIES
+                       PASS_REGULAR_EXPRESSION "transition-obligation")
 endif()

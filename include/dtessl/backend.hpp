@@ -42,6 +42,9 @@ enum class LanguageFeature {
   PureFunctions,
   ProcedureEntry,
   OptimizedTransition,
+  TemporalLogic,
+  ProcedureLambda,
+  TransitionObligation,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

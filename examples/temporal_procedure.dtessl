@@ -1,0 +1,50 @@
+state Idle @ scheduler initial:
+  credits: int = 1
+  done: bool = false
+
+state Running @ scheduler:
+  credits: int = 1
+  done: bool = true
+
+state Cold @ process initial:
+  started: bool = false
+
+state Started @ process:
+  started: bool = true
+
+procedure Work @ system:
+  initial (Idle @ scheduler, Cold @ process)
+  (Idle @ scheduler, Cold @ process) -> (Running @ scheduler, Started @ process):
+    set @ scheduler:
+      done = true
+    set @ process:
+      started = true
+    ensure:
+      within(1, process.started)
+  (Running @ scheduler, Started @ process) -> (Running @ scheduler, Started @ process):
+    where:
+      true
+
+Claim Safe @ procedure Work @ (scheduler, process):
+  always(scheduler.credits >= 0)
+
+Claim Starts @ procedure Work @ (scheduler, process):
+  eventually(process.started)
+
+Claim HoldsUntilStart @ procedure Work:
+  until(not process.started, process.started)
+
+Claim StartsPromptly @ procedure Work:
+  within(1, process.started)
+
+Claim StartedSinceDone @ procedure Work:
+  eventually(since(process.started, scheduler.done))
+
+Claim NeverNegative @ procedure Work:
+  never(scheduler.credits < 0)
+
+Claim StartBeforeDone @ procedure Work:
+  before(not process.started, scheduler.done)
+
+Claim WaitWeakly @ procedure Work:
+  weak_until(not process.started, process.started)

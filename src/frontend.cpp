@@ -43,8 +43,10 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "equal", "union", "and", "or", "not", "in", "exists", "select",
       "by", "lex", "match", "E", "A", "true", "false", "none", "some",
       "ok", "err", "round", "trace", "replay", "capture", "closed",
-      "projected", "Claim", "always", "eventually", "case", "function",
-      "procedure", "initial", "inject", "when", "trans", "optimized_score"};
+      "projected", "Claim", "always", "eventually", "until", "within",
+      "since", "never", "before", "weak_until", "case", "function",
+      "procedure", "initial", "inject", "when", "ensure", "trans",
+      "optimized_score"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
@@ -488,12 +490,16 @@ struct TransitionAlternative {
   std::vector<TransitionTarget> to;
   ExprPtr condition{make_literal(Value(true))};
   std::shared_ptr<ActionExpr> action;
+  std::shared_ptr<struct TemporalExpr> obligation;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
 };
 
 struct Transition {
   std::string name;
+  // Empty for package transitions.  Anonymous transitions declared inside a
+  // procedure are visible only to that procedure's automaton instance.
+  std::string procedure_scope;
   std::string event;
   std::string optimization_scope;
   ExprPtr optimized_score;
@@ -504,11 +510,59 @@ struct Transition {
   std::vector<TransitionAlternative> alternatives;
   ExprPtr condition{make_literal(Value(true))};
   std::shared_ptr<ActionExpr> action;
+  std::shared_ptr<struct TemporalExpr> obligation;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
   std::size_t line{0};
   std::size_t column{0};
 };
+
+// Temporal formulas deliberately wrap the ordinary typed predicate AST.  An
+// Atom is evaluated by the same expression engine used by state invariants and
+// transition guards; only the temporal structure is owned by ClaimMonitor.
+struct TemporalExpr {
+  enum class Kind { Atom, Not, And, Or, Always, Eventually, Until, Within, Since };
+  Kind kind{Kind::Atom};
+  ExprPtr atom;
+  std::shared_ptr<TemporalExpr> left;
+  std::shared_ptr<TemporalExpr> right;
+  std::uint64_t bound{0};
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+using TemporalExprPtr = std::shared_ptr<TemporalExpr>;
+
+TemporalExprPtr make_temporal_atom(ExprPtr atom) {
+  auto result = std::make_shared<TemporalExpr>();
+  result->kind = TemporalExpr::Kind::Atom;
+  result->line = atom ? atom->line : 0;
+  result->column = atom ? atom->column : 0;
+  result->atom = std::move(atom);
+  return result;
+}
+
+TemporalExprPtr make_temporal_unary(TemporalExpr::Kind kind,
+                                    TemporalExprPtr operand) {
+  auto result = std::make_shared<TemporalExpr>();
+  result->kind = kind;
+  result->line = operand ? operand->line : 0;
+  result->column = operand ? operand->column : 0;
+  result->left = std::move(operand);
+  return result;
+}
+
+TemporalExprPtr make_temporal_binary(TemporalExpr::Kind kind,
+                                     TemporalExprPtr left,
+                                     TemporalExprPtr right) {
+  auto result = std::make_shared<TemporalExpr>();
+  result->kind = kind;
+  result->line = left ? left->line : 0;
+  result->column = left ? left->column : 0;
+  result->left = std::move(left);
+  result->right = std::move(right);
+  return result;
+}
 
 struct TraceDeclaration {
   std::string name;
@@ -528,11 +582,13 @@ struct TraceDeclaration {
 };
 
 struct ClaimDeclaration {
-  enum class Kind { Always, Eventually, CountAtMost };
+  enum class TargetKind { Trace, State, Procedure };
   std::string name;
-  std::string trace;
-  Kind kind{Kind::Always};
-  ExprPtr predicate;
+  TargetKind target_kind{TargetKind::Trace};
+  std::string target;
+  std::vector<std::string> contexts;
+  TemporalExprPtr property;
+  bool count_at_most{false};
   std::string transition;
   std::uint64_t limit{0};
   std::size_t line{0};
@@ -543,6 +599,7 @@ struct ProcedureDeclaration {
   std::string name;
   std::string initial_context;
   std::vector<StateBinding> initial_states;
+  std::vector<Transition> anonymous_transitions;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -612,6 +669,25 @@ class FlatParser {
   const Token& peek() const {
     static const Token end{TokenKind::End, "<end>", 0, 0};
     return cursor_ < tokens_.size() ? tokens_[cursor_] : end;
+  }
+
+  [[nodiscard]] bool begins_type_argument() const {
+    if (at_end() || peek().text != "<") return false;
+    std::size_t depth = 0;
+    for (std::size_t index = cursor_; index < tokens_.size(); ++index) {
+      if (tokens_[index].text == "<") ++depth;
+      else if (tokens_[index].text == ">") {
+        if (depth == 0U) return false;
+        --depth;
+        if (depth == 0U) {
+          return index + 1U < tokens_.size() &&
+                 tokens_[index + 1U].text == "(";
+        }
+      }
+      if (tokens_[index].kind == TokenKind::Newline ||
+          tokens_[index].kind == TokenKind::End) return false;
+    }
+    return false;
   }
 
   bool at_end() const { return cursor_ >= tokens_.size() || peek().kind == TokenKind::End; }
@@ -931,7 +1007,7 @@ class FlatParser {
       path += "." + path_component().text;
     }
     std::optional<DataType> type_argument;
-    if (match("<")) {
+    if (begins_type_argument() && match("<")) {
       type_argument = parse_type();
       expect(">");
     }
@@ -1061,6 +1137,144 @@ class FlatParser {
   std::size_t cursor_{0};
 };
 
+// Compact functional temporal syntax, for example
+// always(since(active, accepted)) or within(5, done).  Predicate leaves are
+// parsed by FlatParser, so Claim, state and transition logic share one typed
+// expression language rather than three similar parsers.
+class TemporalParser {
+ public:
+  TemporalParser(std::vector<Token> tokens, const TypeRegistry& types)
+      : tokens_(std::move(tokens)), types_(types) {}
+
+  TemporalExprPtr expression() {
+    if (tokens_.empty()) throw Error("empty temporal expression");
+    return segment(0U, tokens_.size());
+  }
+
+ private:
+  [[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> arguments(
+      std::size_t begin, std::size_t end) const {
+    std::vector<std::pair<std::size_t, std::size_t>> result;
+    std::size_t depth = 0;
+    std::size_t item = begin;
+    for (std::size_t index = begin; index < end; ++index) {
+      if (tokens_[index].text == "(" || tokens_[index].text == "[" ||
+          tokens_[index].text == "{") {
+        ++depth;
+      } else if (tokens_[index].text == ")" || tokens_[index].text == "]" ||
+                 tokens_[index].text == "}") {
+        if (depth == 0U) fail(tokens_[index], "unmatched temporal delimiter");
+        --depth;
+      } else if (tokens_[index].text == "," && depth == 0U) {
+        if (item == index) fail(tokens_[index], "empty temporal argument");
+        result.emplace_back(item, index);
+        item = index + 1U;
+      }
+    }
+    if (depth != 0U) fail(tokens_[begin], "unterminated temporal argument");
+    if (item == end) fail(tokens_[end - 1U], "empty temporal argument");
+    result.emplace_back(item, end);
+    return result;
+  }
+
+  [[nodiscard]] bool complete_call(std::size_t begin, std::size_t end) const {
+    if (end - begin < 3U || tokens_[begin + 1U].text != "(" ||
+        tokens_[end - 1U].text != ")") return false;
+    std::size_t depth = 0;
+    for (std::size_t index = begin + 1U; index < end; ++index) {
+      if (tokens_[index].text == "(") ++depth;
+      else if (tokens_[index].text == ")") {
+        if (depth == 0U) return false;
+        --depth;
+        if (depth == 0U && index + 1U != end) return false;
+      }
+    }
+    return depth == 0U;
+  }
+
+  TemporalExprPtr segment(std::size_t begin, std::size_t end) {
+    if (begin >= end) throw Error("empty temporal expression");
+    const std::string& name = tokens_[begin].text;
+    static const std::unordered_set<std::string_view> temporal_calls{
+        "always", "eventually", "until", "within", "since", "never",
+        "before", "weak_until"};
+    if (temporal_calls.contains(name) && complete_call(begin, end)) {
+      const auto args = arguments(begin + 2U, end - 1U);
+      const auto unary = [&](TemporalExpr::Kind kind) {
+        if (args.size() != 1U) fail(tokens_[begin], name + " needs one argument");
+        return make_temporal_unary(kind, segment(args[0].first, args[0].second));
+      };
+      const auto binary = [&](TemporalExpr::Kind kind) {
+        if (args.size() != 2U) fail(tokens_[begin], name + " needs two arguments");
+        return make_temporal_binary(kind,
+                                    segment(args[0].first, args[0].second),
+                                    segment(args[1].first, args[1].second));
+      };
+      if (name == "always") return unary(TemporalExpr::Kind::Always);
+      if (name == "eventually") return unary(TemporalExpr::Kind::Eventually);
+      if (name == "until") return binary(TemporalExpr::Kind::Until);
+      if (name == "since") return binary(TemporalExpr::Kind::Since);
+      if (name == "within") {
+        if (args.size() != 2U || args[0].second - args[0].first != 1U ||
+            tokens_[args[0].first].kind != TokenKind::Integer) {
+          fail(tokens_[begin], "within needs an integer bound and one property");
+        }
+        std::uint64_t bound = 0;
+        const Token& token = tokens_[args[0].first];
+        const auto parsed = std::from_chars(token.text.data(),
+                                            token.text.data() + token.text.size(), bound);
+        if (parsed.ec != std::errc{} || parsed.ptr != token.text.data() + token.text.size()) {
+          fail(token, "invalid within bound");
+        }
+        auto result = make_temporal_unary(
+            TemporalExpr::Kind::Within, segment(args[1].first, args[1].second));
+        result->bound = bound;
+        return result;
+      }
+      if (name == "never") {
+        if (args.size() != 1U) fail(tokens_[begin], "never needs one argument");
+        return make_temporal_unary(
+            TemporalExpr::Kind::Always,
+            make_temporal_unary(TemporalExpr::Kind::Not,
+                                segment(args[0].first, args[0].second)));
+      }
+      if (name == "before") {
+        if (args.size() != 2U) fail(tokens_[begin], "before needs two arguments");
+        // Strict before(first, second): first must occur at a position where
+        // second is still false, and second may not occur earlier.
+        TemporalExprPtr first = segment(args[0].first, args[0].second);
+        TemporalExprPtr second = segment(args[1].first, args[1].second);
+        return make_temporal_binary(
+            TemporalExpr::Kind::Until,
+            make_temporal_unary(TemporalExpr::Kind::Not,
+                                second),
+            make_temporal_binary(
+                TemporalExpr::Kind::And, std::move(first),
+                make_temporal_unary(TemporalExpr::Kind::Not,
+                                    std::move(second))));
+      }
+      // weak_until(p, q) is a library-level definition: (p until q) or
+      // always(p).  The Solver sees only core operators.
+      if (args.size() != 2U) fail(tokens_[begin], "weak_until needs two arguments");
+      TemporalExprPtr left = segment(args[0].first, args[0].second);
+      TemporalExprPtr right = segment(args[1].first, args[1].second);
+      return make_temporal_binary(
+          TemporalExpr::Kind::Or,
+          make_temporal_binary(TemporalExpr::Kind::Until, left, right),
+          make_temporal_unary(TemporalExpr::Kind::Always, std::move(left)));
+    }
+    std::vector<Token> atom(tokens_.begin() + static_cast<std::ptrdiff_t>(begin),
+                            tokens_.begin() + static_cast<std::ptrdiff_t>(end));
+    FlatParser parser(std::move(atom), types_);
+    ExprPtr expression = parser.expression();
+    parser.expect_end();
+    return make_temporal_atom(std::move(expression));
+  }
+
+  std::vector<Token> tokens_;
+  const TypeRegistry& types_;
+};
+
 class Parser {
  public:
   explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
@@ -1114,6 +1328,8 @@ class Parser {
   TraceDeclaration trace(const std::vector<Transition>& transitions);
   ClaimDeclaration claim();
   ProcedureDeclaration procedure();
+  Transition anonymous_transition(std::string_view procedure,
+                                  std::size_t ordinal);
   CompactStateDeclaration compact_state();
   CompactTransitionDeclaration compact_transition();
   CompactProcedureDeclaration compact_procedure();
@@ -1124,6 +1340,8 @@ class Parser {
                      const std::vector<CompactProcedureDeclaration>& procedures,
                      const std::vector<CompactTraceDeclaration>& traces);
   ExprPtr line_expression();
+  TemporalExprPtr line_temporal_expression();
+  TemporalExprPtr block_temporal_expression();
   ExprPtr block_expression();
   std::shared_ptr<ActionExpr> block_action();
   std::vector<Token> take_block_tokens();
@@ -1646,6 +1864,22 @@ ExprPtr Parser::line_expression() {
   return result;
 }
 
+TemporalExprPtr Parser::line_temporal_expression() {
+  std::vector<Token> flat;
+  while (!at(TokenKind::Newline)) {
+    if (at(TokenKind::End)) fail(peek(), "expected end of temporal expression");
+    flat.push_back(take());
+  }
+  newline();
+  TemporalParser parser(std::move(flat), types_);
+  return parser.expression();
+}
+
+TemporalExprPtr Parser::block_temporal_expression() {
+  TemporalParser parser(take_block_tokens(), types_);
+  return parser.expression();
+}
+
 ExprPtr Parser::block_expression() {
   FlatParser parser(take_block_tokens(), types_);
   auto result = parser.expression();
@@ -1880,6 +2114,7 @@ Transition Parser::transition() {
       indent();
       ExprPtr condition = make_literal(Value(true));
       std::shared_ptr<ActionExpr> action;
+      TemporalExprPtr obligation;
       while (!at(TokenKind::Dedent)) {
         if (match("where")) {
           expect(":");
@@ -1922,7 +2157,12 @@ Transition Parser::transition() {
           action = block_action();
           continue;
         }
-        fail(peek(), "case path requires where, set, or do");
+        if (match("ensure")) {
+          expect(":");
+          obligation = block_temporal_expression();
+          continue;
+        }
+        fail(peek(), "case path requires where, set, do, or ensure");
       }
       dedent();
       for (auto& source : sources) {
@@ -1932,10 +2172,12 @@ Transition Parser::transition() {
           result.case_name = case_name;
           result.condition = condition;
           result.action = action;
+          result.obligation = obligation;
           first_route = false;
         } else {
           result.alternatives.push_back(TransitionAlternative{
-              case_name, std::move(source), targets, condition, action, {}, {}});
+              case_name, std::move(source), targets, condition, action,
+              obligation, {}, {}});
         }
       }
       continue;
@@ -2033,7 +2275,16 @@ Transition Parser::transition() {
       result.action = block_action();
       continue;
     }
-    fail(peek(), "expected case, set, from, to, where, or do");
+    if (match("ensure")) {
+      expect(":");
+      TemporalExprPtr obligation = block_temporal_expression();
+      result.obligation = obligation;
+      for (TransitionAlternative& alternative : result.alternatives) {
+        alternative.obligation = obligation;
+      }
+      continue;
+    }
+    fail(peek(), "expected case, set, from, to, where, do, or ensure");
   }
   dedent();
   return result;
@@ -2256,6 +2507,90 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
   return result;
 }
 
+Transition Parser::anonymous_transition(std::string_view procedure,
+                                        std::size_t ordinal) {
+  const Token start = peek();
+  Transition result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = std::string(procedure) + "_lambda_" + std::to_string(ordinal);
+  result.procedure_scope = std::string(procedure);
+  result.event = result.name;
+  const auto binding = [&]() {
+    StateBinding item;
+    const Token token = peek();
+    item.line = token.line;
+    item.column = token.column;
+    item.state = identifier();
+    if (match("@")) item.context = identifier();
+    return item;
+  };
+  expect("(");
+  if (!match(")")) {
+    do result.from.push_back(binding()); while (match(","));
+    expect(")");
+  }
+  expect("->");
+  expect("(");
+  if (!match(")")) {
+    do result.to.push_back(TransitionTarget{binding(), {}}); while (match(","));
+    expect(")");
+  }
+  expect(":");
+  newline();
+  indent();
+  while (!at(TokenKind::Dedent)) {
+    if (match("where")) {
+      expect(":");
+      result.condition = block_expression();
+      continue;
+    }
+    if (match("set")) {
+      expect("@");
+      const Token context_token = peek();
+      const std::string context = identifier();
+      const auto target = std::find_if(
+          result.to.begin(), result.to.end(), [&](const TransitionTarget& item) {
+            return item.binding.context == context;
+          });
+      if (target == result.to.end()) {
+        fail(context_token, "anonymous transition set has no target @" + context);
+      }
+      expect(":");
+      newline();
+      indent();
+      while (!at(TokenKind::Dedent)) {
+        Assignment assignment;
+        const Token assignment_start = peek();
+        assignment.line = assignment_start.line;
+        assignment.column = assignment_start.column;
+        assignment.field = identifier();
+        expect("=");
+        assignment.value = line_expression();
+        target->assignments.push_back(std::move(assignment));
+      }
+      dedent();
+      continue;
+    }
+    if (match("do")) {
+      expect(":");
+      result.action = block_action();
+      continue;
+    }
+    if (match("ensure")) {
+      expect(":");
+      result.obligation = block_temporal_expression();
+      continue;
+    }
+    fail(peek(), "anonymous transition requires where, set, do, or ensure");
+  }
+  dedent();
+  if (result.from.empty() || result.to.empty()) {
+    fail(start, "anonymous transition requires non-empty source and target sets");
+  }
+  return result;
+}
+
 ProcedureDeclaration Parser::procedure() {
   const Token start = peek();
   expect("procedure");
@@ -2283,6 +2618,14 @@ ProcedureDeclaration Parser::procedure() {
     expect(")");
   }
   newline();
+  std::size_t ordinal = 1U;
+  while (!at(TokenKind::Dedent)) {
+    if (!at("(")) {
+      fail(peek(), "procedure body accepts only initial and anonymous (from)->(to) transitions");
+    }
+    result.anonymous_transitions.push_back(
+        anonymous_transition(result.name, ordinal++));
+  }
   dedent();
   if (result.initial_states.empty()) {
     fail(start, "procedure requires at least one initial state");
@@ -2298,20 +2641,87 @@ ClaimDeclaration Parser::claim() {
   result.column = start.column;
   result.name = identifier();
   expect("@");
-  result.trace = identifier();
+  if (match("trace")) {
+    result.target_kind = ClaimDeclaration::TargetKind::Trace;
+    result.target = identifier();
+  } else if (match("state")) {
+    result.target_kind = ClaimDeclaration::TargetKind::State;
+    result.target = identifier();
+  } else if (match("procedure")) {
+    result.target_kind = ClaimDeclaration::TargetKind::Procedure;
+    result.target = identifier();
+  } else {
+    // v0.3 compatibility: an untyped target after @ denotes a trace.
+    result.target_kind = ClaimDeclaration::TargetKind::Trace;
+    result.target = identifier();
+  }
+  if (match("@")) {
+    expect("(");
+    if (!match(")")) {
+      do result.contexts.push_back(identifier()); while (match(","));
+      expect(")");
+    }
+  }
   expect(":");
   newline();
   indent();
-  if (match("always")) {
-    result.kind = ClaimDeclaration::Kind::Always;
+  if (at("always") && peek(1).text == ":") {
+    take();
     expect(":");
-    result.predicate = block_expression();
-  } else if (match("eventually")) {
-    result.kind = ClaimDeclaration::Kind::Eventually;
+    result.property = make_temporal_unary(TemporalExpr::Kind::Always,
+                                          make_temporal_atom(block_expression()));
+  } else if (at("eventually") && peek(1).text == ":") {
+    take();
     expect(":");
-    result.predicate = block_expression();
+    result.property = make_temporal_unary(TemporalExpr::Kind::Eventually,
+                                          make_temporal_atom(block_expression()));
+  } else if (at("until") && peek(1).text == ":") {
+    take();
+    expect(":");
+    newline();
+    indent();
+    expect("hold");
+    expect(":");
+    ExprPtr hold = block_expression();
+    expect("release");
+    expect(":");
+    ExprPtr release = block_expression();
+    dedent();
+    result.property = make_temporal_binary(
+        TemporalExpr::Kind::Until, make_temporal_atom(std::move(hold)),
+        make_temporal_atom(std::move(release)));
+  } else if (at("within") && peek(1).kind == TokenKind::Integer) {
+    take();
+    if (!at(TokenKind::Integer)) fail(peek(), "within requires a non-negative round bound");
+    const Token bound = take();
+    std::uint64_t value = 0;
+    const auto parsed = std::from_chars(bound.text.data(),
+                                        bound.text.data() + bound.text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != bound.text.data() + bound.text.size()) {
+      fail(bound, "invalid within bound");
+    }
+    expect(":");
+    auto property = make_temporal_unary(TemporalExpr::Kind::Within,
+                                        make_temporal_atom(block_expression()));
+    property->bound = value;
+    result.property = std::move(property);
+  } else if (at("since") && peek(1).text == ":") {
+    take();
+    expect(":");
+    newline();
+    indent();
+    expect("hold");
+    expect(":");
+    ExprPtr hold = block_expression();
+    expect("origin");
+    expect(":");
+    ExprPtr origin = block_expression();
+    dedent();
+    result.property = make_temporal_binary(
+        TemporalExpr::Kind::Since, make_temporal_atom(std::move(hold)),
+        make_temporal_atom(std::move(origin)));
   } else if (match("count")) {
-    result.kind = ClaimDeclaration::Kind::CountAtMost;
+    result.count_at_most = true;
     result.transition = identifier();
     if (match(".")) result.transition += "." + identifier();
     expect("<=");
@@ -2324,8 +2734,9 @@ ClaimDeclaration Parser::claim() {
     }
     newline();
   } else {
-    fail(peek(), "Claim requires always:, eventually:, or count Transition <= N");
+    result.property = line_temporal_expression();
   }
+  if (!at(TokenKind::Dedent)) fail(peek(), "Claim has more than one property");
   dedent();
   return result;
 }
@@ -2771,6 +3182,11 @@ std::shared_ptr<Program::Impl> Parser::program() {
         compact_procedures.push_back(compact_procedure());
       } else {
         ProcedureDeclaration declaration = procedure();
+        result->transitions.insert(
+            result->transitions.end(),
+            std::make_move_iterator(declaration.anonymous_transitions.begin()),
+            std::make_move_iterator(declaration.anonymous_transitions.end()));
+        declaration.anonymous_transitions.clear();
         if (!result->procedures.emplace(declaration.name, std::move(declaration)).second) {
           fail(peek(), "duplicate procedure declaration");
         }
@@ -3630,6 +4046,36 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
   }
 }
 
+void verify_temporal_expression(const TemporalExprPtr& expression,
+                                const TypeEnvironment& state,
+                                const TypeRegistry& types) {
+  if (!expression) throw Error("missing temporal expression");
+  if (expression->kind == TemporalExpr::Kind::Atom) {
+    if (!expression->atom ||
+        infer_type(expression->atom, state, {}, {}, types).kind !=
+            DataType::Kind::Bool) {
+      throw Error("temporal atom must be bool", expression->line,
+                  expression->column);
+    }
+    return;
+  }
+  if (!expression->left) {
+    throw Error("temporal operator is missing an operand", expression->line,
+                expression->column);
+  }
+  verify_temporal_expression(expression->left, state, types);
+  if (expression->kind == TemporalExpr::Kind::And ||
+      expression->kind == TemporalExpr::Kind::Or ||
+      expression->kind == TemporalExpr::Kind::Until ||
+      expression->kind == TemporalExpr::Kind::Since) {
+    if (!expression->right) {
+      throw Error("binary temporal operator is missing an operand",
+                  expression->line, expression->column);
+    }
+    verify_temporal_expression(expression->right, state, types);
+  }
+}
+
 std::string state_key(std::string_view context, std::string_view field) {
   return context.empty() ? std::string(field)
                          : std::string(context) + "." + std::string(field);
@@ -3838,7 +4284,7 @@ void verify_program(Program::Impl& program) {
     raw_routes.push_back(TransitionAlternative{transition.case_name,
                                                transition.from, transition.to,
                                                transition.condition, transition.action,
-                                               {}, {}});
+                                               transition.obligation, {}, {}});
     raw_routes.insert(raw_routes.end(), transition.alternatives.begin(),
                       transition.alternatives.end());
     std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>> case_names;
@@ -3884,7 +4330,7 @@ void verify_program(Program::Impl& program) {
       for (auto& source : sources) {
         expanded_routes.push_back(TransitionAlternative{raw.name, std::move(source), raw.to,
                                                         raw.condition, raw.action,
-                                                        {}, {}});
+                                                        raw.obligation, {}, {}});
       }
     }
     transition.from = std::move(expanded_routes.front().from);
@@ -3892,6 +4338,7 @@ void verify_program(Program::Impl& program) {
     transition.case_name = std::move(expanded_routes.front().name);
     transition.condition = std::move(expanded_routes.front().condition);
     transition.action = std::move(expanded_routes.front().action);
+    transition.obligation = std::move(expanded_routes.front().obligation);
     transition.alternatives.assign(
         std::make_move_iterator(expanded_routes.begin() + 1),
         std::make_move_iterator(expanded_routes.end()));
@@ -3900,16 +4347,19 @@ void verify_program(Program::Impl& program) {
       std::vector<TransitionTarget>* targets;
       ExprPtr* condition;
       std::shared_ptr<ActionExpr>* action;
+      TemporalExprPtr* obligation;
       std::set<std::string, std::less<>>* reads;
       std::set<std::string, std::less<>>* writes;
     };
     std::vector<RouteRef> routes;
     routes.push_back(RouteRef{&transition.from, &transition.to,
                               &transition.condition, &transition.action,
+                              &transition.obligation,
                               &transition.reads, &transition.writes});
     for (TransitionAlternative& alternative : transition.alternatives) {
       routes.push_back(RouteRef{&alternative.from, &alternative.to,
                                 &alternative.condition, &alternative.action,
+                                &alternative.obligation,
                                 &alternative.reads, &alternative.writes});
     }
     const bool legacy_single = std::all_of(
@@ -4047,6 +4497,26 @@ void verify_program(Program::Impl& program) {
           DataType::Kind::Bool) {
         throw Error("where clause in transition '" + transition.name + "' must be bool",
                     (*route.condition)->line, (*route.condition)->column);
+      }
+      if (*route.obligation) {
+        TypeEnvironment obligation_types = local_types;
+        for (const TransitionTarget& target : *route.targets) {
+          const State& target_state = find_state(program, target.binding.state);
+          for (const Field& field : target_state.fields) {
+            const std::string qualified =
+                state_key(target.binding.context, field.name);
+            const auto [found, inserted] =
+                obligation_types.emplace(qualified, field.type);
+            if (!inserted && found->second != field.type) {
+              throw Error("transition ensure sees incompatible field type '" +
+                              qualified + "'",
+                          transition.line, transition.column);
+            }
+            if (legacy_single) obligation_types.emplace(field.name, field.type);
+          }
+        }
+        verify_temporal_expression(*route.obligation, obligation_types,
+                                   program.types);
       }
     }
     for (const RouteRef& route : routes) {
@@ -4281,12 +4751,53 @@ void verify_program(Program::Impl& program) {
     if (!names.insert(claim.name).second) {
       throw Error("duplicate Claim '" + claim.name + "'", claim.line, claim.column);
     }
-    if (std::none_of(program.traces.begin(), program.traces.end(),
-                     [&](const TraceDeclaration& trace) { return trace.name == claim.trace; })) {
-      throw Error("Claim references unknown trace '" + claim.trace + "'",
+    const State* claimed_state = nullptr;
+    if (claim.target_kind == ClaimDeclaration::TargetKind::Trace) {
+      if (std::none_of(program.traces.begin(), program.traces.end(),
+                       [&](const TraceDeclaration& trace) {
+                         return trace.name == claim.target;
+                       })) {
+        throw Error("Claim references unknown trace '" + claim.target + "'",
+                    claim.line, claim.column);
+      }
+    } else if (claim.target_kind == ClaimDeclaration::TargetKind::State) {
+      claimed_state = &find_state(program, claim.target);
+    } else if (!program.procedures.contains(claim.target)) {
+      throw Error("Claim references unknown procedure '" + claim.target + "'",
                   claim.line, claim.column);
     }
-    if (claim.kind == ClaimDeclaration::Kind::CountAtMost) {
+    std::set<std::string, std::less<>> selected_contexts;
+    for (const std::string& context : claim.contexts) {
+      if (!program.context_index.contains(context)) {
+        throw Error("Claim selects unknown context @" + context,
+                    claim.line, claim.column);
+      }
+      if (!selected_contexts.insert(context).second) {
+        throw Error("Claim selects context @" + context + " more than once",
+                    claim.line, claim.column);
+      }
+    }
+    if (claimed_state != nullptr && !claim.contexts.empty() &&
+        !selected_contexts.contains(claimed_state->context)) {
+      throw Error("state Claim scope omits @" + claimed_state->context,
+                  claim.line, claim.column);
+    }
+    if (claim.target_kind == ClaimDeclaration::TargetKind::Procedure &&
+        !claim.contexts.empty()) {
+      std::set<std::string, std::less<>> procedure_contexts;
+      for (const StateBinding& binding :
+           program.procedures.at(claim.target).initial_states) {
+        procedure_contexts.insert(binding.context);
+      }
+      for (const std::string& context : claim.contexts) {
+        if (!procedure_contexts.contains(context)) {
+          throw Error("procedure Claim scope @" + context +
+                          " is not in its initial state combination",
+                      claim.line, claim.column);
+        }
+      }
+    }
+    if (claim.count_at_most) {
       const bool base_transition = std::any_of(
           program.transitions.begin(), program.transitions.end(),
           [&](const Transition& transition) { return transition.name == claim.transition; });
@@ -4294,10 +4805,7 @@ void verify_program(Program::Impl& program) {
         throw Error("Claim references unknown transition '" + claim.transition + "'",
                     claim.line, claim.column);
       }
-    } else if (infer_type(claim.predicate, claim_types, {}, {}, program.types).kind !=
-               DataType::Kind::Bool) {
-      throw Error("Claim predicate must be bool", claim.line, claim.column);
-    }
+    } else verify_temporal_expression(claim.property, claim_types, program.types);
   }
 }
 
@@ -5557,6 +6065,15 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
   for (const MatchArm& arm : expr->arms) collect_features(arm.body, features);
 }
 
+void collect_temporal_features(const TemporalExprPtr& expression,
+                               FeatureSet& features) {
+  if (!expression) return;
+  features.insert(LanguageFeature::TemporalLogic);
+  collect_features(expression->atom, features);
+  collect_temporal_features(expression->left, features);
+  collect_temporal_features(expression->right, features);
+}
+
 void collect_action_features(const std::shared_ptr<ActionExpr>& action,
                              FeatureSet& features) {
   if (!action) return;
@@ -5657,6 +6174,10 @@ FeatureSet required_features(const Program& program) {
   }
   for (const Transition& transition : implementation.transitions) {
     collect_features(transition.condition, result);
+    collect_temporal_features(transition.obligation, result);
+    if (!transition.procedure_scope.empty()) {
+      result.insert(LanguageFeature::ProcedureLambda);
+    }
     if (transition.optimized_score) {
       result.insert(LanguageFeature::OptimizedTransition);
       collect_features(transition.optimized_score, result);
@@ -5671,6 +6192,7 @@ FeatureSet required_features(const Program& program) {
     collect_targets(transition.to);
     for (const TransitionAlternative& alternative : transition.alternatives) {
       collect_features(alternative.condition, result);
+      collect_temporal_features(alternative.obligation, result);
       collect_targets(alternative.to);
       collect_action_features(alternative.action, result);
     }
@@ -5685,6 +6207,22 @@ FeatureSet required_features(const Program& program) {
   }
   if (!implementation.traces.empty()) result.insert(LanguageFeature::TypedTrace);
   if (!implementation.claims.empty()) result.insert(LanguageFeature::TraceClaims);
+  for (const ClaimDeclaration& claim : implementation.claims) {
+    collect_temporal_features(claim.property, result);
+  }
+  if (std::any_of(implementation.transitions.begin(),
+                  implementation.transitions.end(),
+                  [](const Transition& transition) {
+                    if (transition.obligation) return true;
+                    return std::any_of(
+                        transition.alternatives.begin(),
+                        transition.alternatives.end(),
+                        [](const TransitionAlternative& alternative) {
+                          return static_cast<bool>(alternative.obligation);
+                        });
+                  })) {
+    result.insert(LanguageFeature::TransitionObligation);
+  }
   if (!implementation.functions.empty()) result.insert(LanguageFeature::PureFunctions);
   if (!implementation.procedures.empty()) result.insert(LanguageFeature::ProcedureEntry);
   return result;
@@ -5769,6 +6307,9 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::PureFunctions: return "pure-functions";
     case LanguageFeature::ProcedureEntry: return "procedure-entry";
     case LanguageFeature::OptimizedTransition: return "optimized-transition";
+    case LanguageFeature::TemporalLogic: return "temporal-logic";
+    case LanguageFeature::ProcedureLambda: return "procedure-lambda";
+    case LanguageFeature::TransitionObligation: return "transition-obligation";
   }
   return "unknown";
 }

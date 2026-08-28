@@ -1,0 +1,49 @@
+state Cold initial:
+  started: bool = false
+  done: bool = false
+
+state Warm:
+  started: bool = true
+  done: bool = false
+
+state Complete:
+  started: bool = true
+  done: bool = true
+
+transition Start():
+  case begin (Cold) -> (Warm):
+    where:
+      true
+
+transition Finish():
+  case finish (Warm) -> (Complete):
+    where:
+      true
+
+procedure Run @ local:
+  initial (Cold)
+
+trace History:
+  replay:
+    inject Start() @ Run -> Start.begin
+    inject Finish() @ Run -> Finish.finish
+  capture closed:
+    procedure (Run)
+
+Claim Safe @ trace History:
+  always(not done or started)
+
+Claim Finishes @ trace History:
+  eventually(done)
+
+Claim WarmUntilDone @ trace History:
+  until(not done, done)
+
+Claim FinishesWithinTwo @ trace History:
+  within(2, done)
+
+Claim StartedSinceStart @ trace History:
+  eventually(since(started, started))
+
+Claim NoFailure @ trace History:
+  never(done and not started)
