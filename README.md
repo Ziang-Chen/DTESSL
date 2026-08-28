@@ -1,4 +1,4 @@
-# DTESSL v0.3.1
+# DTESSL v0.3.2
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -101,9 +101,16 @@ state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
 field       = Name ":" type "=" literal [ "merge" ( "equal" | "union" ) ] NEWLINE ;
 invariant   = "invariant" ":" INDENT expression DEDENT ;
 
-transition  = "transition" Name [ "@" Name ] "(" [ parameter { "," parameter } ] ")" ":" INDENT
+transition  = "transition" Name transition-head ":" INDENT
                 case { case }
               DEDENT ;
+transition-head = "(" [ parameter { "," parameter } ] ")"
+                    [ "@" scope optimizer ]
+                | "@" scope optimizer
+                    "(" [ parameter { "," parameter } ] ")"
+                | "@" legacy-event
+                    "(" [ parameter { "," parameter } ] ")" ;
+optimizer   = "[" "optimized_score" "=" expression "]" ;
 case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                 [ "where" ":" INDENT expression DEDENT ]
                 [ "set" ":" INDENT
@@ -183,7 +190,7 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `case` 表示候选 path 的析取；`{Idle, Waiting} @ scheduler` 是有限模式，`_ @ scheduler`
 是该轴的通配模式。模式在验证阶段展开为有限候选；目标侧只接受精确状态，生产执行中
 绝不从多个目标中暗选。`where` 是 path-local 的动态 typed guard，`set` 与 `do` 也只属于
-被唯一选中的 path。可选的 case 名形成 `Transition.caseName` 规范身份，供 trace 捕获和
+被唯一选中或显式优化选中的 path。可选的 case 名形成 `Transition.caseName` 规范身份，供 trace 捕获和
 `Claim count` 精确引用；不写名字的单 path 仍使用 transition 名。v0 旧式
 `from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
 `set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
@@ -191,6 +198,26 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `transition Dispatch(task: Task)` 同时定义可注入的消息/transition 类型；不再需要另一套
 Event 名。旧式 `transition Dispatch @ Tick(task: Task)` 暂时保留给普通 Event API 兼容，
 但 procedure 的 `inject` 始终按 `Dispatch` 这个 TransitionId 寻址。
+
+需要允许多个候选 path 时，必须显式给出优化目标：
+
+```dtessl
+function utility(value: int) -> int:
+  value
+
+transition Choose @ scheduler [optimized_score = utility(scheduler.score - before.scheduler.score)]():
+  case low (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 2 @ scheduler
+  case high (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 9 @ scheduler
+```
+
+score 在每个候选的拟提交后状态上计算，必须返回精确 `int` 或 `rational`，最高分获选。
+最高分并列会拒绝整个 round；没有 `optimized_score` 时仍保持“恰好一个候选”的规则。
+`@ scheduler` 是优化读取和比较的显式状态 scope，不是权限。输出会保存选中的 score，
+因此 replay 可同时验证路径和优化证据。
 
 `trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。正式 replay
 输入是 `inject Transition(...) @ Procedure` typed transition occurrence；一行就是一个
@@ -322,7 +349,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.3.1 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.3.2 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
 下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
 与可替换 solver backend。

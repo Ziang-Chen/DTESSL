@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.3.1` state/trace slice.
+- **Implemented**: accepted and executed through the `v0.3.2` state/trace slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -39,6 +39,8 @@ inject typed transition occurrence
   -> TransitionId index
   -> active-state-signature case index
   -> evaluate dynamic where predicates
+  -> unique candidate, or explicit optimized_score maximum
+  -> reject an equal best score
   -> choose a deterministic conflict-free set
   -> commit one causal-DAG round
   -> repeat until quiescent
@@ -67,8 +69,24 @@ trace ResumeExample:
 The transition declaration is the message schema. `inject` creates a typed
 occurrence addressed by TransitionId and places it in the target procedure's
 pending set. Static case topology and dynamic `where` are the admission/search
-rules. The engine, not the replay source, selects the unique path. The optional
-arrow is only a derived-path assertion.
+rules. The engine, not the replay source, selects either the sole path or the
+unique optimum under an explicit score. The optional arrow is only a
+derived-path assertion.
+
+Multiple enabled candidates are legal only under an explicit transition
+optimizer:
+
+```dtessl
+transition Choose @ scheduler [optimized_score = utility(scheduler.score - before.scheduler.score)]():
+  case low  (Idle @ scheduler) -> (Idle @ scheduler): ...
+  case high (Idle @ scheduler) -> (Idle @ scheduler): ...
+```
+
+The score expression is typed against the declared `@scope`, event parameters
+and pure functions, then evaluated over each candidate's proposed after-state.
+It must produce an exact `int` or `rational`; the greatest value wins. Equal
+greatest values remain a deterministic ambiguity and reject the round. With no
+optimizer, the original exactly-one-enabled-candidate invariant remains.
 
 The v0.3 native closure is deliberately conservative: a selected state or path
 first identifies its owning procedure instances, then capture retains each

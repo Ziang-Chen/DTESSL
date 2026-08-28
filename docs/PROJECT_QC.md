@@ -8,18 +8,16 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: gate `v0.3.1` procedure/runtime split and indexed transition search on a DTESSL-only branch
+- Current target: gate `v0.3.2` explicit optimized transition selection on a DTESSL-only branch
 - Stop orders: none
 
 ## Current state
 
-**Complete.** The `v0.3.1` implementation separates source parsing/verification
-from backend execution, removes procedure-local admission syntax, injects exact
-typed TransitionId occurrences, and indexes both transition identity and static
-active-state signatures before dynamic `where` evaluation. Standard,
-`-Werror` and ASan/UBSan suites pass 23/23. Implementation commit `5c0f042` is
-pushed on `codex/frontend-runtime-split-v0-3-1`; this QC closeout records that
-exact implementation identity.
+**Candidate.** The `v0.3.2` implementation permits multiple enabled candidates
+only under an explicit exact-numeric after-state optimizer, selects the unique
+greatest score, rejects ties atomically, and retains the exactly-one rule for
+unannotated transitions. Standard, `-Werror` and ASan/UBSan suites pass 25/25;
+the scoped commit and pushed-SHA evidence remain before closeout.
 
 ## Current goal contract
 
@@ -56,7 +54,7 @@ exact implementation identity.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.3.1` | Built CLI reports `v0.3.1` | pass |
+| Version identity | CMake/generated header target `0.3.2` | Built CLI reports `v0.3.2` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
 | Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
 | Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
@@ -83,6 +81,7 @@ exact implementation identity.
 | Search replay | A named transition path may be asserted only as derived evidence, never forced | `Transition.case(...) @ Procedure` and explicit `SearchExpectation` both re-enter ordinary search | pass |
 | Transition occurrence injection | Exact TransitionId plus typed fields are appended to a started procedure; no direct state mutation or case selection | Same Event family is ambiguous through legacy dispatch but exact TransitionId injection selects only its own family | pass |
 | Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
+| Explicit optimized choice | Typed exact after-state score, greatest unique winner, tie rollback and unchanged unannotated ambiguity rule | Runnable `optimized_transition.dtessl`, feature/plan/output evidence and positive/tie/type-error tests; all three suites pass 25/25 | pass |
 | Frontend/runtime source split | Lexing/parsing/type verification live in `src/frontend.cpp`; round/procedure/replay/search execution lives in `src/runtime.cpp` | One public parser and one runtime semantics remain; standard suite passes | pass |
 | Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Closed path/state seed retains whole matching procedure; projected capture emits no artifact | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
@@ -94,7 +93,7 @@ exact implementation identity.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-- No blocker remains in the v0.3.1 slice. Canonical AST serialization remains a
+- No blocker remains in the v0.3.2 implementation. Canonical AST serialization remains a
   later P0 milestone dependency, not a blocker for this private-AST split.
 
 ## Risks
@@ -188,3 +187,7 @@ exact implementation identity.
 - 2026-08-28: backend search now resolves TransitionId/event family and the
   current active-state signature through indexes before evaluating dynamic
   `where`. Replay's optional case name is an assertion, never a forced path.
+- 2026-08-28: `v0.3.2` relaxes exactly-one selection only under explicit
+  `transition @ scope [optimized_score=...]`. Scores observe candidate
+  after-state, the unique greatest exact score wins, and ties reject without
+  committing state or RoundId.

@@ -135,6 +135,8 @@ ParallelStepResult Engine::step_inputs_at(
     std::map<std::string, std::string, std::less<>> targets;
     ActionPlan actions;
     std::set<std::string, std::less<>> causal_predecessors;
+    std::string optimization_scope;
+    std::optional<Value> optimized_score;
   };
   std::vector<Prepared> prepared;
   prepared.reserve(inputs.size());
@@ -228,55 +230,135 @@ ParallelStepResult Engine::step_inputs_at(
       throw Error("no transition accepts event '" + event.name + "' from active state set " +
                   current_state());
     }
-    if (enabled.size() != 1) {
-      throw Error("event '" + event.name +
-                  "' enables multiple transitions from active state set " + current_state());
-    }
-
-    const Enabled selected = enabled.front();
-    const Transition& transition = *selected.transition;
-    const State& source = find_state(program, selected.from->front().state);
-    Environment environment{values_, &event, {}, round_id - 1U};
-    Prepared decision{&transition, selected.case_name, selected.from, selected.to,
-                      selected.reads, selected.writes, {}, {}, {}, {}};
-    for (const std::string& field : *selected.reads) {
-      const auto writers = last_writers_.find(field);
-      if (writers != last_writers_.end()) {
-        decision.causal_predecessors.insert(writers->second.begin(), writers->second.end());
+    const auto prepare = [&](const Enabled& candidate) {
+      const Transition& transition = *candidate.transition;
+      const State& source = find_state(program, candidate.from->front().state);
+      Environment environment{values_, &event, {}, round_id - 1U};
+      Prepared decision{&transition, candidate.case_name, candidate.from, candidate.to,
+                        candidate.reads, candidate.writes, {}, {}, {}, {}, {}, {}};
+      for (const std::string& field : *candidate.reads) {
+        const auto writers = last_writers_.find(field);
+        if (writers != last_writers_.end()) {
+          decision.causal_predecessors.insert(writers->second.begin(),
+                                              writers->second.end());
+        }
       }
-    }
-    for (const TransitionTarget& target : *selected.to) {
-      const State& target_state = find_state(program, target.binding.state);
-      const bool legacy_single = selected.from->size() == 1U && selected.to->size() == 1U;
-      decision.targets.emplace(target.binding.context, target.binding.state);
-      const auto active = active_states_.find(target.binding.context);
-      if (active == active_states_.end() || active->second != target.binding.state) {
-        for (const auto& [field, value] : initial_values(target_state)) {
+      for (const TransitionTarget& target : *candidate.to) {
+        const State& target_state = find_state(program, target.binding.state);
+        const bool single_context = active_states_.size() == 1U;
+        decision.targets.emplace(target.binding.context, target.binding.state);
+        const auto active = active_states_.find(target.binding.context);
+        if (active == active_states_.end() || active->second != target.binding.state) {
+          for (const auto& [field, value] : initial_values(target_state)) {
+            decision.writes.insert_or_assign(
+                single_context ? field : state_key(target.binding.context, field), value);
+          }
+        }
+        for (const Assignment& assignment : target.assignments) {
+          Value value = evaluate(assignment.value, environment);
+          const Field& field = find_field(target_state, assignment.field);
+          if (!value_matches_type(value, field.type, program.types)) {
+            throw Error("assignment to '" + assignment.field + "' has the wrong type");
+          }
           decision.writes.insert_or_assign(
-              legacy_single ? field : state_key(target.binding.context, field), value);
+              single_context ? assignment.field
+                             : state_key(target.binding.context, assignment.field),
+              std::move(value));
         }
       }
-      for (const Assignment& assignment : target.assignments) {
-        Value value = evaluate(assignment.value, environment);
-        const Field& field = find_field(target_state, assignment.field);
-        if (!value_matches_type(value, field.type, program.types)) {
-          throw Error("assignment to '" + assignment.field + "' has the wrong type");
+      if (*candidate.action) {
+        std::unordered_set<std::string> labels;
+        build_plan(*candidate.action, environment, source, decision.actions, labels);
+        std::sort(decision.actions.dependencies.begin(), decision.actions.dependencies.end());
+        decision.actions.dependencies.erase(
+            std::unique(decision.actions.dependencies.begin(),
+                        decision.actions.dependencies.end()),
+            decision.actions.dependencies.end());
+      }
+      if (transition.optimized_score) {
+        std::map<std::string, std::string, std::less<>> candidate_active = active_states_;
+        for (const auto& [context, target] : decision.targets) {
+          candidate_active.insert_or_assign(context, target);
         }
-        decision.writes.insert_or_assign(
-            legacy_single ? assignment.field
-                          : state_key(target.binding.context, assignment.field),
-            std::move(value));
+        std::map<std::string, Value, std::less<>> candidate_state = values_;
+        for (const auto& [context, target_state] : candidate_active) {
+          const auto previous = active_states_.find(context);
+          if (previous == active_states_.end() || previous->second == target_state) continue;
+          const State& old_state = find_state(program, previous->second);
+          for (const Field& field : old_state.fields) {
+            candidate_state.erase(active_states_.size() == 1U
+                                      ? field.name
+                                      : state_key(context, field.name));
+          }
+        }
+        for (const auto& [field, value] : decision.writes) {
+          candidate_state.insert_or_assign(field, value);
+        }
+        std::map<std::string, Value, std::less<>> score_state = candidate_state;
+        std::map<std::string, Value, std::less<>> score_before = values_;
+        if (active_states_.size() == 1U) {
+          const State& target_state = find_state(
+              program, candidate_active.at(transition.optimization_scope));
+          for (const Field& field : target_state.fields) {
+            const auto value = candidate_state.find(field.name);
+            if (value != candidate_state.end()) {
+              score_state.insert_or_assign(
+                  state_key(transition.optimization_scope, field.name), value->second);
+            }
+          }
+          const State& before_scope_state = find_state(
+              program, active_states_.at(transition.optimization_scope));
+          for (const Field& field : before_scope_state.fields) {
+            const auto value = values_.find(field.name);
+            if (value != values_.end()) {
+              score_before.insert_or_assign(
+                  state_key(transition.optimization_scope, field.name), value->second);
+            }
+          }
+        }
+        Environment score_environment{score_state, &event, {}, round_id - 1U,
+                                      &score_before};
+        Value score = evaluate(transition.optimized_score, score_environment);
+        if (!is_exact_numeric(score)) {
+          throw Error("optimized_score for transition '" + transition.name +
+                      "' did not evaluate to an exact number");
+        }
+        decision.optimization_scope = transition.optimization_scope;
+        decision.optimized_score = std::move(score);
+      }
+      return decision;
+    };
+
+    std::vector<Prepared> candidates;
+    candidates.reserve(enabled.size());
+    for (const Enabled& candidate : enabled) candidates.push_back(prepare(candidate));
+    std::size_t selected_index = 0;
+    if (candidates.size() > 1U) {
+      const std::string& scope = candidates.front().optimization_scope;
+      if (scope.empty() ||
+          std::any_of(candidates.begin(), candidates.end(), [&](const Prepared& candidate) {
+            return !candidate.optimized_score || candidate.optimization_scope != scope;
+          })) {
+        throw Error("event '" + event.name +
+                    "' enables multiple transitions without one common optimized_score scope");
+      }
+      bool tied = false;
+      for (std::size_t index = 1; index < candidates.size(); ++index) {
+        const int order = compare_values(*candidates[index].optimized_score,
+                                         *candidates[selected_index].optimized_score);
+        if (order > 0) {
+          selected_index = index;
+          tied = false;
+        } else if (order == 0) {
+          tied = true;
+        }
+      }
+      if (tied) {
+        throw Error("optimized_score ties multiple transitions for event '" +
+                    event.name + "' in @" + scope);
       }
     }
-    if (*selected.action) {
-      std::unordered_set<std::string> labels;
-      build_plan(*selected.action, environment, source, decision.actions, labels);
-      std::sort(decision.actions.dependencies.begin(), decision.actions.dependencies.end());
-      decision.actions.dependencies.erase(
-          std::unique(decision.actions.dependencies.begin(), decision.actions.dependencies.end()),
-          decision.actions.dependencies.end());
-    }
-    prepared.push_back(std::move(decision));
+    prepared.push_back(std::move(candidates[selected_index]));
   }
 
   std::map<std::string, std::string, std::less<>> next_active = active_states_;
@@ -364,6 +446,8 @@ ParallelStepResult Engine::step_inputs_at(
     step_result.case_name = *decision.case_name;
     step_result.transition = decision.transition->name;
     if (!step_result.case_name.empty()) step_result.transition += "." + step_result.case_name;
+    step_result.optimization_scope = std::move(decision.optimization_scope);
+    step_result.optimized_score = std::move(decision.optimized_score);
     step_result.from_state = binding_set_text(*decision.from);
     step_result.to_state = target_set_text(*decision.to);
     step_result.active_states = next_active;

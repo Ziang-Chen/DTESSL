@@ -41,6 +41,7 @@ enum class LanguageFeature {
   TraceClaims,
   PureFunctions,
   ProcedureEntry,
+  OptimizedTransition,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

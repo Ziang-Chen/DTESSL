@@ -281,7 +281,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.3.1", "compiled version must be v0.3.1");
+  require(dtessl::version == "0.3.2", "compiled version must be v0.3.2");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1320,6 +1320,86 @@ procedure Indexed @ system:
               indexed_step.transitions.front().transition == "ChooseLeft.stay" &&
               indexed_step.state.at("value").as_int() == 7,
           "TransitionId injection did not bypass unrelated event families");
+
+  constexpr std::string_view optimized_transition = R"DTESSL(
+function utility(value: int) -> int:
+  value
+
+state Idle @ scheduler initial:
+  score: int = 0
+
+transition Choose @ scheduler [optimized_score = utility(scheduler.score - before.scheduler.score)]():
+  case low (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 2 @ scheduler
+  case high (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 9 @ scheduler
+)DTESSL";
+  const dtessl::Program optimized_program = dtessl::parse(optimized_transition);
+  require(dtessl::required_features(optimized_program).contains(
+              dtessl::LanguageFeature::OptimizedTransition),
+          "optimized transition feature discovery is missing");
+  const auto optimized_plans = dtessl::search_plans(optimized_program);
+  require(std::any_of(optimized_plans.begin(), optimized_plans.end(),
+                      [](const dtessl::SearchPlanSummary& plan) {
+                        return plan.operation == "optimized-transition-max" &&
+                               plan.max_rows == 2U && plan.max_work == 2U &&
+                               plan.deterministic && plan.rejects_ambiguous_score;
+                      }),
+          "optimized transition search plan lost its bound or tie policy");
+  dtessl::Engine optimized_engine(optimized_program);
+  const dtessl::StepResult optimized_result = optimized_engine.step_transition(
+      dtessl::TransitionInput{"Choose", {}});
+  require(optimized_result.transition == "Choose.high" &&
+              optimized_result.state.at("score").as_int() == 9 &&
+              optimized_result.optimization_scope == "scheduler" &&
+              optimized_result.optimized_score.has_value() &&
+              optimized_result.optimized_score->as_int() == 9,
+          "optimized transition did not score candidate after-states or select the maximum");
+
+  constexpr std::string_view tied_transition = R"DTESSL(
+state Idle @ scheduler initial:
+  score: int = 0
+
+transition Choose() @ scheduler [optimized_score = scheduler.score]:
+  case left (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 4 @ scheduler
+  case right (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 4 @ scheduler
+)DTESSL";
+  dtessl::Engine tied_engine(dtessl::parse(tied_transition));
+  bool tied_score_rejected = false;
+  try {
+    static_cast<void>(tied_engine.step_transition(
+        dtessl::TransitionInput{"Choose", {}}));
+  } catch (const dtessl::Error&) {
+    tied_score_rejected = true;
+  }
+  require(tied_score_rejected && tied_engine.current_round() == 0U &&
+              tied_engine.values().at("score").as_int() == 0,
+          "equal optimized scores must reject without committing the round");
+
+  constexpr std::string_view non_numeric_score = R"DTESSL(
+state Idle @ scheduler initial:
+  ready: bool = true
+
+transition Bad() @ scheduler [optimized_score = scheduler.ready]:
+  case stay (Idle @ scheduler) -> (Idle @ scheduler):
+    where:
+      true
+)DTESSL";
+  bool non_numeric_score_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(non_numeric_score));
+  } catch (const dtessl::Error&) {
+    non_numeric_score_rejected = true;
+  }
+  require(non_numeric_score_rejected,
+          "optimized_score must reject non-exact-numeric expressions");
+
   const auto persistent_claims =
       dtessl::evaluate_named_trace(persistent_program, "Interleaved");
   require(persistent_claims.size() == 1U &&

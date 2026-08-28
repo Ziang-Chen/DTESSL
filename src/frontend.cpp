@@ -43,7 +43,7 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "by", "lex", "match", "E", "A", "true", "false", "none", "some",
       "ok", "err", "round", "trace", "replay", "capture", "closed",
       "projected", "Claim", "always", "eventually", "case", "function",
-      "procedure", "initial", "inject"};
+      "procedure", "initial", "inject", "optimized_score"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
@@ -484,6 +484,8 @@ struct TransitionAlternative {
 struct Transition {
   std::string name;
   std::string event;
+  std::string optimization_scope;
+  ExprPtr optimized_score;
   std::vector<Parameter> parameters;
   std::string case_name;
   std::vector<StateBinding> from;
@@ -1630,8 +1632,37 @@ Transition Parser::transition() {
   result.line = start.line;
   result.column = start.column;
   result.name = identifier();
-  if (match("@")) result.event = identifier();
-  else result.event = result.name;
+  result.event = result.name;
+  const auto optimization = [&]() {
+    expect("[");
+    expect("optimized_score");
+    expect("=");
+    std::vector<Token> expression_tokens;
+    std::size_t nested_brackets = 0;
+    while (!(at("]") && nested_brackets == 0U)) {
+      if (at(TokenKind::End) || at(TokenKind::Newline)) {
+        fail(peek(), "unterminated optimized_score annotation");
+      }
+      if (at("[")) ++nested_brackets;
+      if (at("]")) --nested_brackets;
+      expression_tokens.push_back(take());
+    }
+    expect("]");
+    if (expression_tokens.empty()) fail(peek(), "optimized_score needs an expression");
+    FlatParser parser(std::move(expression_tokens), types_);
+    result.optimized_score = parser.expression();
+    parser.expect_end();
+  };
+  if (match("@")) {
+    const std::string binding = identifier();
+    if (at("[")) {
+      result.optimization_scope = binding;
+      optimization();
+    } else {
+      // v0 compatibility: the pre-parameter @ name is the legacy Event alias.
+      result.event = binding;
+    }
+  }
   expect("(");
   if (!match(")")) {
     do {
@@ -1645,6 +1676,19 @@ Transition Parser::transition() {
       result.parameters.push_back(std::move(parameter));
     } while (match(","));
     expect(")");
+  }
+  if (match("@")) {
+    if (!result.optimization_scope.empty()) {
+      fail(peek(), "transition repeats optimization scope");
+    }
+    result.optimization_scope = identifier();
+  }
+  if (at("[")) {
+    if (result.optimization_scope.empty()) {
+      fail(peek(), "optimized_score requires an explicit @ scope");
+    }
+    if (result.optimized_score) fail(peek(), "transition repeats optimized_score");
+    optimization();
   }
   expect(":");
   newline();
@@ -3409,6 +3453,51 @@ void verify_program(Program::Impl& program) {
       }
       return result;
     };
+    TypeEnvironment optimization_types;
+    if (transition.optimized_score) {
+      bool scope_found = false;
+      for (const State& state : program.states) {
+        if (state.context != transition.optimization_scope) continue;
+        scope_found = true;
+        for (const Field& field : state.fields) {
+          const std::string qualified =
+              state_key(transition.optimization_scope, field.name);
+          const auto [qualified_type, inserted] =
+              optimization_types.emplace(qualified, field.type);
+          if (!inserted && qualified_type->second != field.type) {
+            throw Error("states in optimization scope @" +
+                            transition.optimization_scope +
+                            " disagree on field type '" + field.name + "'",
+                        transition.line, transition.column);
+          }
+          const auto [local_type, local_inserted] =
+              optimization_types.emplace(field.name, field.type);
+          if (!local_inserted && local_type->second != field.type) {
+            throw Error("states in optimization scope @" +
+                            transition.optimization_scope +
+                            " disagree on field type '" + field.name + "'",
+                        transition.line, transition.column);
+          }
+        }
+      }
+      if (!scope_found) {
+        throw Error("transition optimization references unknown scope @" +
+                        transition.optimization_scope,
+                    transition.line, transition.column);
+      }
+      const DataType score_type = infer_type(
+          transition.optimized_score, optimization_types, event_types, {}, program.types);
+      if (score_type.kind != DataType::Kind::Int &&
+          score_type.kind != DataType::Kind::Rational) {
+        throw Error("optimized_score in transition '" + transition.name +
+                        "' must be int or rational",
+                    transition.optimized_score->line,
+                    transition.optimized_score->column);
+      }
+    } else if (!transition.optimization_scope.empty()) {
+      throw Error("transition @ scope requires optimized_score",
+                  transition.line, transition.column);
+    }
     for (const RouteRef& route : routes) {
       const TypeEnvironment local_types = route_state_types(route);
       if (infer_type(*route.condition, local_types, event_types, {}, program.types).kind !=
@@ -3494,6 +3583,10 @@ void verify_program(Program::Impl& program) {
       }
      }
      collect_action_reads(*route.action, local_types, shadowed, *route.reads);
+     if (transition.optimized_score) {
+       collect_reads(transition.optimized_score, optimization_types, shadowed,
+                     *route.reads);
+     }
     }
   }
   program.transition_index.clear();
@@ -3644,6 +3737,7 @@ struct Environment {
   const Event* event{nullptr};
   std::map<std::string, Value, std::less<>> locals;
   std::uint64_t round{0};
+  const std::map<std::string, Value, std::less<>>* before_state{nullptr};
 };
 
 Value evaluate(const ExprPtr& expr, Environment& environment);
@@ -3878,9 +3972,12 @@ Value resolve_name(const std::string& name, const Environment& environment) {
     }
   }
   if (!found_root) {
+    const auto& state_values = before && environment.before_state != nullptr
+                                   ? *environment.before_state
+                                   : environment.state;
     cursor = 0;
     std::size_t matched = 0;
-    for (const auto& [key, item] : environment.state) {
+    for (const auto& [key, item] : state_values) {
       if (path == key || (path.starts_with(key) && path.size() > key.size() &&
                           path[key.size()] == '.')) {
         if (key.size() > matched) {
@@ -4785,6 +4882,10 @@ std::string result_text(const StepResult& result) {
   }
   out << "decision " << result.id << '\n';
   out << "transition " << result.transition << '\n';
+  if (result.optimized_score) {
+    out << "optimized_score " << value_text(*result.optimized_score)
+        << " @ " << result.optimization_scope << '\n';
+  }
   out << "reads {";
   bool first_read = true;
   for (const std::string& field : result.reads) {
@@ -4986,6 +5087,10 @@ FeatureSet required_features(const Program& program) {
   }
   for (const Transition& transition : implementation.transitions) {
     collect_features(transition.condition, result);
+    if (transition.optimized_score) {
+      result.insert(LanguageFeature::OptimizedTransition);
+      collect_features(transition.optimized_score, result);
+    }
     const auto collect_targets = [&](const std::vector<TransitionTarget>& targets) {
       for (const TransitionTarget& target : targets) {
         for (const Assignment& assignment : target.assignments) {
@@ -5030,6 +5135,12 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
     collect_search_plans(function.body, plans);
   }
   for (const Transition& transition : implementation.transitions) {
+    if (transition.optimized_score) {
+      plans.push_back({"optimized-transition-max",
+                       1U + transition.alternatives.size(),
+                       1U + transition.alternatives.size(), true, true});
+    }
+    collect_search_plans(transition.optimized_score, plans);
     collect_search_plans(transition.condition, plans);
     const auto collect_targets = [&](const std::vector<TransitionTarget>& targets) {
       for (const TransitionTarget& target : targets) {
@@ -5087,6 +5198,7 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::TraceClaims: return "trace-claims";
     case LanguageFeature::PureFunctions: return "pure-functions";
     case LanguageFeature::ProcedureEntry: return "procedure-entry";
+    case LanguageFeature::OptimizedTransition: return "optimized-transition";
   }
   return "unknown";
 }

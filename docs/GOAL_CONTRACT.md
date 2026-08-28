@@ -65,13 +65,16 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.3.1 procedure/runtime boundary
+## Current v0.3.2 optimized-transition boundary
 
 - Work is restricted to the DTESSL repository and the
-  `codex/frontend-runtime-split-v0-3-1` branch.
+  `codex/optimized-transition-v0-3-2` branch.
 - The slice preserves the v0.3.0 state/trace semantics while separating the
   source frontend from runtime execution and making transition-occurrence
   injection explicit.
+- Multiple enabled candidates are accepted only when their transition declares
+  one common `@scope [optimized_score=...]`; the unique greatest exact score is
+  selected from candidate after-states and equal best scores reject atomically.
 - A procedure contains only an initial context identity and initial state
   combination. It owns no nested transition, admission rule, trace or ordered
   execution steps. Starting it creates a persistent isolated instance and

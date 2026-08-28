@@ -1,0 +1,20 @@
+function utility(value: int) -> int:
+  value
+
+state Idle @ scheduler initial:
+  score: int = 0
+
+transition Choose @ scheduler [optimized_score = utility(scheduler.score - before.scheduler.score)]():
+  case conservative (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 2 @ scheduler
+  case preferred (Idle @ scheduler) -> (Idle @ scheduler):
+    set:
+      score = 7 @ scheduler
+
+procedure Scheduler @ system:
+  initial (Idle @ scheduler)
+
+trace Optimized:
+  replay:
+    inject Choose() @ Scheduler -> Choose.preferred

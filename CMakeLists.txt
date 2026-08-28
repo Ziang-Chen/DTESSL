@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.3.1)
+set(DTESSL_VERSION 0.3.2)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -188,4 +188,17 @@ if(DTESSL_BUILD_TESTS)
                    Happy)
   set_tests_properties(dtessl.composite_trace_claims PROPERTIES
                        PASS_REGULAR_EXPRESSION "AtMostOneDispatch satisfied")
+  add_test(NAME dtessl.optimized_transition_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/optimized_transition.dtessl)
+  set_tests_properties(dtessl.optimized_transition_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.optimized_transition_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   trace
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/optimized_transition.dtessl
+                   Optimized)
+  set_tests_properties(dtessl.optimized_transition_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "optimized_score 7 @ scheduler")
 endif()

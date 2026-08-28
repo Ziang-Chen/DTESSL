@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -229,6 +230,10 @@ struct StepResult {
   // Qualified as Transition.caseName when the selected case is named.
   std::string transition;
   std::string case_name;
+  // Present when an explicit transition optimizer resolved the candidate.
+  // Higher exact numeric scores are better; ties are rejected.
+  std::string optimization_scope;
+  std::optional<Value> optimized_score;
   std::string from_state;
   std::string to_state;
   // Active state per explicit @ context after this decision. The empty

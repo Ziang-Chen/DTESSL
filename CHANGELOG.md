@@ -3,6 +3,19 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.3.2
+
+- Added explicit transition optimization syntax
+  `transition Name @ scope [optimized_score = expression](...)`.
+- Relaxed the exactly-one-enabled-candidate rule only for transitions carrying
+  an optimizer. Unannotated ambiguous transitions still reject the round.
+- Scores are evaluated over each candidate's proposed after-state and must be
+  exact `int` or `rational`; the greatest unique score wins.
+- Equal greatest scores reject without state or RoundId commit, preserving
+  deterministic replay.
+- Added replay-visible optimization scope/score evidence, feature discovery,
+  search-plan metadata, a runnable example and positive/tie/type-error tests.
+
 ## v0.3.1
 
 - Split the implementation into `src/frontend.cpp` for lexing, parsing,

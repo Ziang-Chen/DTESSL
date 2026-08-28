@@ -234,6 +234,12 @@ void print_repl_result(
             << result.from_state << " ──▶ " << result.to_state << '\n'
             << "├─ " << styled("Δ state", cyan, color) << '\n';
 
+  if (result.optimized_score) {
+    std::cout << "│ " << styled("optimized", dim, color) << ' '
+              << dtessl::value_text(*result.optimized_score) << " @ "
+              << result.optimization_scope << '\n';
+  }
+
   bool changed = false;
   for (const auto& [name, after] : result.state) {
     const auto found = before.find(name);
@@ -364,7 +370,7 @@ void repl_help() {
       << "  :reset                   rebuild the engine from edited source\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.3.1 syntax:\n"
+      << "\ncore v0.3.2 syntax:\n"
       << "  name T / T(atom)         nominal logical names\n"
       << "  ~T / ~(A,B) / ~{...}     finite relations and literals\n"
       << "  item ~ relation          membership/binding in E/A/select\n"
@@ -576,7 +582,7 @@ void usage(std::ostream& out) {
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.3.1: TransitionId inject, indexed state-case search, causal rounds,\n"
+      << "core v0.3.2: explicit optimized_score selection, indexed search, causal rounds,\n"
       << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
 }
 
