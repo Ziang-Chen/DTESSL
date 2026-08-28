@@ -13,9 +13,10 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**Released slice.** `v0.2.1` adds explicit SemanticDescriptor validation, typed
-action ports, canonical source/digest/coverage artifacts and native EventTrace
-logical replay. Standard, `-Werror`, ASan/UBSan and installed CLI gates pass.
+**Released slice.** `v0.2.2` adds a shared language-service pipeline,
+versioned edits, structured diagnostics, production-lexer highlighting and an
+interactive REPL/editor on top of the `v0.2.1` validation foundation. Standard,
+`-Werror`, ASan/UBSan and CLI gates pass.
 This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
@@ -53,7 +54,7 @@ This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.2.1` | Installed CLI reports `v0.2.1` | pass |
+| Version identity | CMake/generated header/CLI/test at `0.2.2` | CLI reports `v0.2.2` | pass |
 | Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 7/7; installed graph replay/plans pass | pass |
 | Explicit model projection | Canonical descriptor parse/print, origin digest, provenance and classified-gap checks | Scheduler projection generates checked DTESSL | pass |
 | Generated source evidence | Stable descriptor/source SHA-256 and complete nonblank-line source map | CLI check/source-map/manifest exercised | pass |
@@ -61,6 +62,10 @@ This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Lifecycle mappings | Unique field/phase/literal checks and generated literal typecheck | string lifecycle fixture passes; int literal rejects | pass |
 | Native EventTrace replay | Bounded typed batches, empty-batch rejection and fresh-engine equality | Two-round logical state/action replay passes | pass |
 | Runtime-log exclusion | No log, receipt, snapshot or journal types/adapters in public API | Descriptor contains explicit external-runtime gap | pass |
+| Shared language pipeline | `analyze_source` runs the production lexer/parser/verifier | CLI highlight and REPL check agree with `dtessl check` fixtures | pass |
+| Editor document model | Monotonic versions, validated UTF-8 byte ranges and non-overlapping snapshot edits | Replace and stale-version tests pass | pass |
+| Located diagnostics | Lex/parse/semantic categories retain source ranges and stable codes | Parser and wrong-type assignment locations asserted | pass |
+| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and engine invalidation implemented | Scripted append/replace/undo/redo/check path passes | pass |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
@@ -125,3 +130,7 @@ There is no external blocker for the `v0.3.0` gate.
   generation/evidence, typed ports and native multi-round replay, with no
   runtime-log, receipt, snapshot or journal adapter; standard, `-Werror` and
   ASan/UBSan suites pass 10/10 and installed CLI evidence passes.
+- 2026-08-28: `v0.2.2` established the reusable language-service/document
+  boundary and REPL/editor/highlighting surface; standard and ASan/UBSan suites
+  pass 11/11. LSP transport, symbol indexing and incremental parsing remain a
+  later tooling gate rather than a parallel parser implementation.

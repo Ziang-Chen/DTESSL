@@ -1,4 +1,4 @@
-# DTESSL v0.2.1
+# DTESSL v0.2.2
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -17,6 +17,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [Exact Numeric Profile v1](docs/EXACT_NUMERIC_PROFILE_V1.md)
 - [Relation and Search Profile v1](docs/RELATION_SEARCH_V1.md)
 - [SemanticDescriptor Projection v1](docs/SEMANTIC_DESCRIPTOR_V1.md)
+- [Language Service 与 REPL](docs/LANGUAGE_SERVICE.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
@@ -204,6 +205,8 @@ build/dtessl check examples/scheduler.dtessl
 build/dtessl version
 build/dtessl features examples/scheduler.dtessl
 build/dtessl plans examples/relations.dtessl
+build/dtessl highlight examples/scheduler.dtessl
+build/dtessl repl examples/scheduler.dtessl
 build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay-batch examples/scheduler.dtessl \
@@ -225,7 +228,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.2.1 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.2.2 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
 下一个增量进入完整 state theory 与多组件 transition，随后扩展原生 typed EventTrace，
 最后才加入稀疏矩阵与可替换 solver backend。

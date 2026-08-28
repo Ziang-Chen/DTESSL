@@ -3,6 +3,23 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.2.2
+
+- Added a public language-service API with UTF-8 byte ranges, syntax classes,
+  stable diagnostic codes and versioned document snapshots.
+- Syntax highlighting and diagnostics now run through the production lexer,
+  parser and semantic verifier instead of an editor-only grammar.
+- Added ordered, non-overlapping text edits plus an in-memory document store
+  suitable for a future LSP transport adapter.
+- Added `dtessl highlight` and an interactive `dtessl repl` workbench with
+  multi-line insertion/replacement/deletion, undo/redo, load/save, history,
+  verification, highlighting and persistent logical event execution.
+- REPL event execution renders a colored decision card with state deltas,
+  access sets, causal predecessors and the ActionPlan dependency graph.
+- Added a dependency-free terminal line editor with arrow-key history and
+  cursor navigation plus standard Ctrl-A/E/U/K/W/L/C/D editing controls.
+- Added language-service and CLI highlighting acceptance tests.
+
 ## v0.2.1
 
 - Added canonical, serializable `SemanticDescriptor v1` for model projections

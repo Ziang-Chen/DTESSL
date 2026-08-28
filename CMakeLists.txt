@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.2.1)
+set(DTESSL_VERSION 0.2.2)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -11,6 +11,7 @@ option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 add_library(dtessl
   src/exact_numeric.cpp
   src/dtessl.cpp
+  src/language_service.cpp
   src/semantic_descriptor.cpp
   src/value_codec.cpp)
 configure_file(include/dtessl/version.hpp.in
@@ -27,7 +28,9 @@ else()
   target_compile_options(dtessl PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
 endif()
 
-add_executable(dtessl_cli tools/dtessl.cpp)
+add_executable(dtessl_cli
+  tools/dtessl.cpp
+  tools/line_editor.cpp)
 target_link_libraries(dtessl_cli PRIVATE dtessl)
 set_target_properties(dtessl_cli PROPERTIES OUTPUT_NAME dtessl)
 install(TARGETS dtessl_cli RUNTIME DESTINATION bin)
@@ -52,6 +55,12 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.dtessl)
   set_tests_properties(dtessl.cli_features PROPERTIES
                        PASS_REGULAR_EXPRESSION "parallel-event-bag")
+  add_test(NAME dtessl.cli_highlight
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   highlight
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.dtessl)
+  set_tests_properties(dtessl.cli_highlight PROPERTIES
+                       PASS_REGULAR_EXPRESSION "keyword state")
   add_test(NAME dtessl.cli_algebraic_replay
            COMMAND $<TARGET_FILE:dtessl_cli>
                    replay

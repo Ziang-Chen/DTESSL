@@ -1,5 +1,6 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
+#include "dtessl/language_service.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -22,17 +23,48 @@ struct Token {
   std::string text;
   std::size_t line;
   std::size_t column;
+  std::size_t offset{0};
+  std::size_t length{0};
 };
 
 [[noreturn]] void fail(const Token& token, const std::string& message) {
   throw Error(message, token.line, token.column);
 }
 
-std::vector<Token> lex(std::string_view source) {
+SyntaxClass identifier_syntax(std::string_view text) {
+  static const std::unordered_set<std::string_view> builtin_types{
+      "bool", "int", "rational", "string", "list", "set", "map", "bag",
+      "tuple", "relation", "option", "result"};
+  static const std::unordered_set<std::string_view> keywords{
+      "name", "record", "variant", "enum", "newtype", "port", "state", "initial",
+      "invariant", "transition", "from", "to", "where", "do", "merge",
+      "equal", "union", "and", "or", "not", "in", "exists", "select",
+      "by", "lex", "match", "E", "A", "true", "false", "none", "some",
+      "ok", "err", "round"};
+  if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
+  if (keywords.contains(text)) return SyntaxClass::Keyword;
+  return SyntaxClass::Identifier;
+}
+
+SourceRange source_range(std::size_t line, std::size_t column,
+                         std::size_t offset, std::size_t length) {
+  return {{line, column, offset}, {line, column + length, offset + length}};
+}
+
+std::vector<Token> lex(std::string_view source,
+                       std::vector<HighlightToken>* highlights = nullptr) {
   std::vector<Token> result;
   std::vector<std::size_t> indents{0};
   std::size_t offset = 0;
   std::size_t line_number = 1;
+
+  const auto highlight = [&](SyntaxClass syntax, std::size_t column,
+                             std::size_t absolute_offset, std::size_t length) {
+    if (highlights != nullptr && length != 0) {
+      highlights->push_back(
+          {syntax, source_range(line_number, column, absolute_offset, length)});
+    }
+  };
 
   while (offset <= source.size()) {
     const std::size_t line_end = source.find('\n', offset);
@@ -56,15 +88,19 @@ std::vector<Token> lex(std::string_view source) {
     while (first < line.size() && std::isspace(static_cast<unsigned char>(line[first])) != 0) {
       ++first;
     }
-    const bool blank = first == line.size() || line.substr(first, 2) == "//";
+    const bool comment_only = first < line.size() && line.substr(first, 2) == "//";
+    if (comment_only) {
+      highlight(SyntaxClass::Comment, first + 1, offset + first, line.size() - first);
+    }
+    const bool blank = first == line.size() || comment_only;
     if (!blank) {
       if (indent > indents.back()) {
         indents.push_back(indent);
-        result.push_back({TokenKind::Indent, "<indent>", line_number, 1});
+        result.push_back({TokenKind::Indent, "<indent>", line_number, 1, offset, 0});
       } else {
         while (indent < indents.back()) {
           indents.pop_back();
-          result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1});
+          result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1, offset, 0});
         }
         if (indent != indents.back()) {
           throw Error("indentation does not match an outer block", line_number, 1);
@@ -79,6 +115,8 @@ std::vector<Token> lex(std::string_view source) {
           continue;
         }
         if (line.substr(cursor, 2) == "//") {
+          highlight(SyntaxClass::Comment, cursor + 1, offset + cursor,
+                    line.size() - cursor);
           break;
         }
         const std::size_t column = cursor + 1;
@@ -91,8 +129,10 @@ std::vector<Token> lex(std::string_view source) {
             }
             ++cursor;
           }
-          result.push_back({TokenKind::Identifier, std::string(line.substr(begin, cursor - begin)),
-                            line_number, column});
+          const std::string text(line.substr(begin, cursor - begin));
+          result.push_back({TokenKind::Identifier, text, line_number, column,
+                            offset + begin, cursor - begin});
+          highlight(identifier_syntax(text), column, offset + begin, cursor - begin);
           continue;
         }
         if (std::isdigit(ch) != 0) {
@@ -102,10 +142,12 @@ std::vector<Token> lex(std::string_view source) {
             ++cursor;
           }
           result.push_back({TokenKind::Integer, std::string(line.substr(begin, cursor - begin)),
-                            line_number, column});
+                            line_number, column, offset + begin, cursor - begin});
+          highlight(SyntaxClass::Number, column, offset + begin, cursor - begin);
           continue;
         }
         if (ch == '"') {
+          const std::size_t begin = cursor;
           ++cursor;
           std::string value;
           bool closed = false;
@@ -135,26 +177,36 @@ std::vector<Token> lex(std::string_view source) {
           if (!closed) {
             throw Error("unterminated string", line_number, column);
           }
-          result.push_back({TokenKind::String, std::move(value), line_number, column});
+          result.push_back({TokenKind::String, std::move(value), line_number, column,
+                            offset + begin, cursor - begin});
+          highlight(SyntaxClass::String, column, offset + begin, cursor - begin);
           continue;
         }
 
         const std::string_view two = line.substr(cursor, 2);
         if (two == "<=" || two == ">=" || two == "!=" || two == "==" || two == "->") {
-          result.push_back({TokenKind::Symbol, std::string(two), line_number, column});
+          result.push_back({TokenKind::Symbol, std::string(two), line_number, column,
+                            offset + cursor, 2});
+          highlight(SyntaxClass::Operator, column, offset + cursor, 2);
           cursor += 2;
           continue;
         }
-        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.*" "/";
+        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.*~/";
         if (symbols.find(static_cast<char>(ch)) != std::string_view::npos) {
           result.push_back({TokenKind::Symbol, std::string(1, static_cast<char>(ch)), line_number,
-                            column});
+                            column, offset + cursor, 1});
+          static constexpr std::string_view operators = "|<>=+-*/~";
+          highlight(operators.find(static_cast<char>(ch)) != std::string_view::npos
+                        ? SyntaxClass::Operator
+                        : SyntaxClass::Punctuation,
+                    column, offset + cursor, 1);
           ++cursor;
           continue;
         }
         throw Error("unexpected character", line_number, column);
       }
-      result.push_back({TokenKind::Newline, "<newline>", line_number, line.size() + 1});
+      result.push_back({TokenKind::Newline, "<newline>", line_number, line.size() + 1,
+                        offset + line.size(), 0});
     }
 
     if (line_end == std::string_view::npos) {
@@ -166,9 +218,10 @@ std::vector<Token> lex(std::string_view source) {
 
   while (indents.size() > 1) {
     indents.pop_back();
-    result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1});
+    result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1,
+                      source.size(), 0});
   }
-  result.push_back({TokenKind::End, "<end>", line_number, 1});
+  result.push_back({TokenKind::End, "<end>", line_number, 1, source.size(), 0});
   return result;
 }
 
@@ -279,19 +332,25 @@ struct Expr {
   std::vector<MatchArm> arms;
   std::optional<DataType> type_argument;
   std::optional<DataType> resolved_type;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
-ExprPtr make_literal(Value value) {
+ExprPtr make_literal(Value value, std::size_t line = 0, std::size_t column = 0) {
   auto expr = std::make_shared<Expr>();
   expr->kind = Expr::Kind::Literal;
   expr->literal = std::move(value);
+  expr->line = line;
+  expr->column = column;
   return expr;
 }
 
-ExprPtr make_name(std::string name) {
+ExprPtr make_name(std::string name, std::size_t line = 0, std::size_t column = 0) {
   auto expr = std::make_shared<Expr>();
   expr->kind = Expr::Kind::Name;
   expr->text = std::move(name);
+  expr->line = line;
+  expr->column = column;
   return expr;
 }
 
@@ -300,6 +359,8 @@ ExprPtr make_unary(std::string op, ExprPtr operand) {
   expr->kind = Expr::Kind::Unary;
   expr->text = std::move(op);
   expr->left = std::move(operand);
+  expr->line = expr->left ? expr->left->line : 0;
+  expr->column = expr->left ? expr->left->column : 0;
   return expr;
 }
 
@@ -309,6 +370,8 @@ ExprPtr make_binary(std::string op, ExprPtr left, ExprPtr right) {
   expr->text = std::move(op);
   expr->left = std::move(left);
   expr->right = std::move(right);
+  expr->line = expr->left ? expr->left->line : 0;
+  expr->column = expr->left ? expr->left->column : 0;
   return expr;
 }
 
@@ -318,6 +381,8 @@ struct Field {
   DataType type;
   Value initial;
   Merge merge{Merge::Reject};
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 struct State {
@@ -326,16 +391,22 @@ struct State {
   bool initial{false};
   std::vector<Field> fields;
   std::vector<ExprPtr> invariants;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 struct Parameter {
   std::string name;
   DataType type;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 struct ActionPortDeclaration {
   std::string name;
   std::vector<DataType> parameters;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 struct ActionExpr {
@@ -351,6 +422,8 @@ struct ActionExpr {
 struct Assignment {
   std::string field;
   ExprPtr value;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 struct Transition {
@@ -364,6 +437,8 @@ struct Transition {
   std::shared_ptr<ActionExpr> action;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 class FlatParser {
@@ -537,7 +612,8 @@ class FlatParser {
     }
     if (peek().text == "exists" || peek().text == "E" || peek().text == "all" ||
         peek().text == "A") {
-      const std::string quantifier = take().text;
+      const Token start = take();
+      const std::string quantifier = start.text;
       const std::string variable = identifier().text;
       expect("in");
       auto domain = parse_add();
@@ -550,9 +626,12 @@ class FlatParser {
       result->text = variable;
       result->left = std::move(domain);
       result->right = std::move(predicate);
+      result->line = start.line;
+      result->column = start.column;
       return result;
     }
-    if (match("select")) {
+    if (peek().text == "select") {
+      const Token start = take();
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::Select;
       result->text = identifier().text;
@@ -567,11 +646,16 @@ class FlatParser {
         result->children.push_back(parse_or());
       } while (match(","));
       expect(")");
+      result->line = start.line;
+      result->column = start.column;
       return result;
     }
-    if (match("match")) {
+    if (peek().text == "match") {
+      const Token start = take();
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::Match;
+      result->line = start.line;
+      result->column = start.column;
       if (match("(")) {
         result->left = parse_or();
         expect(")");
@@ -600,16 +684,20 @@ class FlatParser {
       expect("}");
       return result;
     }
-    if (match("count")) {
+    if (peek().text == "count") {
+      const Token start = take();
       expect("(");
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::Count;
       result->left = parse_or();
       expect(")");
+      result->line = start.line;
+      result->column = start.column;
       return result;
     }
     if (peek().text == "insert" || peek().text == "erase") {
-      const bool inserting = take().text == "insert";
+      const Token start = take();
+      const bool inserting = start.text == "insert";
       expect("(");
       auto result = std::make_shared<Expr>();
       result->kind = inserting ? Expr::Kind::SetInsert : Expr::Kind::SetErase;
@@ -617,24 +705,29 @@ class FlatParser {
       expect(",");
       result->right = parse_or();
       expect(")");
+      result->line = start.line;
+      result->column = start.column;
       return result;
     }
     if (peek().kind == TokenKind::Integer) {
       const Token token = take();
       try {
-        return make_literal(Value(ExactInt::parse(token.text)));
+        return make_literal(Value(ExactInt::parse(token.text)), token.line, token.column);
       } catch (const Error& error) {
         fail(token, error.what());
       }
     }
     if (peek().kind == TokenKind::String) {
-      return make_literal(Value(take().text));
+      const Token token = take();
+      return make_literal(Value(token.text), token.line, token.column);
     }
-    if (match("true")) {
-      return make_literal(Value(true));
+    if (peek().text == "true") {
+      const Token token = take();
+      return make_literal(Value(true), token.line, token.column);
     }
-    if (match("false")) {
-      return make_literal(Value(false));
+    if (peek().text == "false") {
+      const Token token = take();
+      return make_literal(Value(false), token.line, token.column);
     }
     Token name = identifier();
     std::string path = std::move(name.text);
@@ -650,6 +743,8 @@ class FlatParser {
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::RecordConstruct;
       result->text = std::move(path);
+      result->line = name.line;
+      result->column = name.column;
       if (!match("}")) {
         do {
           result->names.push_back(identifier().text);
@@ -665,6 +760,8 @@ class FlatParser {
       result->kind = Expr::Kind::Construct;
       result->text = std::move(path);
       result->type_argument = std::move(type_argument);
+      result->line = name.line;
+      result->column = name.column;
       if (!match(")")) {
         do {
           result->children.push_back(parse_or());
@@ -686,11 +783,13 @@ class FlatParser {
           auto result = std::make_shared<Expr>();
           result->kind = Expr::Kind::Construct;
           result->text = std::move(path);
+          result->line = name.line;
+          result->column = name.column;
           return result;
         }
       }
     }
-    return make_name(std::move(path));
+    return make_name(std::move(path), name.line, name.column);
   }
 
   std::shared_ptr<ActionExpr> parse_parallel() {
@@ -944,8 +1043,11 @@ TypeDefinition Parser::type_definition() {
 }
 
 ActionPortDeclaration Parser::action_port_declaration() {
+  const Token start = peek();
   expect("port");
   ActionPortDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
   result.name = identifier();
   while (match(".")) result.name += "." + identifier();
   expect("(");
@@ -1223,8 +1325,11 @@ std::shared_ptr<ActionExpr> Parser::block_action() {
 }
 
 State Parser::state() {
+  const Token start = peek();
   expect("state");
   State result;
+  result.line = start.line;
+  result.column = start.column;
   result.name = identifier();
   if (match("@")) result.context = identifier();
   result.initial = match("initial");
@@ -1238,7 +1343,10 @@ State Parser::state() {
       continue;
     }
     Field field{"", bool_type(), Value(false), Field::Merge::Reject};
+    const Token field_start = peek();
     field.name = identifier();
+    field.line = field_start.line;
+    field.column = field_start.column;
     expect(":");
     field.type = type();
     expect("=");
@@ -1259,8 +1367,11 @@ State Parser::state() {
 }
 
 Transition Parser::transition() {
+  const Token start = peek();
   expect("transition");
   Transition result;
+  result.line = start.line;
+  result.column = start.column;
   result.name = identifier();
   expect("@");
   result.event = identifier();
@@ -1268,7 +1379,10 @@ Transition Parser::transition() {
   if (!match(")")) {
     do {
       Parameter parameter;
+      const Token parameter_start = peek();
       parameter.name = identifier();
+      parameter.line = parameter_start.line;
+      parameter.column = parameter_start.column;
       expect(":");
       parameter.type = type();
       result.parameters.push_back(std::move(parameter));
@@ -1291,7 +1405,10 @@ Transition Parser::transition() {
       indent();
       while (!at(TokenKind::Dedent)) {
         Assignment assignment;
+        const Token assignment_start = peek();
         assignment.field = identifier();
+        assignment.line = assignment_start.line;
+        assignment.column = assignment_start.column;
         expect("=");
         assignment.value = line_expression();
         result.assignments.push_back(std::move(assignment));
@@ -1516,7 +1633,11 @@ using ActionPortRegistry =
 
 DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
                     const TypeEnvironment& event, TypeEnvironment locals,
-                    const TypeRegistry& types) {
+                    const TypeRegistry& types);
+
+DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
+                         const TypeEnvironment& event, TypeEnvironment locals,
+                         const TypeRegistry& types) {
   if (!expr) throw Error("missing expression");
   switch (expr->kind) {
     case Expr::Kind::Literal: return value_type(*expr->literal);
@@ -1959,6 +2080,19 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
   throw Error("invalid expression");
 }
 
+DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
+                    const TypeEnvironment& event, TypeEnvironment locals,
+                    const TypeRegistry& types) {
+  try {
+    return infer_type_impl(expr, state, event, std::move(locals), types);
+  } catch (const Error& error) {
+    if (error.line() == 0 && expr && expr->line != 0) {
+      throw Error(error.what(), expr->line, expr->column);
+    }
+    throw;
+  }
+}
+
 void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironment& state,
                    const TypeEnvironment& event, std::unordered_set<std::string>& labels,
                    const TypeRegistry& types, const ActionPortRegistry& ports) {
@@ -2075,40 +2209,57 @@ void verify_program(Program::Impl& program) {
   ActionPortRegistry action_ports;
   for (const ActionPortDeclaration& port : program.action_ports) {
     if (!action_ports.emplace(port.name, port.parameters).second) {
-      throw Error("duplicate typed action port '" + port.name + "'");
+      throw Error("duplicate typed action port '" + port.name + "'", port.line, port.column);
     }
   }
   std::size_t initial_count = 0;
   for (const State& state : program.states) {
-    if (!names.insert(state.name).second) throw Error("duplicate state '" + state.name + "'");
+    if (!names.insert(state.name).second) {
+      throw Error("duplicate state '" + state.name + "'", state.line, state.column);
+    }
     initial_count += state.initial ? 1U : 0U;
     std::unordered_set<std::string> fields;
     for (const Field& field : state.fields) {
       if (!fields.insert(field.name).second) {
-        throw Error("duplicate field '" + field.name + "' in state '" + state.name + "'");
+        throw Error("duplicate field '" + field.name + "' in state '" + state.name + "'",
+                    field.line, field.column);
       }
     }
   }
-  if (initial_count != 1) throw Error("program must have exactly one initial state");
+  if (initial_count != 1) {
+    throw Error("program must have exactly one initial state", program.states.front().line,
+                program.states.front().column);
+  }
 
   names.clear();
   std::map<std::string, std::vector<Parameter>, std::less<>> event_schemas;
   for (Transition& transition : program.transitions) {
     if (!names.insert(transition.name).second) {
-      throw Error("duplicate transition '" + transition.name + "'");
+      throw Error("duplicate transition '" + transition.name + "'", transition.line,
+                  transition.column);
     }
     if (transition.from.empty() || transition.to.empty()) {
-      throw Error("transition '" + transition.name + "' needs from and to");
+      throw Error("transition '" + transition.name + "' needs from and to", transition.line,
+                  transition.column);
     }
-    const State& source = find_state(program, transition.from);
-    const State& target = find_state(program, transition.to);
+    const State* source_pointer = nullptr;
+    const State* target_pointer = nullptr;
+    try {
+      source_pointer = &find_state(program, transition.from);
+      target_pointer = &find_state(program, transition.to);
+    } catch (const Error& error) {
+      throw Error(error.what(), transition.line, transition.column);
+    }
+    const State& source = *source_pointer;
+    const State& target = *target_pointer;
     TypeEnvironment state_types;
     for (const Field& field : source.fields) state_types.emplace(field.name, field.type);
     std::unordered_set<std::string> parameters;
     TypeEnvironment event_types;
     for (const Parameter& parameter : transition.parameters) {
       if (!parameters.insert(parameter.name).second) {
-        throw Error("duplicate event parameter '" + parameter.name + "'");
+        throw Error("duplicate event parameter '" + parameter.name + "'", parameter.line,
+                    parameter.column);
       }
       event_types.emplace(parameter.name, parameter.type);
     }
@@ -2116,32 +2267,48 @@ void verify_program(Program::Impl& program) {
     if (!inserted) {
       const auto& previous = schema->second;
       if (previous.size() != transition.parameters.size()) {
-        throw Error("event '" + transition.event + "' has inconsistent schemas");
+        throw Error("event '" + transition.event + "' has inconsistent schemas",
+                    transition.line, transition.column);
       }
       for (std::size_t index = 0; index < previous.size(); ++index) {
         if (previous[index].name != transition.parameters[index].name ||
             previous[index].type != transition.parameters[index].type) {
-          throw Error("event '" + transition.event + "' has inconsistent schemas");
+          throw Error("event '" + transition.event + "' has inconsistent schemas",
+                      transition.line, transition.column);
         }
       }
     }
     if (infer_type(transition.condition, state_types, event_types, {}, program.types).kind !=
         DataType::Kind::Bool) {
-      throw Error("where clause in transition '" + transition.name + "' must be bool");
+      throw Error("where clause in transition '" + transition.name + "' must be bool",
+                  transition.condition->line, transition.condition->column);
     }
     std::unordered_set<std::string> assigned;
     for (const Assignment& assignment : transition.assignments) {
-      const Field& field = find_field(target, assignment.field);
+      const Field* field_pointer = nullptr;
+      try {
+        field_pointer = &find_field(target, assignment.field);
+      } catch (const Error& error) {
+        throw Error(error.what(), assignment.line, assignment.column);
+      }
+      const Field& field = *field_pointer;
       if (!assigned.insert(assignment.field).second) {
-        throw Error("field '" + assignment.field + "' is assigned twice");
+        throw Error("field '" + assignment.field + "' is assigned twice", assignment.line,
+                    assignment.column);
       }
       if (infer_type(assignment.value, state_types, event_types, {}, program.types) != field.type) {
-        throw Error("assignment to '" + assignment.field + "' has the wrong type");
+        throw Error("assignment to '" + assignment.field + "' has the wrong type",
+                    assignment.line, assignment.column);
       }
     }
     std::unordered_set<std::string> labels;
-    verify_action(transition.action, state_types, event_types, labels, program.types,
-                  action_ports);
+    try {
+      verify_action(transition.action, state_types, event_types, labels, program.types,
+                    action_ports);
+    } catch (const Error& error) {
+      if (error.line() != 0) throw;
+      throw Error(error.what(), transition.line, transition.column);
+    }
 
     std::set<std::string, std::less<>> shadowed;
     for (const Parameter& parameter : transition.parameters) shadowed.insert(parameter.name);
@@ -2160,7 +2327,8 @@ void verify_program(Program::Impl& program) {
     for (const Field& field : state.fields) state_types.emplace(field.name, field.type);
     for (const ExprPtr& invariant : state.invariants) {
       if (infer_type(invariant, state_types, {}, {}, program.types).kind != DataType::Kind::Bool) {
-        throw Error("invariant in state '" + state.name + "' must be bool");
+        throw Error("invariant in state '" + state.name + "' must be bool", invariant->line,
+                    invariant->column);
       }
     }
   }
@@ -3655,6 +3823,85 @@ std::string_view projection_name(Projection projection) noexcept {
     case Projection::FormalExport: return "formal-export";
   }
   return "unknown";
+}
+
+namespace {
+
+SourcePosition position_at(std::string_view source, std::size_t offset) {
+  if (offset > source.size()) throw Error("source position is outside the document");
+  SourcePosition position{1, 1, offset};
+  for (std::size_t index = 0; index < offset; ++index) {
+    if (source[index] == '\n') {
+      ++position.line;
+      position.column = 1;
+    } else {
+      ++position.column;
+    }
+  }
+  return position;
+}
+
+SourcePosition position_from_line_column(std::string_view source, std::size_t line,
+                                         std::size_t column) {
+  if (line == 0 || column == 0) return position_at(source, 0);
+  std::size_t current_line = 1;
+  std::size_t offset = 0;
+  while (current_line < line && offset < source.size()) {
+    if (source[offset++] == '\n') ++current_line;
+  }
+  if (current_line != line) return position_at(source, source.size());
+  const std::size_t line_start = offset;
+  while (offset < source.size() && source[offset] != '\n' &&
+         offset - line_start + 1 < column) {
+    ++offset;
+  }
+  return position_at(source, offset);
+}
+
+Diagnostic error_diagnostic(std::string_view source, const Error& error,
+                            std::string code) {
+  const SourcePosition start = position_from_line_column(
+      source, error.line() == 0 ? 1 : error.line(), error.column() == 0 ? 1 : error.column());
+  const std::size_t length =
+      start.offset < source.size() && source[start.offset] != '\n' ? 1U : 0U;
+  const SourcePosition end = position_at(source, start.offset + length);
+  return {std::move(code), DiagnosticSeverity::Error, error.what(), {start, end}};
+}
+
+}  // namespace
+
+LanguageAnalysis analyze_source(std::string_view source, std::string uri,
+                                std::uint64_t version) {
+  LanguageAnalysis result;
+  result.uri = std::move(uri);
+  result.version = version;
+  std::vector<Token> tokens;
+  try {
+    tokens = lex(source, &result.highlights);
+  } catch (const Error& error) {
+    result.diagnostics.push_back(error_diagnostic(source, error, "DTESSL1001"));
+    return result;
+  }
+
+  std::shared_ptr<Program::Impl> implementation;
+  try {
+    Parser parser(std::move(tokens));
+    implementation = parser.program();
+  } catch (const Error& error) {
+    result.diagnostics.push_back(error_diagnostic(source, error, "DTESSL1002"));
+    return result;
+  }
+
+  try {
+    verify_program(*implementation);
+    const auto initial = std::find_if(
+        implementation->states.begin(), implementation->states.end(),
+        [](const State& state) { return state.initial; });
+    verify_invariants(*initial, initial_values(*initial), 0);
+  } catch (const Error& error) {
+    result.diagnostics.push_back(error_diagnostic(source, error, "DTESSL2001"));
+  }
+  return result;
 }
 
 }  // namespace dtessl

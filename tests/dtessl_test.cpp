@@ -1,5 +1,6 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
+#include "dtessl/language_service.hpp"
 #include "dtessl/scratch_pool.hpp"
 #include "dtessl/semantic_descriptor.hpp"
 #include "dtessl/value_codec.hpp"
@@ -243,7 +244,74 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.2.1", "compiled version must be v0.2.1");
+  require(dtessl::version == "0.2.2", "compiled version must be v0.2.2");
+  constexpr std::string_view language_source =
+      "// model\nstate Model initial:\n  value: int = 1\n";
+  const dtessl::LanguageAnalysis language_analysis =
+      dtessl::analyze_source(language_source, "test://model", 7);
+  require(language_analysis.valid() && language_analysis.version == 7 &&
+              language_analysis.uri == "test://model" &&
+              std::any_of(language_analysis.highlights.begin(),
+                          language_analysis.highlights.end(), [](const auto& token) {
+                            return token.syntax == dtessl::SyntaxClass::Comment;
+                          }) &&
+              std::any_of(language_analysis.highlights.begin(),
+                          language_analysis.highlights.end(), [](const auto& token) {
+                            return token.syntax == dtessl::SyntaxClass::BuiltinType;
+                          }),
+          "language service did not reuse the parser or classify syntax spans");
+  const dtessl::LanguageAnalysis syntax_error =
+      dtessl::analyze_source("state Broken initial\n", "test://broken", 1);
+  require(!syntax_error.valid() && syntax_error.diagnostics.size() == 1 &&
+              syntax_error.diagnostics.front().code == "DTESSL1002" &&
+              syntax_error.diagnostics.front().range.start.line == 1,
+          "language service did not return a stable located parser diagnostic");
+  constexpr std::string_view future_relation_source =
+      "name WorkerId\nstate Model initial:\n  workers: ~int = ~{}\n";
+  const dtessl::LanguageAnalysis future_relation_syntax =
+      dtessl::analyze_source(future_relation_source);
+  const std::size_t relation_operator = future_relation_source.find('~');
+  require(std::any_of(future_relation_syntax.highlights.begin(),
+                      future_relation_syntax.highlights.end(), [&](const auto& token) {
+                        return token.syntax == dtessl::SyntaxClass::Operator &&
+                               token.range.start.offset == relation_operator;
+                      }),
+          "language lexer did not preserve the upstream relation operator for tooling");
+  constexpr std::string_view semantic_error_source =
+      "state Model initial:\n"
+      "  value: int = 1\n"
+      "\n"
+      "transition Break @ Go(text: string):\n"
+      "  from Model\n"
+      "  to Model:\n"
+      "    value = text\n";
+  const dtessl::LanguageAnalysis semantic_error =
+      dtessl::analyze_source(semantic_error_source, "test://semantic", 1);
+  require(!semantic_error.valid() && semantic_error.diagnostics.front().code ==
+              "DTESSL2001" &&
+              semantic_error.diagnostics.front().range.start.line == 7 &&
+              semantic_error.diagnostics.front().range.start.column == 5,
+          "semantic diagnostic did not retain the offending assignment location");
+
+  dtessl::LanguageService language_service;
+  const std::string editable = "state Model initial:\n  value: int = 1\n";
+  language_service.open("test://editable", editable, 1);
+  const std::size_t one = editable.rfind('1');
+  const dtessl::TextEdit replace_one{
+      {{2, 16, one}, {2, 17, one + 1}}, "2"};
+  language_service.change("test://editable", {replace_one}, 2);
+  require(language_service.document("test://editable").source().find("= 2") !=
+              std::string::npos &&
+              language_service.analyze("test://editable").valid(),
+          "versioned text edit did not update and re-verify the document");
+  bool stale_edit_rejected = false;
+  try {
+    language_service.change("test://editable", {}, 2);
+  } catch (const dtessl::Error&) {
+    stale_edit_rejected = true;
+  }
+  require(stale_edit_rejected, "language service accepted a stale document version");
+  language_service.close("test://editable");
   const auto roundtrip = [](const dtessl::Value& value) {
     const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
     require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
