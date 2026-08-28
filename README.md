@@ -53,13 +53,16 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 
 ```dtessl
 state a, b, c;
-trans a -> b when b.val == 0;
-trans a -> c when b.val != 0;
+trans ctodo: a -> b when b.val == 0;
+trans ctodo: a -> c when b.val != 0;
 procedure p1 a, b.val = 0, c & inject ctodo;
 trace @procedure;
 ```
 
-`trans` 边的连通分量自动成为一个正交状态轴。`procedure` 中每个轴首次出现的
+同名 `trans ctodo:` 声明一个 transition family 的不同路径；`inject ctodo` 只能
+引用已经声明的 family，不能隐式创造 transition。匿名 `trans a -> b` 会得到稳定的
+生成名称，但不会冒充其他注入名称。`trans` 边的连通分量自动成为一个正交状态轴。
+`procedure` 中每个轴首次出现的
 state 是初态；同轴后续名称不重复激活。`b.val = 0` 为该轴声明并初始化 typed field，
 `inject ctodo` 提供 TransitionId；只有一个 compact procedure 时，`trace @procedure`
 为它建立最小 replay + closed capture（也可以直接写 `trace @p1`）。
@@ -104,7 +107,7 @@ program     = { type-declaration | port | function | state | compact-state
               | transition | compact-transition | compact-procedure | compact-trace
               | procedure | trace | claim } ;
 compact-state = "state" Name { "," Name } ";" NEWLINE ;
-compact-transition = "trans" Name "->" Name
+compact-transition = "trans" [ Name ":" ] Name "->" Name
                      [ "when" expression { "," expression } ] ";" NEWLINE ;
 compact-procedure = "procedure" Name compact-item { "," compact-item }
                     [ "&" "inject" Name ] ";" NEWLINE ;

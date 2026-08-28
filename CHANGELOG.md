@@ -14,8 +14,9 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   compact procedure, the first listed state on each axis is initial and later
   names on that same axis are non-active model hints.
 - Added inferred bool/int/rational/string state fields, comma-as-conjunction in
-  compact `when`, named TransitionId injection, generated path identities and
-  one-round procedure replay/capture.
+  compact `when`, explicitly declared `trans Name:` families, checked
+  TransitionId injection, generated path identities and one-round procedure
+  replay/capture.
 - Added a runnable compact example plus execution, highlighting and invalid
   multiline-form tests.
 

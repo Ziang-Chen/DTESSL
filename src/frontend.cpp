@@ -546,6 +546,7 @@ struct CompactStateDeclaration {
 };
 
 struct CompactTransitionDeclaration {
+  std::string family;
   std::string from;
   std::string to;
   ExprPtr condition{make_literal(Value(true))};
@@ -2331,7 +2332,13 @@ CompactTransitionDeclaration Parser::compact_transition() {
   CompactTransitionDeclaration result;
   result.line = start.line;
   result.column = start.column;
-  result.from = identifier();
+  const std::string first = identifier();
+  if (match(":")) {
+    result.family = first;
+    result.from = identifier();
+  } else {
+    result.from = first;
+  }
   expect("->");
   result.to = identifier();
   if (match("when")) {
@@ -2522,7 +2529,6 @@ void Parser::lower_compact(
     std::size_t column;
   };
   std::map<std::pair<std::string, std::string>, CompactField> fields;
-  std::set<std::string, std::less<>> injections;
   for (const CompactProcedureDeclaration& procedure : procedures) {
     for (const std::string& state : procedure.active_states) {
       require_state(state, procedure.line, procedure.column);
@@ -2539,7 +2545,6 @@ void Parser::lower_compact(
                     field.line, field.column);
       }
     }
-    if (!procedure.injection.empty()) injections.insert(procedure.injection);
   }
 
   std::map<std::string, std::string, std::less<>> first_state;
@@ -2583,21 +2588,50 @@ void Parser::lower_compact(
     rewrite_names(transition.condition);
   }
 
-  if (transitions.empty() && !injections.empty()) {
-    const CompactProcedureDeclaration& procedure = procedures.front();
-    throw Error("compact procedure inject requires at least one trans declaration",
-                procedure.line, procedure.column);
+  std::set<std::string, std::less<>> explicit_families;
+  for (const CompactTransitionDeclaration& transition : transitions) {
+    if (!transition.family.empty()) explicit_families.insert(transition.family);
   }
-  if (!transitions.empty() && injections.empty()) injections.insert("step");
-  for (const std::string& injection : injections) {
+  std::vector<std::pair<std::string, std::vector<const CompactTransitionDeclaration*>>>
+      transition_families;
+  std::map<std::string, std::size_t, std::less<>> family_indexes;
+  std::map<std::string, std::size_t, std::less<>> generated_ordinals;
+  for (const CompactTransitionDeclaration& transition : transitions) {
+    std::string family_name = transition.family;
+    if (family_name.empty()) {
+      const std::string base = transition.from + "_to_" + transition.to;
+      family_name = base;
+      std::size_t& ordinal = generated_ordinals[base];
+      while (explicit_families.contains(family_name) || family_indexes.contains(family_name)) {
+        family_name = base + "_" + std::to_string(++ordinal + 1U);
+      }
+    }
+    auto found = family_indexes.find(family_name);
+    if (found == family_indexes.end()) {
+      const std::size_t index = transition_families.size();
+      family_indexes.emplace(family_name, index);
+      transition_families.push_back({family_name, {}});
+      found = family_indexes.find(family_name);
+    }
+    transition_families[found->second].second.push_back(&transition);
+  }
+  for (const CompactProcedureDeclaration& procedure : procedures) {
+    if (!procedure.injection.empty() && !family_indexes.contains(procedure.injection)) {
+      throw Error("compact procedure inject references undefined transition '" +
+                      procedure.injection + "'",
+                  procedure.line, procedure.column);
+    }
+  }
+
+  for (const auto& [family_name, routes] : transition_families) {
     Transition family;
-    family.name = injection;
-    family.event = injection;
-    family.line = transitions.front().line;
-    family.column = transitions.front().column;
+    family.name = family_name;
+    family.event = family_name;
+    family.line = routes.front()->line;
+    family.column = routes.front()->column;
     std::map<std::string, std::size_t, std::less<>> route_names;
-    for (std::size_t index = 0; index < transitions.size(); ++index) {
-      const CompactTransitionDeclaration& compact = transitions[index];
+    for (std::size_t index = 0; index < routes.size(); ++index) {
+      const CompactTransitionDeclaration& compact = *routes[index];
       std::string route_name = compact.from + "_to_" + compact.to;
       const std::size_t ordinal = ++route_names[route_name];
       if (ordinal != 1U) route_name += "_" + std::to_string(ordinal);

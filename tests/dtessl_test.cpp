@@ -1578,8 +1578,8 @@ transition Break @ Go():
 
   constexpr std::string_view compact_automaton = R"DTESSL(
 state a, b, c;
-trans a -> b when b.val == 0;
-trans a -> c when b.val != 0;
+trans ctodo: a -> b when b.val == 0;
+trans ctodo: a -> c when b.val != 0;
 procedure p1 a, b.val = 0, c & inject ctodo;
 trace @procedure;
 )DTESSL";
@@ -1619,7 +1619,8 @@ state a,
           "compact syntax accepted a declaration split across physical lines");
 
   constexpr std::string_view compact_inject_without_transition = R"DTESSL(
-state idle;
+state idle, done;
+trans idle -> done;
 procedure broken idle & inject go;
 )DTESSL";
   bool empty_compact_transition_rejected = false;
@@ -1629,6 +1630,6 @@ procedure broken idle & inject go;
     empty_compact_transition_rejected = true;
   }
   require(empty_compact_transition_rejected,
-          "compact injection without a transition family was not rejected safely");
+          "compact injection resolved an undefined transition name");
   return 0;
 }

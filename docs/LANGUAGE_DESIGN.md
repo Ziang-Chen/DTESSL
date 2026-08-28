@@ -158,13 +158,17 @@ ending in `;` on that same physical line is a compact AST form:
 
 ```dtessl
 state a, b, c;
-trans a -> b when b.val == 0;
-trans a -> c when b.val != 0;
+trans ctodo: a -> b when b.val == 0;
+trans ctodo: a -> c when b.val != 0;
 procedure p1 a, b.val = 0, c & inject ctodo;
 trace @procedure;
 ```
 
-It is syntax sugar for rapid modeling, not a second language. Transition-graph
+It is syntax sugar for rapid modeling, not a second language. Repeated
+`trans ctodo:` declarations are paths in one declared transition family;
+`inject ctodo` is a checked reference and never declares or renames that
+family. Anonymous `trans a -> b` receives a stable generated identity.
+Transition-graph
 connected components derive orthogonal `@context` axes. The first procedure
 state named on an axis is initial; later names on that axis are non-active
 model hints. Scalar assignments declare typed axis data. A comma between

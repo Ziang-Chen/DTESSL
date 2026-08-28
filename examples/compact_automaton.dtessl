@@ -1,5 +1,5 @@
 state a, b, c;
-trans a -> b when b.val == 0;
-trans a -> c when b.val != 0;
+trans ctodo: a -> b when b.val == 0;
+trans ctodo: a -> c when b.val != 0;
 procedure p1 a, b.val = 0, c & inject ctodo;
 trace @procedure;
