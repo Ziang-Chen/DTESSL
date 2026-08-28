@@ -1,0 +1,35 @@
+// Two persistent procedure instances share causal RoundId 1 but retain
+// isolated state, revisions, injection histories, and decision identities.
+// REPL:
+//   :inject SessionA Add delta=1 -- SessionB Add delta=2
+//   :inject SessionA Add delta=3
+//   :capture InterleavedRuntime
+//   :replay-procedures
+// Named source trace:
+//   :trace Interleaved
+//   :claims Interleaved
+
+state Counter @ counter initial:
+  value: int = 0
+
+transition Add @ Increment(delta: int):
+  case stay (Counter @ counter) -> (Counter @ counter):
+    set:
+      value = before.value + delta @ counter
+
+procedure SessionA @ alpha:
+  initial (Counter @ counter)
+
+procedure SessionB @ beta:
+  initial (Counter @ counter)
+
+trace Interleaved:
+  replay:
+    Add.stay(1) @ SessionA | Add.stay(2) @ SessionB
+    Add.stay(3) @ SessionA
+  capture closed:
+    procedure (SessionA, SessionB)
+
+Claim Persisted @ Interleaved:
+  eventually:
+    SessionA.value = 4 and SessionB.value = 2

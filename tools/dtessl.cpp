@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -71,11 +72,12 @@ dtessl::Event parse_event(char** argv, int start, int end) {
   return event;
 }
 
-dtessl::Event parse_event(const std::vector<std::string>& words, std::size_t start) {
-  if (start >= words.size()) throw dtessl::Error("missing event name");
+dtessl::Event parse_event(const std::vector<std::string>& words, std::size_t start,
+                          std::size_t end) {
+  if (start >= end || end > words.size()) throw dtessl::Error("missing event name");
   dtessl::Event event;
   event.name = words[start];
-  for (std::size_t index = start + 1; index < words.size(); ++index) {
+  for (std::size_t index = start + 1; index < end; ++index) {
     const std::string& argument = words[index];
     const std::size_t equals = argument.find('=');
     if (equals == std::string::npos || equals == 0) {
@@ -88,6 +90,10 @@ dtessl::Event parse_event(const std::vector<std::string>& words, std::size_t sta
     }
   }
   return event;
+}
+
+dtessl::Event parse_event(const std::vector<std::string>& words, std::size_t start) {
+  return parse_event(words, start, words.size());
 }
 
 std::vector<std::string> split_words(std::string_view line) {
@@ -285,6 +291,136 @@ void print_repl_result(
   std::cout << "╰──────────────────────────────────────────────────────────\n\n";
 }
 
+std::string event_text(const dtessl::Event& event) {
+  std::string result = event.name + "(";
+  bool first = true;
+  for (const auto& [name, value] : event.fields) {
+    if (!first) result += ", ";
+    first = false;
+    result += name + "=" + dtessl::value_text(value);
+  }
+  return result + ")";
+}
+
+std::map<std::string, dtessl::Value, std::less<>> qualified_runtime_state(
+    const std::map<std::string, dtessl::Value, std::less<>>& state) {
+  const bool has_qualified = std::any_of(
+      state.begin(), state.end(), [](const auto& item) {
+        return item.first.find('.') != std::string::npos;
+      });
+  if (!has_qualified) return state;
+  std::map<std::string, dtessl::Value, std::less<>> result;
+  for (const auto& [name, value] : state) {
+    if (name.find('.') != std::string::npos) result.emplace(name, value);
+  }
+  return result;
+}
+
+std::map<std::string, dtessl::Value, std::less<>> snapshot_runtime_state(
+    const dtessl::TraceSnapshot& snapshot) {
+  std::map<std::string, dtessl::Value, std::less<>> result;
+  for (const auto& [procedure, state] : snapshot.procedure_states) {
+    for (const auto& [field, value] : state) {
+      result.emplace(procedure + "." + field, value);
+    }
+  }
+  return result;
+}
+
+void print_runtime_result(
+    const std::map<std::string, dtessl::Value, std::less<>>& raw_before,
+    const dtessl::ParallelStepResult& result,
+    const std::vector<std::pair<std::string, dtessl::TransitionInput>>& injections,
+    bool color) {
+  static constexpr std::string_view green = "\033[1;32m";
+  static constexpr std::string_view cyan = "\033[1;36m";
+  static constexpr std::string_view magenta = "\033[1;35m";
+  static constexpr std::string_view yellow = "\033[1;33m";
+  static constexpr std::string_view dim = "\033[0;90m";
+  const auto before = qualified_runtime_state(raw_before);
+  const auto after = qualified_runtime_state(result.state);
+
+  std::cout << '\n' << "╭─ "
+            << styled(result.transitions.empty() ? "○ Context admitted; quiescent"
+                                                  : "✓ Procedure round committed",
+                      result.transitions.empty() ? yellow : green, color)
+            << " ───────────────────────────────────\n"
+            << "│ " << styled("RoundId", dim, color) << ' ' << result.round << '\n';
+  for (const auto& [procedure, transition] : injections) {
+    std::cout << "│ " << styled(procedure, magenta, color) << "  ←  "
+              << styled(event_text(dtessl::Event{transition.transition,
+                                                transition.fields}),
+                        cyan, color)
+              << '\n';
+  }
+
+  std::cout << "├─ " << styled("derived decisions", magenta, color) << '\n';
+  if (result.transitions.empty()) {
+    std::cout << "│  " << styled("no transition enabled", dim, color) << '\n';
+  } else {
+    for (const dtessl::StepResult& step : result.transitions) {
+      std::cout << "│  " << styled(step.procedure, yellow, color)
+                << " rev=" << step.procedure_revision << "  "
+                << styled(step.transition, magenta, color) << "  "
+                << step.from_state << " ──▶ " << step.to_state << "  "
+                << styled(step.id, dim, color) << '\n';
+    }
+  }
+
+  std::cout << "├─ " << styled("Δ runtime state", cyan, color) << '\n';
+  bool changed = false;
+  for (const auto& [name, value] : after) {
+    const auto found = before.find(name);
+    if (found != before.end() && found->second == value) continue;
+    changed = true;
+    std::cout << "│  " << styled(name, cyan, color) << "  "
+              << (found == before.end() ? "∅" : dtessl::value_text(found->second))
+              << "  ──▶  " << styled(dtessl::value_text(value), green, color) << '\n';
+  }
+  if (!changed) std::cout << "│  " << styled("no logical fields changed", dim, color) << '\n';
+
+  std::cout << "├─ " << styled("ActionPlan", magenta, color) << '\n';
+  bool has_actions = false;
+  for (const dtessl::StepResult& step : result.transitions) {
+    for (const dtessl::ActionCall& call : step.actions.calls) {
+      has_actions = true;
+      std::cout << "│  " << styled(step.procedure, yellow, color) << "/"
+                << styled(call.label, yellow, color) << "  "
+                << styled(action_text(call), cyan, color) << '\n';
+    }
+    for (const auto& [before_call, after_call] : step.actions.dependencies) {
+      std::cout << "│    " << step.actions.calls[before_call].label << " ──▶ "
+                << step.actions.calls[after_call].label << '\n';
+    }
+  }
+  if (!has_actions) std::cout << "│  " << styled("no external calls", dim, color) << '\n';
+  std::cout << "╰──────────────────────────────────────────────────────────\n\n";
+}
+
+void print_runtime_snapshot(const dtessl::TraceSnapshot& snapshot,
+                            std::string_view kind = "capture") {
+  std::size_t decisions = 0;
+  for (const dtessl::ParallelStepResult& round : snapshot.rounds) {
+    decisions += round.transitions.size();
+  }
+  std::cout << kind << ' ' << snapshot.name
+            << " closed replayable=" << (snapshot.replayable ? "yes" : "no")
+            << " rounds=" << snapshot.rounds.size()
+            << " decisions=" << decisions
+            << " procedures=" << snapshot.procedure_artifacts.size() << '\n';
+  for (const auto& [name, artifact] : snapshot.procedure_artifacts) {
+    std::uint64_t revision = 0;
+    const auto history = snapshot.procedure_history.find(name);
+    if (history != snapshot.procedure_history.end() && !history->second.empty()) {
+      revision = history->second.back().procedure_revision;
+    }
+    std::cout << "  " << name << " @ " << artifact.initial_context
+              << " revision=" << revision
+              << " injections=" << artifact.injections.size()
+              << " initial-states=" << artifact.initial_states.size() << '\n';
+  }
+}
+
 dtessl::SourcePosition position_at(std::string_view source, std::size_t offset) {
   if (offset > source.size()) throw dtessl::Error("editor offset is outside the document");
   dtessl::SourcePosition result{1, 1, offset};
@@ -364,18 +500,31 @@ void repl_help() {
       << "  :check | :highlight      parse/verify or list semantic highlight spans\n"
       << "  :load PATH | :write [PATH]\n"
       << "  :run EVENT [name=value]  execute against the current logical state\n"
-      << "  :traces | :trace NAME     list or inspect native traces\n"
-      << "  :procedures               list named initial configurations\n"
-      << "  :claims NAME [close]      evaluate trace claims\n"
-      << "  :reset                   rebuild the engine from edited source\n"
+      << "  :traces | :trace NAME    list or execute a declared source trace\n"
+      << "  :trace-live NAME [close] inspect a legacy Engine dynamic capture\n"
+      << "  :procedures              list declared procedure instances\n"
+      << "  :start PROCEDURE         start one persistent procedure instance\n"
+      << "  :inject P TRANSITION [...] inject typed transition; -- shares RoundId\n"
+      << "  :runtime                 inspect the live procedure RuntimeContext\n"
+      << "  :capture [NAME]          close the live runtime into replay artifacts\n"
+      << "  :replay-procedures [P]   replay live artifacts and re-derive decisions\n"
+      << "  :claims NAME             evaluate a declared source trace\n"
+      << "  :claims-live NAME [close] evaluate a legacy Engine capture\n"
+      << "  :reset                   rebuild legacy and procedure runtimes\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
       << "\ncore v0.3.2 syntax:\n"
+      << "  procedure/inject          persistent automaton + typed transition input\n"
+      << "  replay/capture closed     transition replay + complete procedure closure\n"
       << "  name T / T(atom)         nominal logical names\n"
       << "  ~T / ~(A,B) / ~{...}     finite relations and literals\n"
       << "  item ~ relation          membership/binding in E/A/select\n"
       << "  [T] / [] / [value]       option type, absent and present values\n"
       << "  list[...]                explicit ordered-list literal\n"
+      << "\nexample:\n"
+      << "  :inject SessionA Increment delta=1 -- SessionB Increment delta=2\n"
+      << "  :capture InterleavedRuntime\n"
+      << "  :replay-procedures\n"
       << "A non-command line is appended as one source line.\n";
 }
 
@@ -388,6 +537,8 @@ int repl(std::optional<std::string> initial_path) {
   std::vector<std::string> undo;
   std::vector<std::string> redo;
   std::optional<dtessl::Engine> engine;
+  std::optional<dtessl::RuntimeContext> runtime;
+  std::set<std::string, std::less<>> started_procedures;
   dtessl::cli::LineEditor editor(interactive);
 
   const auto replace_document = [&](std::string replacement, bool remember) {
@@ -399,10 +550,27 @@ int repl(std::optional<std::string> initial_path) {
     const dtessl::SourceRange all{position_at(before, 0), position_at(before, before.size())};
     document.apply_edits({{all, std::move(replacement)}}, document.version() + 1);
     engine.reset();
+    runtime.reset();
+    started_procedures.clear();
   };
   const auto current_analysis = [&]() {
     return dtessl::analyze_source(
         document.source(), path.empty() ? "repl://buffer" : path, document.version());
+  };
+  const auto ensure_runtime = [&]() -> dtessl::RuntimeContext& {
+    if (!runtime) runtime.emplace(dtessl::parse(document.source()));
+    return *runtime;
+  };
+  const auto ensure_started = [&](const std::string& procedure, bool announce) {
+    if (started_procedures.contains(procedure)) return;
+    dtessl::RuntimeContext& active = ensure_runtime();
+    active.start(procedure);
+    started_procedures.insert(procedure);
+    if (announce) {
+      const dtessl::ProcedureArtifact artifact = active.artifact(procedure);
+      std::cout << "started " << procedure << " @ " << artifact.initial_context
+                << " initial-states=" << artifact.initial_states.size() << '\n';
+    }
   };
 
   if (interactive) {
@@ -488,13 +656,78 @@ int repl(std::optional<std::string> initial_path) {
         path = destination;
         std::cout << "wrote " << destination << '\n';
       } else if (command == ":reset") {
-        engine.emplace(dtessl::parse(document.source()));
-        std::cout << "engine reset\n";
+        const dtessl::Program program = dtessl::parse(document.source());
+        engine.emplace(program);
+        runtime.emplace(program);
+        started_procedures.clear();
+        std::cout << "legacy engine and procedure runtime reset\n";
       } else if (command == ":run") {
         if (!engine) engine.emplace(dtessl::parse(document.source()));
         const auto before = engine->values();
         const dtessl::StepResult result = engine->step(parse_event(words, 1));
         print_repl_result(before, result, color);
+      } else if (command == ":start") {
+        if (words.size() != 2) throw dtessl::Error("usage: :start PROCEDURE");
+        ensure_started(words[1], true);
+      } else if (command == ":inject") {
+        if (words.size() < 3) {
+          throw dtessl::Error(
+              "usage: :inject PROCEDURE EVENT [name=value ...] [-- PROCEDURE EVENT ...]");
+        }
+        std::vector<std::pair<std::string, dtessl::TransitionInput>> injections;
+        std::size_t cursor = 1;
+        while (cursor < words.size()) {
+          const std::string procedure = words[cursor++];
+          const std::size_t event_start = cursor;
+          while (cursor < words.size() && words[cursor] != "--") ++cursor;
+          if (event_start == cursor) throw dtessl::Error("missing injected event");
+          ensure_started(procedure, true);
+          dtessl::Event parsed = parse_event(words, event_start, cursor);
+          injections.emplace_back(
+              procedure,
+              dtessl::TransitionInput{std::move(parsed.name),
+                                      std::move(parsed.fields)});
+          if (cursor < words.size()) {
+            ++cursor;
+            if (cursor == words.size()) {
+              throw dtessl::Error("injection separator needs a following procedure");
+            }
+          }
+        }
+        dtessl::RuntimeContext& active = ensure_runtime();
+        const auto before =
+            snapshot_runtime_state(active.snapshot("before-injection"));
+        const dtessl::ParallelStepResult result = active.inject(injections);
+        print_runtime_result(before, result, injections, color);
+      } else if (command == ":runtime") {
+        if (!runtime || started_procedures.empty()) {
+          throw dtessl::Error("no procedure runtime is active");
+        }
+        print_runtime_snapshot(runtime->snapshot("live-runtime"), "runtime");
+      } else if (command == ":capture") {
+        if (words.size() > 2) throw dtessl::Error("usage: :capture [NAME]");
+        if (!runtime || started_procedures.empty()) {
+          throw dtessl::Error("no procedure runtime is active");
+        }
+        print_runtime_snapshot(runtime->snapshot(
+            words.size() == 2 ? words[1] : "repl-capture"));
+      } else if (command == ":replay-procedures") {
+        if (!runtime || started_procedures.empty()) {
+          throw dtessl::Error("no procedure runtime is active");
+        }
+        std::vector<std::string> names;
+        if (words.size() == 1) {
+          names.assign(started_procedures.begin(), started_procedures.end());
+        } else {
+          names.assign(words.begin() + 1, words.end());
+        }
+        std::vector<dtessl::ProcedureArtifact> artifacts;
+        artifacts.reserve(names.size());
+        for (const std::string& name : names) artifacts.push_back(runtime->artifact(name));
+        const dtessl::TraceSnapshot replayed = dtessl::replay_procedures(
+            dtessl::parse(document.source()), artifacts);
+        std::cout << "procedure replay ok\n";
+        print_runtime_snapshot(replayed, "replay");
       } else if (command == ":traces") {
         const dtessl::Program program = dtessl::parse(document.source());
         for (const std::string& name : dtessl::declared_traces(program)) {
@@ -503,32 +736,38 @@ int repl(std::optional<std::string> initial_path) {
       } else if (command == ":procedures") {
         const dtessl::Program program = dtessl::parse(document.source());
         for (const std::string& name : dtessl::declared_procedures(program)) {
-          std::cout << name << '\n';
+          std::cout << name
+                    << (started_procedures.contains(name) ? " [running]" : "") << '\n';
         }
       } else if (command == ":trace") {
         if (words.size() != 2) throw dtessl::Error("usage: :trace NAME");
-        if (!engine) engine.emplace(dtessl::parse(document.source()));
-        dtessl::TraceSnapshot trace;
-        try {
-          trace = engine->captured_trace(words[1]);
-        } catch (const dtessl::Error&) {
-          trace = dtessl::run_named_trace(dtessl::parse(document.source()), words[1]);
+        const dtessl::TraceSnapshot trace =
+            dtessl::run_named_trace(dtessl::parse(document.source()), words[1]);
+        print_runtime_snapshot(trace, "trace");
+      } else if (command == ":trace-live") {
+        if (words.size() < 2 || words.size() > 3 ||
+            (words.size() == 3 && words[2] != "close")) {
+          throw dtessl::Error("usage: :trace-live NAME [close]");
         }
-        std::cout << trace.name << " rounds=" << trace.rounds.size()
-                  << (trace.closed ? " closed\n" : " open\n");
+        if (!engine) engine.emplace(dtessl::parse(document.source()));
+        print_runtime_snapshot(
+            engine->captured_trace(words[1], words.size() == 3), "live-trace");
       } else if (command == ":claims") {
-        if (words.size() < 2 || words.size() > 3) {
-          throw dtessl::Error("usage: :claims NAME [close]");
+        if (words.size() != 2) throw dtessl::Error("usage: :claims NAME");
+        for (const dtessl::ClaimEvaluation& claim :
+             dtessl::evaluate_named_trace(dtessl::parse(document.source()), words[1])) {
+          std::cout << claim.name << ' ' << dtessl::claim_status_name(claim.status)
+                    << " round=" << claim.witness_round << " " << claim.detail << '\n';
+        }
+      } else if (command == ":claims-live") {
+        if (words.size() < 2 || words.size() > 3 ||
+            (words.size() == 3 && words[2] != "close")) {
+          throw dtessl::Error("usage: :claims-live NAME [close]");
         }
         if (!engine) engine.emplace(dtessl::parse(document.source()));
         const bool close = words.size() == 3 && words[2] == "close";
-        std::vector<dtessl::ClaimEvaluation> claims;
-        try {
-          claims = engine->evaluate_claims(words[1], close);
-        } catch (const dtessl::Error&) {
-          claims = dtessl::evaluate_named_trace(dtessl::parse(document.source()), words[1]);
-        }
-        for (const dtessl::ClaimEvaluation& claim : claims) {
+        for (const dtessl::ClaimEvaluation& claim :
+             engine->evaluate_claims(words[1], close)) {
           std::cout << claim.name << ' ' << dtessl::claim_status_name(claim.status)
                     << " round=" << claim.witness_round << " " << claim.detail << '\n';
         }

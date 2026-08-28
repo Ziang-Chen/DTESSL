@@ -1,4 +1,11 @@
-// Orthogonal state axes, state-set rewrite, native traces, and trace claims.
+// Orthogonal state axes, procedure context replay, closed capture, and claims.
+// REPL:
+//   :inject DispatchRun Tick
+//   :capture DispatchRuntime
+//   :replay-procedures
+// Named source trace:
+//   :trace Happy
+//   :claims Happy
 function hasCredits(value: int) -> bool:
   value > 0
 

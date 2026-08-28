@@ -201,4 +201,29 @@ if(DTESSL_BUILD_TESTS)
                    Optimized)
   set_tests_properties(dtessl.optimized_transition_replay PROPERTIES
                        PASS_REGULAR_EXPRESSION "optimized_score 7 @ scheduler")
+  add_test(NAME dtessl.procedure_replay_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/procedure_replay.dtessl)
+  set_tests_properties(dtessl.procedure_replay_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.procedure_replay_trace
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   trace
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/procedure_replay.dtessl
+                   Interleaved)
+  set_tests_properties(dtessl.procedure_replay_trace PROPERTIES
+                       PASS_REGULAR_EXPRESSION "replayable=yes procedures=2")
+  add_test(NAME dtessl.procedure_replay_claim
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   claims
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/procedure_replay.dtessl
+                   Interleaved)
+  set_tests_properties(dtessl.procedure_replay_claim PROPERTIES
+                       PASS_REGULAR_EXPRESSION "Persisted satisfied")
+  add_test(NAME dtessl.repl_procedure_runtime
+           COMMAND ${CMAKE_COMMAND}
+                   -DCLI=$<TARGET_FILE:dtessl_cli>
+                   -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/procedure_replay.dtessl
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/repl_procedure_smoke.cmake)
 endif()

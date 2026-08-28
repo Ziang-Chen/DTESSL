@@ -23,11 +23,12 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 
 ## v0 的闭环
 
-一个程序的闭环由五类定义组成：
+一个程序的闭环由六类定义组成：
 
 - `record / variant / enum / newtype` 定义代数与名义领域类型；
 - `state` 定义一个有类型的状态空间、初值、上下文和不变量；
 - `transition` 的 `case (source-set) -> (target-set)` 定义原子状态集重写；
+- `procedure` 定义由 RuntimeContext 持有的持久自动机实例及 typed context 准入；
 - `trace` 定义原生静态事件序列或按 `@context` 捕获的动态执行投影；
 - `Claim` 用 `always`、`eventually` 或 transition 次数约束判定 trace。
 
@@ -250,6 +251,23 @@ typed expression 封装；只能读取
 injection、所有 RoundId（包括空闲帧）和派生 decision，输出 `ProcedureArtifact` 并标记
 `replayable=yes`。这比裁剪单条因果边更宽，但不会漏依赖。`capture projected` 只供观察，始终
 `replayable=no`，也不会生成可冒充完整重放输入的 artifact。
+
+REPL 直接暴露同一套 RuntimeContext，而不是另造执行器：
+
+```text
+dtessl repl examples/procedure_replay.dtessl
+:inject SessionA Increment delta=1 -- SessionB Increment delta=2
+:inject SessionA Increment delta=3
+:runtime
+:capture InterleavedRuntime
+:replay-procedures
+```
+
+`:inject` 会按需启动 procedure；`--` 两侧的注入共享一个 RoundId 并原子提交。
+`:capture` 生成包含初始配置和完整 typed injection history 的闭合 artifact；
+`:replay-procedures` 重新准入这些 context 并重新搜索 decision DAG。`:trace NAME` 和
+`:claims NAME` 执行源码声明的 trace；legacy Engine 的动态观察明确使用
+`:trace-live`/`:claims-live`，不与正式 procedure replay 混用。
 
 `@` 只表达调用或定义所处的上下文，不授予权限。动作未写 `@` 时继承源 state 的上下文；
 写 `@ worker` 时，如果 `worker` 是 string 类型事件参数，就绑定到该参数的值，否则它是

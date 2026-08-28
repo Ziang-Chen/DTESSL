@@ -8,7 +8,8 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: gate `v0.3.2` explicit optimized transition selection on a DTESSL-only branch
+- Current target: integrate the `v0.3.2` runtime/optimizer with procedure REPL
+  support before adding compact automaton syntax
 - Stop orders: none
 
 ## Current state
@@ -19,6 +20,10 @@ greatest score, rejects ties atomically, and retains the exactly-one rule for
 unannotated transitions. Standard, `-Werror` and ASan/UBSan suites pass 25/25;
 implementation commit `83eb39e` is pushed on
 `codex/optimized-transition-v0-3-2`; this closeout records that exact identity.
+
+The local merge also brings in direct REPL access to `RuntimeContext`: procedure
+startup, typed injection, runtime inspection, closed capture and artifact
+replay. Its gates will be rerun against the merged TransitionInput semantics.
 
 ## Current goal contract
 
@@ -70,15 +75,15 @@ implementation commit `83eb39e` is pushed on
 | Shared language pipeline | `analyze_source` runs the production lexer/parser/verifier; valid core fixture asserts `name`, `~`, option and `list` spans | CLI highlight and REPL check agree with `dtessl check` fixtures | pass |
 | Editor document model | Monotonic versions, validated UTF-8 byte ranges and non-overlapping snapshot edits | Replace and stale-version tests pass | pass |
 | Located diagnostics | Lex/parse/semantic categories retain source ranges and stable codes | Parser and wrong-type assignment locations asserted | pass |
-| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and engine invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and two-round fancy run | pass |
+| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and both Engine/RuntimeContext invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and fancy procedure rounds | pass |
 | Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
 | Procedure entry boundary | Parser accepts only initial context/state; no transition, admission rule or ordered steps may be nested | RuntimeContext startup is immediately quiescent with an empty pending set | pass |
-| Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle procedure frame remains queryable at the next global RoundId | pass |
+| Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle frames plus REPL multi-injection/runtime inspection remain visible | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
-| Golden procedure replay | Replay consumes declared initial configuration plus typed transition-occurrence history; cases are recomputed | Public `ProcedureArtifact` replay is run twice and compared; wrong path expectation rejects | pass |
+| Golden procedure replay | Replay consumes declared initial configuration plus typed transition-occurrence history; cases are recomputed | Public API and REPL replay report matching rounds, decisions and procedure histories | pass |
 | Search replay | A named transition path may be asserted only as derived evidence, never forced | `Transition.case(...) @ Procedure` and explicit `SearchExpectation` both re-enter ordinary search | pass |
 | Transition occurrence injection | Exact TransitionId plus typed fields are appended to a started procedure; no direct state mutation or case selection | Same Event family is ambiguous through legacy dispatch but exact TransitionId injection selects only its own family | pass |
 | Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
@@ -96,7 +101,6 @@ implementation commit `83eb39e` is pushed on
 
 - No blocker remains in the v0.3.2 implementation. Canonical AST serialization remains a
   later P0 milestone dependency, not a blocker for this private-AST split.
-
 ## Risks
 
 - Scope: implementing all domain dialects inside the core would bloat the
@@ -192,3 +196,7 @@ implementation commit `83eb39e` is pushed on
   `transition @ scope [optimized_score=...]`. Scores observe candidate
   after-state, the unique greatest exact score wins, and ties reject without
   committing state or RoundId.
+- 2026-08-28: exposed Golden procedure semantics in the REPL with atomic
+  multi-procedure `:inject`, `:runtime`, `:capture` and
+  `:replay-procedures`. Declared `:trace`/`:claims` are separated from explicit
+  `:trace-live`/`:claims-live`; merged conformance is revalidated on v0.3.2.

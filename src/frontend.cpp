@@ -43,7 +43,7 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "by", "lex", "match", "E", "A", "true", "false", "none", "some",
       "ok", "err", "round", "trace", "replay", "capture", "closed",
       "projected", "Claim", "always", "eventually", "case", "function",
-      "procedure", "initial", "inject", "optimized_score"};
+      "procedure", "initial", "inject", "when", "optimized_score"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
