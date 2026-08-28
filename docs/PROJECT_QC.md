@@ -13,12 +13,13 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**Candidate.** The `v0.3.1` implementation separates source parsing/verification
+**Complete.** The `v0.3.1` implementation separates source parsing/verification
 from backend execution, removes procedure-local admission syntax, injects exact
 typed TransitionId occurrences, and indexes both transition identity and static
 active-state signatures before dynamic `where` evaluation. Standard,
-`-Werror` and ASan/UBSan suites pass 23/23. The scoped commit and pushed-SHA
-evidence remain before closeout.
+`-Werror` and ASan/UBSan suites pass 23/23. Implementation commit `5c0f042` is
+pushed on `codex/frontend-runtime-split-v0-3-1`; this QC closeout records that
+exact implementation identity.
 
 ## Current goal contract
 
@@ -93,7 +94,8 @@ evidence remain before closeout.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-- P0 handoff gate: record the pushed implementation SHA and clean status.
+- No blocker remains in the v0.3.1 slice. Canonical AST serialization remains a
+  later P0 milestone dependency, not a blocker for this private-AST split.
 
 ## Risks
 
