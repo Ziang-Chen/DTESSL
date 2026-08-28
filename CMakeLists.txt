@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.1.2)
+set(DTESSL_VERSION 0.1.3)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -9,6 +9,7 @@ endif()
 option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 
 add_library(dtessl
+  src/exact_numeric.cpp
   src/dtessl.cpp
   src/value_codec.cpp)
 configure_file(include/dtessl/version.hpp.in
@@ -57,4 +58,11 @@ if(DTESSL_BUILD_TESTS)
                    Open id=session-1 owner=alice)
   set_tests_properties(dtessl.cli_algebraic_replay PROPERTIES
                        PASS_REGULAR_EXPRESSION "Decision.Accepted")
+  add_test(NAME dtessl.cli_exact_numeric_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   replay
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/exact_numeric.dtessl
+                   Add delta=2)
+  set_tests_properties(dtessl.cli_exact_numeric_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "18446744073709551617")
 endif()

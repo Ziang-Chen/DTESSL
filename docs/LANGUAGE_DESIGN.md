@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed by the current `v0.1.2` candidate.
+- **Implemented**: accepted and executed by the current `v0.1.3` release.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -120,6 +120,12 @@ newtypes, option/result, field projection and exhaustive expression matching.
 Nominal values carry a canonical type identity; records canonicalize field
 order. Package-qualified schema identities and schema migration remain part of
 CanonicalModule rather than being guessed from source formatting.
+
+The `v0.1.3` slice makes `int` arbitrary precision within an explicit
+deterministic magnitude budget and adds normalized exact `rational`. There is no
+ambient host floating-point mode. Division by zero and budget exhaustion reject
+the logical round before commit; the exact cross-backend rules are frozen in
+`EXACT_NUMERIC_PROFILE_V1.md`.
 
 ### Relation and search algebra
 

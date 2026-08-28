@@ -1,4 +1,4 @@
-# DTESSL v0.1.2
+# DTESSL v0.1.3
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -14,6 +14,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [研究依据与项目推论](docs/REFERENCES.md)
 - [Backend 与 Provider 接入边界](docs/BACKENDS.md)
 - [Canonical Value Format v1](docs/CANONICAL_VALUE_V1.md)
+- [Exact Numeric Profile v1](docs/EXACT_NUMERIC_PROFILE_V1.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
@@ -92,7 +93,7 @@ transition  = "transition" Name "@" event-pattern ":" INDENT
               DEDENT ;
 event-pattern = Name "(" [ parameter { "," parameter } ] ")" ;
 parameter   = Name ":" type ;
-type        = "bool" | "int" | "string"
+type        = "bool" | "int" | "rational" | "string"
             | "list" "<" type ">"
             | "set" "<" type ">"
             | "map" "<" type "," type ">"
@@ -132,15 +133,15 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 
 ## 值、谓词与搜索
 
-当前有精确的 `bool`、有符号 64 位 `int`、UTF-8 `string`，可递归组合的
+当前有精确的 `bool`、任意精度有符号 `int`、规范化 `rational`、UTF-8 `string`，可递归组合的
 `list<T>/set<T>/map<K,V>/bag<T>/option<T>/result<T,E>`，以及 `record`、
 `variant`、`enum`、`newtype`。集合、map key 与 bag item 使用规范值顺序；record
 字段按字段名规范排序，所有 nominal/variant 值编码自己的类型与构造器身份。
 支持：
 
 - 布尔运算 `and/or/not`；
-- 相等、整数/字符串有序比较；
-- 整数 `+/-`，溢出即失败；
+- 相等、精确数值/字符串有序比较；
+- integer/rational 的 `+`、`-`、`*`、`/`；整数除法表达式产生 rational，混合运算精确提升；
 - `x in set`、`count(set)` 和纯函数式 `insert(set, x)/erase(set, x)`；
 - 有限、确定性枚举的 `exists x in set where predicate`。
 - record 构造与字段投影、variant/enum 构造、名义 newtype 构造；
@@ -185,9 +186,9 @@ ctest --test-dir build --output-on-failure
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.1.2 仍不包含 relation/matrix、候选选择、概率或
+为了逐层闭合语言核心，v0.1.3 仍不包含 relation/matrix、候选选择、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
-下一个增量是 exact rational/numeric profile，随后进入 relation 与显式
-`select ... by`、多事件 trace/receipt replay，最后才加入稀疏矩阵与可替换搜索后端。
+下一个增量进入 relation 与显式 `select ... by`、多事件 trace/receipt replay，
+最后才加入稀疏矩阵与可替换搜索后端。
 它们应继续服从同一条边界：
 transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。

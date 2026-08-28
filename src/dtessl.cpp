@@ -145,7 +145,7 @@ std::vector<Token> lex(std::string_view source) {
           cursor += 2;
           continue;
         }
-        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.";
+        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.*" "/";
         if (symbols.find(static_cast<char>(ch)) != std::string_view::npos) {
           result.push_back({TokenKind::Symbol, std::string(1, static_cast<char>(ch)), line_number,
                             column});
@@ -173,7 +173,7 @@ std::vector<Token> lex(std::string_view source) {
 }
 
 struct DataType {
-  enum class Kind { Bool, Int, String, List, Set, Map, Bag, Named, Option, Result };
+  enum class Kind { Bool, Int, Rational, String, List, Set, Map, Bag, Named, Option, Result };
 
   Kind kind{Kind::Bool};
   std::string name;
@@ -200,6 +200,7 @@ struct DataType {
 
 DataType bool_type() { return DataType(DataType::Kind::Bool); }
 DataType int_type() { return DataType(DataType::Kind::Int); }
+DataType rational_type() { return DataType(DataType::Kind::Rational); }
 DataType string_type() { return DataType(DataType::Kind::String); }
 
 struct TypeField {
@@ -399,6 +400,7 @@ class FlatParser {
   DataType parse_type() {
     if (match("bool")) return bool_type();
     if (match("int")) return int_type();
+    if (match("rational")) return rational_type();
     if (match("string")) return string_type();
     if (match("list") || match("set") || match("bag") || match("option")) {
       const std::string constructor = tokens_[cursor_ - 1].text;
@@ -453,8 +455,17 @@ class FlatParser {
   }
 
   ExprPtr parse_add() {
-    auto left = parse_unary();
+    auto left = parse_multiply();
     while (!at_end() && (peek().text == "+" || peek().text == "-")) {
+      const std::string op = take().text;
+      left = make_binary(op, std::move(left), parse_multiply());
+    }
+    return left;
+  }
+
+  ExprPtr parse_multiply() {
+    auto left = parse_unary();
+    while (!at_end() && (peek().text == "*" || peek().text == "/")) {
       const std::string op = take().text;
       left = make_binary(op, std::move(left), parse_unary());
     }
@@ -542,12 +553,11 @@ class FlatParser {
     }
     if (peek().kind == TokenKind::Integer) {
       const Token token = take();
-      std::int64_t value = 0;
-      const auto parsed = std::from_chars(token.text.data(), token.text.data() + token.text.size(), value);
-      if (parsed.ec != std::errc{}) {
-        fail(token, "integer is out of range");
+      try {
+        return make_literal(Value(ExactInt::parse(token.text)));
+      } catch (const Error& error) {
+        fail(token, error.what());
       }
-      return make_literal(Value(value));
     }
     if (peek().kind == TokenKind::String) {
       return make_literal(Value(take().text));
@@ -749,6 +759,7 @@ namespace {
 DataType Parser::type() {
   if (match("bool")) return bool_type();
   if (match("int")) return int_type();
+  if (match("rational")) return rational_type();
   if (match("string")) return string_type();
   if (match("list")) {
     expect("<");
@@ -851,6 +862,7 @@ std::string type_identity(const DataType& type) {
   switch (type.kind) {
     case DataType::Kind::Bool: return "bool";
     case DataType::Kind::Int: return "int";
+    case DataType::Kind::Rational: return "rational";
     case DataType::Kind::String: return "string";
     case DataType::Kind::Named: return type.name;
     case DataType::Kind::List: return "list<" + type_identity(*type.first) + ">";
@@ -875,10 +887,18 @@ Value Parser::initial_value(DataType expected_type) {
     bool negative = match("-");
     if (!at(TokenKind::Integer)) fail(peek(), "expected integer literal");
     const Token token = take();
-    std::int64_t value = 0;
-    const auto parsed = std::from_chars(token.text.data(), token.text.data() + token.text.size(), value);
-    if (parsed.ec != std::errc{}) fail(token, "integer is out of range");
-    return Value(negative ? -value : value);
+    try {
+      ExactInt value = ExactInt::parse(token.text);
+      return Value(negative ? -value : value);
+    } catch (const Error& error) {
+      fail(token, error.what());
+    }
+  }
+  if (expected_type.kind == DataType::Kind::Rational) {
+    Value numerator = initial_value(int_type());
+    expect("/");
+    Value denominator = initial_value(int_type());
+    return Value(Rational(numerator.as_exact_int(), denominator.as_exact_int()));
   }
   if (expected_type.kind == DataType::Kind::String) {
     if (!at(TokenKind::String)) fail(peek(), "expected string literal");
@@ -1193,6 +1213,7 @@ DataType value_type(const Value& value) {
   switch (value.kind()) {
     case Value::Kind::Bool: return bool_type();
     case Value::Kind::Int: return int_type();
+    case Value::Kind::Rational: return rational_type();
     case Value::Kind::String: return string_type();
     case Value::Kind::StringSet:
       return DataType(DataType::Kind::Set, string_type());
@@ -1228,6 +1249,7 @@ bool value_matches_type(const Value& value, const DataType& type,
   switch (type.kind) {
     case DataType::Kind::Bool: return value.kind() == Value::Kind::Bool;
     case DataType::Kind::Int: return value.kind() == Value::Kind::Int;
+    case DataType::Kind::Rational: return value.kind() == Value::Kind::Rational;
     case DataType::Kind::String: return value.kind() == Value::Kind::String;
     case DataType::Kind::List:
       if (value.kind() != Value::Kind::List) return false;
@@ -1376,9 +1398,14 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
     }
     case Expr::Kind::Unary: {
       const DataType operand = infer_type(expr->left, state, event, std::move(locals), types);
-      const DataType required = expr->text == "not" ? bool_type() : int_type();
-      if (operand != required) throw Error("wrong operand type for '" + expr->text + "'");
-      return required;
+      if (expr->text == "not") {
+        if (operand.kind != DataType::Kind::Bool) throw Error("not requires bool");
+        return bool_type();
+      }
+      if (operand.kind != DataType::Kind::Int && operand.kind != DataType::Kind::Rational) {
+        throw Error("numeric negation requires int or rational");
+      }
+      return operand;
     }
     case Expr::Kind::Binary: {
       const DataType left = infer_type(expr->left, state, event, locals, types);
@@ -1395,17 +1422,28 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
         }
         return bool_type();
       }
-      if (expr->text == "+" || expr->text == "-") {
-        if (left.kind != DataType::Kind::Int || right.kind != DataType::Kind::Int) {
-          throw Error("arithmetic operators need int operands");
+      if (expr->text == "+" || expr->text == "-" || expr->text == "*" ||
+          expr->text == "/") {
+        const bool left_numeric = left.kind == DataType::Kind::Int ||
+                                  left.kind == DataType::Kind::Rational;
+        const bool right_numeric = right.kind == DataType::Kind::Int ||
+                                   right.kind == DataType::Kind::Rational;
+        if (!left_numeric || !right_numeric) {
+          throw Error("arithmetic operators need exact numeric operands");
         }
-        return int_type();
+        if (expr->text != "/" && left.kind == DataType::Kind::Int &&
+            right.kind == DataType::Kind::Int) return int_type();
+        return rational_type();
       }
-      if (left != right) throw Error("comparison operands have different types");
+      const bool mixed_numeric =
+          (left.kind == DataType::Kind::Int || left.kind == DataType::Kind::Rational) &&
+          (right.kind == DataType::Kind::Int || right.kind == DataType::Kind::Rational);
+      if (left != right && !mixed_numeric) throw Error("comparison operands have different types");
       if ((expr->text == "<" || expr->text == "<=" || expr->text == ">" ||
            expr->text == ">=") &&
-          left.kind != DataType::Kind::Int && left.kind != DataType::Kind::String) {
-        throw Error("ordered comparison needs int or string operands");
+          left.kind != DataType::Kind::Int && left.kind != DataType::Kind::Rational &&
+          left.kind != DataType::Kind::String) {
+        throw Error("ordered comparison needs exact numeric or string operands");
       }
       return bool_type();
     }
@@ -1784,15 +1822,37 @@ struct Environment {
 
 Value evaluate(const ExprPtr& expr, Environment& environment);
 
-bool equal_values(const Value& left, const Value& right) { return left == right; }
+bool is_exact_numeric(const Value& value) {
+  return value.kind() == Value::Kind::Int || value.kind() == Value::Kind::Rational;
+}
+
+Rational as_exact_rational(const Value& value) {
+  if (value.kind() == Value::Kind::Rational) return value.as_rational();
+  if (value.kind() == Value::Kind::Int) {
+    return Rational(value.as_exact_int(), ExactInt(1));
+  }
+  throw Error("expected exact numeric value");
+}
+
+bool equal_values(const Value& left, const Value& right) {
+  if (is_exact_numeric(left) && is_exact_numeric(right)) {
+    return compare(as_exact_rational(left), as_exact_rational(right)) == 0;
+  }
+  return left == right;
+}
 
 int compare_values(const Value& left, const Value& right) {
+  if (is_exact_numeric(left) && is_exact_numeric(right)) {
+    return compare(as_exact_rational(left), as_exact_rational(right));
+  }
   if (left.kind() != right.kind()) throw Error("comparison operands have different types");
   switch (left.kind()) {
     case Value::Kind::Bool:
       return static_cast<int>(left.as_bool()) - static_cast<int>(right.as_bool());
     case Value::Kind::Int:
-      return left.as_int() < right.as_int() ? -1 : left.as_int() > right.as_int() ? 1 : 0;
+      return compare(left.as_exact_int(), right.as_exact_int());
+    case Value::Kind::Rational:
+      return compare(left.as_rational(), right.as_rational());
     case Value::Kind::String:
       return left.as_string() < right.as_string() ? -1
              : left.as_string() > right.as_string() ? 1 : 0;
@@ -1973,10 +2033,8 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       const Value operand = evaluate(expr->left, environment);
       if (expr->text == "not") return Value(!operand.as_bool());
       if (expr->text == "-") {
-        if (operand.as_int() == std::numeric_limits<std::int64_t>::min()) {
-          throw Error("integer negation overflow");
-        }
-        return Value(-operand.as_int());
+        if (operand.kind() == Value::Kind::Int) return Value(-operand.as_exact_int());
+        return Value(-operand.as_rational());
       }
       throw Error("unknown unary operator '" + expr->text + "'");
     }
@@ -2003,24 +2061,20 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
                                           return canonical_compare(a, b) < 0;
                                         }));
       }
-      if (expr->text == "+" || expr->text == "-") {
-        const std::int64_t lhs = left.as_int();
-        const std::int64_t rhs = right.as_int();
-        std::int64_t result = 0;
-#if defined(__GNUC__) || defined(__clang__)
-        const bool overflow = expr->text == "+" ? __builtin_add_overflow(lhs, rhs, &result)
-                                                  : __builtin_sub_overflow(lhs, rhs, &result);
-        if (overflow) throw Error("integer arithmetic overflow");
-#else
-        if ((expr->text == "+" && ((rhs > 0 && lhs > std::numeric_limits<std::int64_t>::max() - rhs) ||
-                                    (rhs < 0 && lhs < std::numeric_limits<std::int64_t>::min() - rhs))) ||
-            (expr->text == "-" && ((rhs < 0 && lhs > std::numeric_limits<std::int64_t>::max() + rhs) ||
-                                    (rhs > 0 && lhs < std::numeric_limits<std::int64_t>::min() + rhs)))) {
-          throw Error("integer arithmetic overflow");
+      if (expr->text == "+" || expr->text == "-" || expr->text == "*" ||
+          expr->text == "/") {
+        if (expr->text != "/" && left.kind() == Value::Kind::Int &&
+            right.kind() == Value::Kind::Int) {
+          if (expr->text == "+") return Value(left.as_exact_int() + right.as_exact_int());
+          if (expr->text == "-") return Value(left.as_exact_int() - right.as_exact_int());
+          return Value(left.as_exact_int() * right.as_exact_int());
         }
-        result = expr->text == "+" ? lhs + rhs : lhs - rhs;
-#endif
-        return Value(result);
+        const Rational lhs = as_exact_rational(left);
+        const Rational rhs = as_exact_rational(right);
+        if (expr->text == "+") return Value(lhs + rhs);
+        if (expr->text == "-") return Value(lhs - rhs);
+        if (expr->text == "*") return Value(lhs * rhs);
+        return Value(lhs / rhs);
       }
       const int order = compare_values(left, right);
       if (expr->text == "<") return Value(order < 0);
@@ -2064,6 +2118,7 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         case Value::Kind::Bag: size = collection.as_bag().entries.size(); break;
         case Value::Kind::Bool:
         case Value::Kind::Int:
+        case Value::Kind::Rational:
         case Value::Kind::String:
         case Value::Kind::Record:
         case Value::Kind::Variant:
@@ -2262,6 +2317,8 @@ std::string escape_string(std::string_view value) {
 
 Value::Value(bool value) : kind_(Kind::Bool), bool_value_(value) {}
 Value::Value(std::int64_t value) : kind_(Kind::Int), int_value_(value) {}
+Value::Value(ExactInt value) : kind_(Kind::Int), int_value_(std::move(value)) {}
+Value::Value(Rational value) : kind_(Kind::Rational), rational_value_(std::move(value)) {}
 Value::Value(std::string value) : kind_(Kind::String), string_value_(std::move(value)) {}
 Value::Value(const char* value) : Value(std::string(value)) {}
 Value::Value(StringSet value) : kind_(Kind::StringSet), set_value_(std::move(value)) {}
@@ -2347,7 +2404,15 @@ bool Value::as_bool() const {
 }
 std::int64_t Value::as_int() const {
   if (kind_ != Kind::Int) throw Error("expected int value");
+  return int_value_.to_int64();
+}
+const ExactInt& Value::as_exact_int() const {
+  if (kind_ != Kind::Int) throw Error("expected int value");
   return int_value_;
+}
+const Rational& Value::as_rational() const {
+  if (kind_ != Kind::Rational) throw Error("expected rational value");
+  return rational_value_;
 }
 const std::string& Value::as_string() const {
   if (kind_ != Kind::String) throw Error("expected string value");
@@ -2391,6 +2456,7 @@ bool operator==(const Value& left, const Value& right) {
   switch (left.kind_) {
     case Value::Kind::Bool: return left.bool_value_ == right.bool_value_;
     case Value::Kind::Int: return left.int_value_ == right.int_value_;
+    case Value::Kind::Rational: return left.rational_value_ == right.rational_value_;
     case Value::Kind::String: return left.string_value_ == right.string_value_;
     case Value::Kind::StringSet: return left.set_value_ == right.set_value_;
     case Value::Kind::List: return *left.list_value_ == *right.list_value_;
@@ -2605,7 +2671,8 @@ const std::map<std::string, Value, std::less<>>& Engine::values() const { return
 std::string value_text(const Value& value) {
   switch (value.kind()) {
     case Value::Kind::Bool: return value.as_bool() ? "true" : "false";
-    case Value::Kind::Int: return std::to_string(value.as_int());
+    case Value::Kind::Int: return value.as_exact_int().text();
+    case Value::Kind::Rational: return value.as_rational().text();
     case Value::Kind::String: return escape_string(value.as_string());
     case Value::Kind::StringSet: {
       std::string result = "{";
@@ -2775,6 +2842,9 @@ void collect_type_features(const DataType& type, FeatureSet& features) {
     features.insert(LanguageFeature::FiniteCollections);
   }
   if (type.kind == DataType::Kind::Named) features.insert(LanguageFeature::NominalTypes);
+  if (type.kind == DataType::Kind::Int || type.kind == DataType::Kind::Rational) {
+    features.insert(LanguageFeature::ExactNumeric);
+  }
   if (type.kind == DataType::Kind::Option || type.kind == DataType::Kind::Result) {
     features.insert(LanguageFeature::AlgebraicDataTypes);
   }
@@ -2844,6 +2914,7 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::AlgebraicDataTypes: return "algebraic-data-types";
     case LanguageFeature::NominalTypes: return "nominal-types";
     case LanguageFeature::ExhaustiveMatch: return "exhaustive-match";
+    case LanguageFeature::ExactNumeric: return "exact-numeric";
   }
   return "unknown";
 }

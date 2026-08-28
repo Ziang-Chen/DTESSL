@@ -8,15 +8,15 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule
-- Current target: `v0.1.3`
+- Current target: `v0.2.0`
 - Stop orders: none
 
 ## Current state
 
-**Released slice.** `v0.1.2` algebraic/nominal values and exhaustive matching
-passed standard, CLI replay, malformed-input and ASan/UBSan gates. This is not
-the complete DTESSL design described in `LANGUAGE_DESIGN.md`; the next gate is
-the `v0.1.3` exact numeric profile.
+**Released slice.** `v0.1.3` exact integers/rationals passed standard,
+`-Werror`, ASan/UBSan, install, malformed-input and CLI replay gates. This is
+not the complete DTESSL design described in `LANGUAGE_DESIGN.md`; the next gate
+is `v0.2.0` relation and deterministic search.
 
 ## Current goal contract
 
@@ -25,8 +25,8 @@ the `v0.1.3` exact numeric profile.
   ChenVM integration.
 - Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
   universal bytecode and premature JIT.
-- Current exit gate: publish a clean, self-reporting `v0.1.3` with normalized
-  exact rational arithmetic and a cross-backend numeric profile.
+- Current exit gate: publish `v0.2.0` finite relation algebra, `E/A`, explicit
+  deterministic selection and bounded static/runtime search plans.
 
 ## Evidence matrix
 
@@ -44,11 +44,12 @@ the `v0.1.3` exact numeric profile.
 | Generic finite collections | Nested source values, generic set execution/merge and codec roundtrips | One scheduler fixture; no large search benchmark | candidate |
 | Algebraic/nominal values | Record/variant/enum/newtype/option/result execution and codec roundtrips | Algebraic CLI replay fixture passes | pass |
 | Exhaustive matching | Positive option/variant payload matches plus non-exhaustive rejection | Both branches exercised over consecutive events | pass |
+| Exact numeric profile | Big-int identities, signed small-domain differential test, normalized rational arithmetic and golden bytes | Exact numeric CLI replay passes | pass |
 | Deterministic action DAG | Dependency assertions and replay equality | CLI output shows serial fan-out | pass |
 | Relation predicate baseline | `exists`, membership and set updates tested | Unknown worker disables transition | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.1.2` | Release tag and install smoke | pass |
+| Version identity | CMake/generated header/CLI/test at `0.1.3` | Release tag and installed CLI smoke | pass |
 | Full relation/search design | Specification exists | Implementation absent | missing |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
 | Typed host receipts/replay | Call plan baseline exists | Receipt protocol absent | missing |
@@ -61,10 +62,9 @@ the `v0.1.3` exact numeric profile.
 - P0 gap: replay is one event and recomputes rather than consuming recorded
   receipts.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
-- P0 gap: exact rational and its cross-backend numeric profile are not implemented.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-There is no external blocker for the `v0.1.3` gate.
+There is no external blocker for the `v0.2.0` gate.
 
 ## Risks
 
@@ -78,9 +78,10 @@ There is no external blocker for the `v0.1.3` gate.
 
 ## Next corrective focus
 
-1. Begin `v0.1.3` exact rational and numeric profile.
-2. Add normalized arithmetic, overflow/budget and canonical byte-golden tests.
-3. Reject any claim that the full language is complete until all roadmap gates
+1. Define a canonical n-ary relation value and typed relation schema.
+2. Implement deterministic project/join/compose/closure and `E/A`.
+3. Add explicit `select ... by lex` with ambiguity and budget rejection.
+4. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
 ## Decision log
@@ -103,3 +104,6 @@ There is no external blocker for the `v0.1.3` gate.
 - 2026-08-28: `v0.1.2` released algebraic/nominal values, exhaustive matching
   and additive Canonical Value Format v1 tags; standard and ASan/UBSan suites
   pass with four tests each.
+- 2026-08-28: `v0.1.3` released arbitrary exact integers, normalized rationals,
+  frozen numeric/canonical profiles and deterministic budget failures; standard,
+  `-Werror` and ASan/UBSan suites pass with five tests each.

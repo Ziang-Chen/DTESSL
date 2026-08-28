@@ -31,6 +31,8 @@ not the future canonical module format.
 | `08` | record | type identity, field count, then strictly name-sorted name/value pairs |
 | `09` | variant/enum/option/result | type identity, constructor identity, payload count (zero or one), then payload |
 | `0a` | newtype | type identity followed by exactly one canonical value |
+| `0b` | big integer | sign byte, magnitude-byte count, minimal unsigned big-endian magnitude |
+| `0c` | rational | canonical integer numerator followed by canonical positive integer denominator |
 
 Unknown tags are invalid.
 
@@ -44,6 +46,8 @@ true              00 01
 {"a", "b"}        03 02 01 61 01 62
 SessionId("x")    0a 09 53 65 73 73 69 6f 6e 49 64 02 01 78
 Phase.Running     09 05 50 68 61 73 65 07 52 75 6e 6e 69 6e 67 00
+9223372036854775808  0b 00 08 80 00 00 00 00 00 00 00
+1/2               0c 01 00 00 00 00 00 00 00 01 01 00 00 00 00 00 00 00 02
 ```
 
 ## Canonicality
@@ -54,6 +58,8 @@ sets. Therefore `encode(decode(bytes)) == bytes` for every accepted sequence,
 and `decode(encode(value)) == value` for every supported value.
 
 Future kinds receive new tags. Existing tag meaning is immutable within format
-v1. Exact rationals are introduced in a later `v0.1.x` release with additional
-golden vectors. Recursive decoding is bounded by maximum depth,
+v1. Big integers outside int64 must use tag `0b`; values inside int64 must use
+the original tag `01`. Rational components must already be gcd-normalized with
+a positive denominator, so decoding never accepts bytes whose re-encoding would
+change. Recursive decoding is bounded by maximum depth,
 collection cardinality, string size and total bytes.

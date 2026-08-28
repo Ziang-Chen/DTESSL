@@ -3,6 +3,21 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.1.3
+
+- Deterministic signed arbitrary-precision `int` with bounded source/runtime
+  magnitude profiles and no host floating-point dependency.
+- Normalized exact `rational` values with positive denominator, gcd reduction
+  and canonical zero.
+- Exact `+`, `-`, `*`, `/`, negation, comparison and mixed int/rational
+  promotion; division by zero rejects the round before state commit.
+- Additive canonical big-integer and rational tags while retaining every
+  existing int64 golden byte.
+- Public exact-numeric C++ API, backend feature negotiation and CLI support for
+  integers beyond int64.
+- Small-domain differential arithmetic, large-number identities, byte-golden,
+  malformed/non-normalized codec and end-to-end replay tests.
+
 ## v0.1.2
 
 - Nominal `newtype`, typed `record`, payload/no-payload `variant` and `enum`

@@ -28,6 +28,7 @@ enum class LanguageFeature {
   AlgebraicDataTypes,
   NominalTypes,
   ExhaustiveMatch,
+  ExactNumeric,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

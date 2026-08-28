@@ -46,6 +46,8 @@ state Scheduler @ local initial:
   phase: Phase = Phase.Idle
   maybe_priority: option<int> = none
   outcome: result<int, string> = ok(0)
+  huge: int = 9223372036854775808
+  ratio: rational = 1/3
   invariant:
     credits >= 0 and count(workers) = 2 and count(busy) <= count(workers)
     and count(numbers) >= 2 and count(queue) = 2 and count(weights) = 2
@@ -120,6 +122,19 @@ transition RejectDecision @ Reject(reason: string):
     maybe_priority = none<int>()
     outcome = err<int>(reason)
     note = match before.decision { Accepted(found) -> found.owner, Rejected(previous) -> previous }
+
+transition Calculate @ Exact(delta: int):
+  from Scheduler
+  to Scheduler:
+    huge = before.huge * delta + 1
+    ratio = before.ratio + 1 / 6
+  where:
+    delta > 0
+
+transition DivideZero @ Zero():
+  from Scheduler
+  to Scheduler:
+    ratio = before.ratio / 0
 )DTESSL";
 
 [[noreturn]] void fail(const std::string& message) {
@@ -134,7 +149,7 @@ void require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.1.2", "compiled version must be v0.1.2");
+  require(dtessl::version == "0.1.3", "compiled version must be v0.1.3");
   const auto roundtrip = [](const dtessl::Value& value) {
     const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
     require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
@@ -173,6 +188,51 @@ int main() {
   roundtrip(record);
   roundtrip(variant);
   roundtrip(enumeration);
+  const dtessl::ExactInt huge =
+      dtessl::ExactInt::parse("1234567890123456789012345678901234567890");
+  const dtessl::ExactInt factor = dtessl::ExactInt::parse("98765432109876543210");
+  require(((huge * factor) / factor) == huge && ((huge * factor) % factor).is_zero(),
+          "arbitrary integer multiply/divide identity failed");
+  for (std::int64_t left = -50; left <= 50; ++left) {
+    for (std::int64_t right = -50; right <= 50; ++right) {
+      const dtessl::ExactInt lhs(left);
+      const dtessl::ExactInt rhs(right);
+      require((lhs + rhs).to_int64() == left + right &&
+                  (lhs - rhs).to_int64() == left - right &&
+                  (lhs * rhs).to_int64() == left * right,
+              "exact integer small-domain arithmetic disagrees with int64");
+      if (right != 0) {
+        require((lhs / rhs).to_int64() == left / right &&
+                    (lhs % rhs).to_int64() == left % right,
+                "exact integer signed division disagrees with truncation profile");
+      }
+    }
+  }
+  const dtessl::Rational half(dtessl::ExactInt::parse("-2"),
+                              dtessl::ExactInt::parse("-4"));
+  const dtessl::Rational third(1, 3);
+  require(half.text() == "1/2" && (half + third).text() == "5/6" &&
+              (half * third).text() == "1/6" && (half / third).text() == "3/2",
+          "rational normalization or arithmetic failed");
+  bool source_budget_error = false;
+  try {
+    static_cast<void>(dtessl::ExactInt::parse(std::string(4097, '9')));
+  } catch (const dtessl::Error&) {
+    source_budget_error = true;
+  }
+  require(source_budget_error, "exact integer source digit budget was not enforced");
+  const dtessl::ExactInt limit_operand = dtessl::ExactInt::parse(std::string(4096, '9'));
+  const dtessl::ExactInt wide = limit_operand * limit_operand;
+  bool runtime_budget_error = false;
+  try {
+    static_cast<void>(wide * limit_operand);
+  } catch (const dtessl::Error&) {
+    runtime_budget_error = true;
+  }
+  require(runtime_budget_error, "exact integer runtime magnitude budget was not enforced");
+  roundtrip(dtessl::Value(huge));
+  roundtrip(dtessl::Value(-huge));
+  roundtrip(dtessl::Value(half));
   require(record.as_record().fields.front().first == "active",
           "record fields were not canonically sorted");
   require(generic_set.as_set().values.front().as_int() == 1,
@@ -208,6 +268,15 @@ int main() {
               std::vector<std::uint8_t>({9, 5, 'P', 'h', 'a', 's', 'e', 7,
                                          'R', 'u', 'n', 'n', 'i', 'n', 'g', 0}),
           "canonical enum golden bytes changed");
+  require(dtessl::encode_value(dtessl::Value(
+              dtessl::ExactInt::parse("9223372036854775808"))) ==
+              std::vector<std::uint8_t>({11, 0, 8, 0x80, 0, 0, 0, 0, 0, 0, 0}),
+          "canonical big integer golden bytes changed");
+  require(dtessl::encode_value(dtessl::Value(dtessl::Rational(1, 2))) ==
+              std::vector<std::uint8_t>({12,
+                                         1, 0, 0, 0, 0, 0, 0, 0, 1,
+                                         1, 0, 0, 0, 0, 0, 0, 0, 2}),
+          "canonical rational golden bytes changed");
   bool noncanonical = false;
   try {
     static_cast<void>(dtessl::decode_value(
@@ -223,6 +292,10 @@ int main() {
            std::vector<std::uint8_t>{8, 1, 'T', 2, 1, 'b', 0, 0, 1, 'a', 0, 0},
            std::vector<std::uint8_t>{9, 1, 'T', 1, 'C', 2},
            std::vector<std::uint8_t>{10, 1, 'T'},
+           std::vector<std::uint8_t>{11, 0, 1, 42},
+           std::vector<std::uint8_t>{12,
+                                     1, 0, 0, 0, 0, 0, 0, 0, 2,
+                                     1, 0, 0, 0, 0, 0, 0, 0, 4},
            std::vector<std::uint8_t>{9}}) {
     bool rejected_codec = false;
     try {
@@ -389,6 +462,24 @@ int main() {
               rejected_decision.state.at("outcome").as_variant().constructor == "err" &&
               rejected_decision.state.at("outcome").as_variant().payload.front().as_string() == "policy",
           "payload match, typed none, or err construction failed");
+
+  dtessl::Engine numeric(program);
+  const dtessl::StepResult calculated = numeric.step(
+      dtessl::Event{"Exact", {{"delta", dtessl::Value(std::int64_t{2})}}});
+  require(calculated.state.at("huge").as_exact_int().text() ==
+              "18446744073709551617" &&
+              calculated.state.at("ratio").as_rational().text() == "1/2",
+          "exact numeric transition arithmetic failed");
+  dtessl::Engine divide_zero(program);
+  bool zero_error = false;
+  try {
+    static_cast<void>(divide_zero.step(dtessl::Event{"Zero", {}}));
+  } catch (const dtessl::Error&) {
+    zero_error = true;
+  }
+  require(zero_error && divide_zero.current_round() == 0 &&
+              divide_zero.values().at("ratio").as_rational().text() == "1/3",
+          "division by zero must reject the round without committing state");
 
   dtessl::ScratchPool pool(64, 128);
   struct Pair {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dtessl/exact_numeric.hpp"
+
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -33,6 +35,7 @@ class Value {
     Bool,
     Int,
     String,
+    Rational,
     StringSet,
     List,
     Set,
@@ -45,6 +48,8 @@ class Value {
 
   Value(bool value);
   Value(std::int64_t value);
+  Value(ExactInt value);
+  Value(Rational value);
   Value(std::string value);
   Value(const char* value);
   Value(StringSet value);
@@ -59,6 +64,8 @@ class Value {
   [[nodiscard]] Kind kind() const noexcept;
   [[nodiscard]] bool as_bool() const;
   [[nodiscard]] std::int64_t as_int() const;
+  [[nodiscard]] const ExactInt& as_exact_int() const;
+  [[nodiscard]] const Rational& as_rational() const;
   [[nodiscard]] const std::string& as_string() const;
   [[nodiscard]] const StringSet& as_string_set() const;
   [[nodiscard]] const ValueList& as_list() const;
@@ -74,7 +81,8 @@ class Value {
  private:
   Kind kind_;
   bool bool_value_{false};
-  std::int64_t int_value_{0};
+  ExactInt int_value_;
+  Rational rational_value_;
   std::string string_value_;
   StringSet set_value_;
   std::shared_ptr<const ValueList> list_value_;

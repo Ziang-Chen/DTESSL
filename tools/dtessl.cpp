@@ -2,7 +2,9 @@
 #include "dtessl/backend.hpp"
 #include "dtessl/version.hpp"
 
-#include <charconv>
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -25,10 +27,14 @@ std::string read_file(const std::string& path) {
 dtessl::Value parse_value(std::string_view text) {
   if (text == "true") return dtessl::Value(true);
   if (text == "false") return dtessl::Value(false);
-  std::int64_t integer = 0;
-  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), integer);
-  if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) {
-    return dtessl::Value(integer);
+  std::size_t digit = (!text.empty() && (text.front() == '-' || text.front() == '+')) ? 1U : 0U;
+  const bool integer = digit < text.size() &&
+                       std::all_of(text.begin() + static_cast<std::ptrdiff_t>(digit), text.end(),
+                                   [](char value) {
+                                     return std::isdigit(static_cast<unsigned char>(value)) != 0;
+                                   });
+  if (integer) {
+    return dtessl::Value(dtessl::ExactInt::parse(text));
   }
   return dtessl::Value(std::string(text));
 }

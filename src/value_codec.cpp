@@ -20,6 +20,8 @@ enum class Tag : std::uint8_t {
   Record = 8,
   Variant = 9,
   Newtype = 10,
+  BigInt = 11,
+  Rational = 12,
 };
 
 void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
@@ -59,6 +61,32 @@ class Decoder {
           raw = (raw << 8U) | byte();
         }
         return Value(std::bit_cast<std::int64_t>(raw));
+      }
+      case Tag::BigInt: {
+        const std::uint8_t sign = byte();
+        if (sign > 1U) throw Error("non-canonical big integer sign");
+        const std::size_t size = varuint();
+        if (size == 0 || size > limits_.max_string_bytes || size > remaining()) {
+          throw Error("invalid canonical big integer magnitude");
+        }
+        const std::span<const std::uint8_t> magnitude = bytes_.subspan(cursor_, size);
+        cursor_ += size;
+        ExactInt integer = ExactInt::from_magnitude_bytes(sign != 0U, magnitude);
+        if (integer.fits_int64()) throw Error("non-canonical small integer uses big tag");
+        return Value(std::move(integer));
+      }
+      case Tag::Rational: {
+        Value numerator = value(depth + 1U);
+        Value denominator = value(depth + 1U);
+        if (numerator.kind() != Value::Kind::Int || denominator.kind() != Value::Kind::Int) {
+          throw Error("canonical rational components must be integers");
+        }
+        Rational rational(numerator.as_exact_int(), denominator.as_exact_int());
+        if (rational.numerator() != numerator.as_exact_int() ||
+            rational.denominator() != denominator.as_exact_int()) {
+          throw Error("non-normalized canonical rational");
+        }
+        return Value(std::move(rational));
       }
       case Tag::String: return Value(string());
       case Tag::StringSet: {
@@ -232,13 +260,30 @@ void encode_into(const Value& value, std::vector<std::uint8_t>& output,
       output.push_back(value.as_bool() ? 1U : 0U);
       break;
     case Value::Kind::Int: {
-      output.push_back(static_cast<std::uint8_t>(Tag::Int));
-      const std::uint64_t raw = std::bit_cast<std::uint64_t>(value.as_int());
-      for (int shift = 56; shift >= 0; shift -= 8) {
-        output.push_back(static_cast<std::uint8_t>(raw >> static_cast<unsigned>(shift)));
+      if (value.as_exact_int().fits_int64()) {
+        output.push_back(static_cast<std::uint8_t>(Tag::Int));
+        const std::uint64_t raw =
+            std::bit_cast<std::uint64_t>(value.as_exact_int().to_int64());
+        for (int shift = 56; shift >= 0; shift -= 8) {
+          output.push_back(static_cast<std::uint8_t>(raw >> static_cast<unsigned>(shift)));
+        }
+      } else {
+        output.push_back(static_cast<std::uint8_t>(Tag::BigInt));
+        output.push_back(value.as_exact_int().is_negative() ? 1U : 0U);
+        const std::vector<std::uint8_t> magnitude = value.as_exact_int().magnitude_bytes();
+        if (magnitude.size() > limits.max_string_bytes) {
+          throw Error("canonical integer exceeds magnitude limit");
+        }
+        append_varuint(output, magnitude.size());
+        output.insert(output.end(), magnitude.begin(), magnitude.end());
       }
       break;
     }
+    case Value::Kind::Rational:
+      output.push_back(static_cast<std::uint8_t>(Tag::Rational));
+      encode_into(Value(value.as_rational().numerator()), output, limits, depth + 1U);
+      encode_into(Value(value.as_rational().denominator()), output, limits, depth + 1U);
+      break;
     case Value::Kind::String:
       output.push_back(static_cast<std::uint8_t>(Tag::String));
       append_string(output, value.as_string());
