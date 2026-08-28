@@ -43,7 +43,7 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "by", "lex", "match", "E", "A", "true", "false", "none", "some",
       "ok", "err", "round", "trace", "replay", "capture", "closed",
       "projected", "Claim", "always", "eventually", "case", "function",
-      "procedure", "initial", "inject", "when", "optimized_score"};
+      "procedure", "initial", "inject", "when", "trans", "optimized_score"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
@@ -197,7 +197,7 @@ std::vector<Token> lex(std::string_view source,
           cursor += 2;
           continue;
         }
-        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.*~/";
+        static constexpr std::string_view symbols = "@:$,|;&(){}[]<>=+-.*~/";
         if (symbols.find(static_cast<char>(ch)) != std::string_view::npos) {
           if (ch == '(' || ch == '[' || ch == '{') {
             ++delimiter_depth;
@@ -532,6 +532,47 @@ struct ProcedureDeclaration {
   std::string name;
   std::string initial_context;
   std::vector<StateBinding> initial_states;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+// Semicolon-terminated, single-line quick-model syntax. These nodes preserve
+// their source identity until Parser::program lowers them into the same typed
+// State/Transition/Procedure/Trace AST used by the full surface language.
+struct CompactStateDeclaration {
+  std::vector<std::string> names;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct CompactTransitionDeclaration {
+  std::string from;
+  std::string to;
+  ExprPtr condition{make_literal(Value(true))};
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct CompactFieldInitialization {
+  std::string state;
+  std::string field;
+  DataType type;
+  Value value;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct CompactProcedureDeclaration {
+  std::string name;
+  std::vector<std::string> active_states;
+  std::vector<CompactFieldInitialization> fields;
+  std::string injection;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct CompactTraceDeclaration {
+  std::string procedure;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -1016,6 +1057,9 @@ class Parser {
 
  private:
   const Token& peek() const { return tokens_[cursor_]; }
+  const Token& peek(std::size_t offset) const {
+    return tokens_[std::min(cursor_ + offset, tokens_.size() - 1U)];
+  }
   bool at(TokenKind kind) const { return peek().kind == kind; }
   bool at(std::string_view text) const { return peek().text == text; }
 
@@ -1058,6 +1102,15 @@ class Parser {
   TraceDeclaration trace(const std::vector<Transition>& transitions);
   ClaimDeclaration claim();
   ProcedureDeclaration procedure();
+  CompactStateDeclaration compact_state();
+  CompactTransitionDeclaration compact_transition();
+  CompactProcedureDeclaration compact_procedure();
+  CompactTraceDeclaration compact_trace();
+  void lower_compact(Program::Impl& program,
+                     const std::vector<CompactStateDeclaration>& states,
+                     const std::vector<CompactTransitionDeclaration>& transitions,
+                     const std::vector<CompactProcedureDeclaration>& procedures,
+                     const std::vector<CompactTraceDeclaration>& traces);
   ExprPtr line_expression();
   ExprPtr block_expression();
   std::shared_ptr<ActionExpr> block_action();
@@ -2255,8 +2308,382 @@ ClaimDeclaration Parser::claim() {
   return result;
 }
 
+CompactStateDeclaration Parser::compact_state() {
+  const Token start = peek();
+  expect("state");
+  CompactStateDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  do {
+    if (at(TokenKind::Newline) || at(TokenKind::End)) {
+      fail(peek(), "compact state declaration must end with ';' on the same line");
+    }
+    result.names.push_back(identifier());
+  } while (match(","));
+  expect(";");
+  newline();
+  return result;
+}
+
+CompactTransitionDeclaration Parser::compact_transition() {
+  const Token start = peek();
+  expect("trans");
+  CompactTransitionDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.from = identifier();
+  expect("->");
+  result.to = identifier();
+  if (match("when")) {
+    std::vector<Token> expression_tokens;
+    std::size_t depth = 0;
+    while (!at(";")) {
+      if (at(TokenKind::Newline) || at(TokenKind::End)) {
+        fail(peek(), "compact trans declaration must end with ';' on the same line");
+      }
+      Token token = take();
+      if (token.text == "(" || token.text == "[" || token.text == "{") {
+        ++depth;
+      } else if (token.text == ")" || token.text == "]" || token.text == "}") {
+        if (depth != 0) --depth;
+      } else if (token.text == "," && depth == 0) {
+        token.kind = TokenKind::Identifier;
+        token.text = "and";
+      }
+      expression_tokens.push_back(std::move(token));
+    }
+    if (expression_tokens.empty()) fail(start, "compact trans when clause is empty");
+    FlatParser parser(std::move(expression_tokens), types_);
+    result.condition = parser.expression();
+    parser.expect_end();
+  }
+  expect(";");
+  newline();
+  return result;
+}
+
+CompactProcedureDeclaration Parser::compact_procedure() {
+  const Token start = peek();
+  expect("procedure");
+  CompactProcedureDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = identifier();
+
+  const auto compact_literal = [&]() -> std::pair<DataType, Value> {
+    if (match("true")) return {bool_type(), Value(true)};
+    if (match("false")) return {bool_type(), Value(false)};
+    if (at(TokenKind::String)) return {string_type(), Value(take().text)};
+    const bool negative = match("-");
+    if (!at(TokenKind::Integer)) {
+      fail(peek(), "compact procedure field requires a bool, integer, rational, or string literal");
+    }
+    const Token numerator_token = take();
+    ExactInt numerator;
+    try {
+      numerator = ExactInt::parse(numerator_token.text);
+    } catch (const Error& error) {
+      fail(numerator_token, error.what());
+    }
+    if (negative) numerator = -numerator;
+    if (!match("/")) return {int_type(), Value(std::move(numerator))};
+    const bool denominator_negative = match("-");
+    if (!at(TokenKind::Integer)) fail(peek(), "expected rational denominator");
+    const Token denominator_token = take();
+    ExactInt denominator;
+    try {
+      denominator = ExactInt::parse(denominator_token.text);
+    } catch (const Error& error) {
+      fail(denominator_token, error.what());
+    }
+    if (denominator_negative) denominator = -denominator;
+    try {
+      return {rational_type(),
+              Value(Rational(std::move(numerator), std::move(denominator)))};
+    } catch (const Error& error) {
+      fail(denominator_token, error.what());
+    }
+  };
+
+  bool need_item = true;
+  while (!at("&") && !at(";")) {
+    if (at(TokenKind::Newline) || at(TokenKind::End)) {
+      fail(peek(), "compact procedure declaration must end with ';' on the same line");
+    }
+    if (!need_item) expect(",");
+    const Token item_start = peek();
+    const std::string state_name = identifier();
+    if (match(".")) {
+      const std::string field_name = identifier();
+      expect("=");
+      auto [type, value] = compact_literal();
+      result.fields.push_back(CompactFieldInitialization{
+          state_name, field_name, std::move(type), std::move(value),
+          item_start.line, item_start.column});
+    } else {
+      result.active_states.push_back(state_name);
+    }
+    need_item = false;
+  }
+  if (result.active_states.empty()) {
+    fail(start, "compact procedure requires at least one initial state");
+  }
+  if (match("&")) {
+    expect("inject");
+    result.injection = identifier();
+  }
+  expect(";");
+  newline();
+  return result;
+}
+
+CompactTraceDeclaration Parser::compact_trace() {
+  const Token start = peek();
+  expect("trace");
+  expect("@");
+  CompactTraceDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.procedure = identifier();
+  expect(";");
+  newline();
+  return result;
+}
+
+void Parser::lower_compact(
+    Program::Impl& program,
+    const std::vector<CompactStateDeclaration>& states,
+    const std::vector<CompactTransitionDeclaration>& transitions,
+    const std::vector<CompactProcedureDeclaration>& procedures,
+    const std::vector<CompactTraceDeclaration>& traces) {
+  if (states.empty() && transitions.empty() && procedures.empty() && traces.empty()) return;
+
+  std::map<std::string, std::string, std::less<>> parent;
+  std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>> locations;
+  for (const CompactStateDeclaration& declaration : states) {
+    for (const std::string& name : declaration.names) {
+      if (!parent.emplace(name, name).second) {
+        throw Error("duplicate compact state '" + name + "'", declaration.line,
+                    declaration.column);
+      }
+      locations.emplace(name, std::pair{declaration.line, declaration.column});
+    }
+  }
+  if (parent.empty()) {
+    const auto& declaration = !transitions.empty()
+                                  ? std::pair{transitions.front().line,
+                                              transitions.front().column}
+                                  : !procedures.empty()
+                                        ? std::pair{procedures.front().line,
+                                                    procedures.front().column}
+                                        : std::pair{traces.front().line,
+                                                    traces.front().column};
+    throw Error("compact model must declare states before use", declaration.first,
+                declaration.second);
+  }
+
+  const auto find_root = [&](std::string name) {
+    while (parent.at(name) != name) name = parent.at(name);
+    return name;
+  };
+  const auto require_state = [&](std::string_view name, std::size_t line,
+                                 std::size_t column) {
+    if (!parent.contains(name)) {
+      throw Error("compact model references unknown state '" + std::string(name) + "'",
+                  line, column);
+    }
+  };
+  for (const CompactTransitionDeclaration& transition : transitions) {
+    require_state(transition.from, transition.line, transition.column);
+    require_state(transition.to, transition.line, transition.column);
+    const std::string left = find_root(transition.from);
+    const std::string right = find_root(transition.to);
+    if (left != right) {
+      const std::string keep = std::min(left, right);
+      const std::string merge = std::max(left, right);
+      parent[merge] = keep;
+    }
+  }
+  for (auto& [name, root] : parent) root = find_root(name);
+
+  std::map<std::string, std::string, std::less<>> contexts;
+  for (const auto& [name, root] : parent) {
+    static_cast<void>(name);
+    contexts.try_emplace(root, "compact_" + root);
+  }
+  const auto context_for = [&](std::string_view state) -> const std::string& {
+    return contexts.at(parent.at(std::string(state)));
+  };
+
+  struct CompactField {
+    DataType type;
+    Value value;
+    std::size_t line;
+    std::size_t column;
+  };
+  std::map<std::pair<std::string, std::string>, CompactField> fields;
+  std::set<std::string, std::less<>> injections;
+  for (const CompactProcedureDeclaration& procedure : procedures) {
+    for (const std::string& state : procedure.active_states) {
+      require_state(state, procedure.line, procedure.column);
+    }
+    for (const CompactFieldInitialization& field : procedure.fields) {
+      require_state(field.state, field.line, field.column);
+      const auto key = std::pair{parent.at(field.state), field.field};
+      const auto [found, inserted] = fields.emplace(
+          key, CompactField{field.type, field.value, field.line, field.column});
+      if (!inserted &&
+          (found->second.type != field.type || !(found->second.value == field.value))) {
+        throw Error("compact procedures disagree on default field '" + field.field +
+                        "' for state axis @" + context_for(field.state),
+                    field.line, field.column);
+      }
+    }
+    if (!procedure.injection.empty()) injections.insert(procedure.injection);
+  }
+
+  std::map<std::string, std::string, std::less<>> first_state;
+  for (const auto& [name, root] : parent) first_state.try_emplace(root, name);
+  for (const auto& [name, root] : parent) {
+    const auto [line, column] = locations.at(name);
+    State state;
+    state.name = name;
+    state.context = context_for(name);
+    state.initial = first_state.at(root) == name;
+    state.line = line;
+    state.column = column;
+    for (const auto& [key, field] : fields) {
+      if (key.first != root) continue;
+      state.fields.push_back(Field{key.second, field.type, field.value, Field::Merge::Reject,
+                                   field.line, field.column});
+    }
+    program.states.push_back(std::move(state));
+  }
+
+  const std::function<void(const ExprPtr&)> rewrite_names = [&](const ExprPtr& expression) {
+    if (!expression) return;
+    if (expression->kind == Expr::Kind::Name) {
+      const std::size_t dot = expression->text.find('.');
+      if (dot != std::string::npos) {
+        const std::string state = expression->text.substr(0, dot);
+        if (parent.contains(state)) {
+          expression->text = contexts.size() == 1U
+                                 ? expression->text.substr(dot + 1U)
+                                 : context_for(state) + expression->text.substr(dot);
+        }
+      }
+    }
+    rewrite_names(expression->left);
+    rewrite_names(expression->right);
+    rewrite_names(expression->third);
+    for (const ExprPtr& child : expression->children) rewrite_names(child);
+    for (const MatchArm& arm : expression->arms) rewrite_names(arm.body);
+  };
+  for (const CompactTransitionDeclaration& transition : transitions) {
+    rewrite_names(transition.condition);
+  }
+
+  if (transitions.empty() && !injections.empty()) {
+    const CompactProcedureDeclaration& procedure = procedures.front();
+    throw Error("compact procedure inject requires at least one trans declaration",
+                procedure.line, procedure.column);
+  }
+  if (!transitions.empty() && injections.empty()) injections.insert("step");
+  for (const std::string& injection : injections) {
+    Transition family;
+    family.name = injection;
+    family.event = injection;
+    family.line = transitions.front().line;
+    family.column = transitions.front().column;
+    std::map<std::string, std::size_t, std::less<>> route_names;
+    for (std::size_t index = 0; index < transitions.size(); ++index) {
+      const CompactTransitionDeclaration& compact = transitions[index];
+      std::string route_name = compact.from + "_to_" + compact.to;
+      const std::size_t ordinal = ++route_names[route_name];
+      if (ordinal != 1U) route_name += "_" + std::to_string(ordinal);
+      TransitionAlternative route;
+      route.name = std::move(route_name);
+      route.from.push_back(StateBinding{compact.from, context_for(compact.from),
+                                        compact.line, compact.column});
+      route.to.push_back(TransitionTarget{
+          StateBinding{compact.to, context_for(compact.to), compact.line, compact.column}, {}});
+      route.condition = compact.condition;
+      if (index == 0) {
+        family.case_name = std::move(route.name);
+        family.from = std::move(route.from);
+        family.to = std::move(route.to);
+        family.condition = std::move(route.condition);
+      } else {
+        family.alternatives.push_back(std::move(route));
+      }
+    }
+    program.transitions.push_back(std::move(family));
+  }
+
+  for (const CompactProcedureDeclaration& compact : procedures) {
+    ProcedureDeclaration procedure;
+    procedure.name = compact.name;
+    procedure.initial_context = "compact";
+    procedure.line = compact.line;
+    procedure.column = compact.column;
+    std::set<std::string, std::less<>> selected_contexts;
+    for (const std::string& state : compact.active_states) {
+      const std::string& context = context_for(state);
+      if (!selected_contexts.insert(context).second) continue;
+      procedure.initial_states.push_back(
+          StateBinding{state, context, compact.line, compact.column});
+    }
+    if (!program.procedures.emplace(procedure.name, std::move(procedure)).second) {
+      throw Error("duplicate procedure declaration '" + compact.name + "'",
+                  compact.line, compact.column);
+    }
+  }
+
+  for (const CompactTraceDeclaration& compact : traces) {
+    std::string procedure_name = compact.procedure;
+    if (procedure_name == "procedure") {
+      if (procedures.size() != 1U) {
+        throw Error("trace @procedure requires exactly one compact procedure",
+                    compact.line, compact.column);
+      }
+      procedure_name = procedures.front().name;
+    }
+    const auto procedure = std::find_if(
+        procedures.begin(), procedures.end(), [&](const CompactProcedureDeclaration& item) {
+          return item.name == procedure_name;
+        });
+    if (procedure == procedures.end()) {
+      throw Error("compact trace references unknown compact procedure '" + procedure_name +
+                      "'",
+                  compact.line, compact.column);
+    }
+    TraceDeclaration trace;
+    trace.name = procedure_name;
+    trace.root_context = "compact";
+    trace.line = compact.line;
+    trace.column = compact.column;
+    trace.has_capture = true;
+    trace.capture_mode = TraceCaptureMode::Closed;
+    trace.captured_procedures.insert(procedure_name);
+    if (!procedure->injection.empty()) {
+      trace.has_replay = true;
+      EventBatch batch;
+      batch.events.push_back(Event{procedure->injection, {}});
+      trace.events.rounds.push_back(std::move(batch));
+      trace.replay_paths.push_back({""});
+      trace.replay_procedures.push_back({procedure_name});
+      trace.replay_transitions.push_back({procedure->injection});
+    }
+    program.traces.push_back(std::move(trace));
+  }
+}
+
 std::shared_ptr<Program::Impl> Parser::program() {
   auto result = std::make_shared<Program::Impl>();
+  std::vector<CompactStateDeclaration> compact_states;
+  std::vector<CompactTransitionDeclaration> compact_transitions;
+  std::vector<CompactProcedureDeclaration> compact_procedures;
+  std::vector<CompactTraceDeclaration> compact_traces;
   while (!at(TokenKind::End)) {
     if (at(TokenKind::Newline)) {
       take();
@@ -2275,22 +2702,38 @@ std::shared_ptr<Program::Impl> Parser::program() {
         fail(peek(), "duplicate function declaration");
       }
     } else if (at("state")) {
-      result->states.push_back(state());
+      if (peek(2).text == "," || peek(2).text == ";") {
+        compact_states.push_back(compact_state());
+      } else {
+        result->states.push_back(state());
+      }
+    } else if (at("trans")) {
+      compact_transitions.push_back(compact_transition());
     } else if (at("transition")) {
       result->transitions.push_back(transition());
     } else if (at("procedure")) {
-      ProcedureDeclaration declaration = procedure();
-      if (!result->procedures.emplace(declaration.name, std::move(declaration)).second) {
-        fail(peek(), "duplicate procedure declaration");
+      if (peek(2).text != "@") {
+        compact_procedures.push_back(compact_procedure());
+      } else {
+        ProcedureDeclaration declaration = procedure();
+        if (!result->procedures.emplace(declaration.name, std::move(declaration)).second) {
+          fail(peek(), "duplicate procedure declaration");
+        }
       }
     } else if (at("trace")) {
-      result->traces.push_back(trace(result->transitions));
+      if (peek(1).text == "@") {
+        compact_traces.push_back(compact_trace());
+      } else {
+        result->traces.push_back(trace(result->transitions));
+      }
     } else if (at("Claim")) {
       result->claims.push_back(claim());
     } else {
-      fail(peek(), "expected type, name, port, function, state, transition, procedure, trace, or Claim declaration");
+      fail(peek(), "expected type, name, port, function, state, trans, transition, procedure, trace, or Claim declaration");
     }
   }
+  lower_compact(*result, compact_states, compact_transitions, compact_procedures,
+                compact_traces);
   result->types = types_;
   return result;
 }

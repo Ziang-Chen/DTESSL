@@ -513,7 +513,7 @@ void repl_help() {
       << "  :reset                   rebuild legacy and procedure runtimes\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.3.2 syntax:\n"
+      << "\ncore v0.3.3 syntax:\n"
       << "  procedure/inject          persistent automaton + typed transition input\n"
       << "  replay/capture closed     transition replay + complete procedure closure\n"
       << "  name T / T(atom)         nominal logical names\n"
@@ -821,7 +821,7 @@ void usage(std::ostream& out) {
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.3.2: explicit optimized_score selection, indexed search, causal rounds,\n"
+      << "core v0.3.3: compact automata, optimized selection, indexed search, causal rounds,\n"
       << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
 }
 

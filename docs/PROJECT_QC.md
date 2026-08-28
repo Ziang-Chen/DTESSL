@@ -8,13 +8,13 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: integrate the `v0.3.2` runtime/optimizer with procedure REPL
-  support before adding compact automaton syntax
+- Current target: validate the `v0.3.3` compact automaton AST over the merged
+  runtime/optimizer and procedure REPL baseline
 - Stop orders: none
 
 ## Current state
 
-**Complete.** The `v0.3.2` implementation permits multiple enabled candidates
+**Baseline complete.** The `v0.3.2` implementation permits multiple enabled candidates
 only under an explicit exact-numeric after-state optimizer, selects the unique
 greatest score, rejects ties atomically, and retains the exactly-one rule for
 unannotated transitions. Standard, `-Werror` and ASan/UBSan suites pass 25/25;
@@ -24,6 +24,11 @@ implementation commit `83eb39e` is pushed on
 The local merge also brings in direct REPL access to `RuntimeContext`: procedure
 startup, typed injection, runtime inspection, closed capture and artifact
 replay. Its gates will be rerun against the merged TransitionInput semantics.
+
+The `v0.3.3` compact AST candidate is now implemented on that merged baseline.
+Standard, `-Werror`, and ASan/UBSan configurations each pass 31/31 tests,
+including compact check/trace integration, production highlighting and
+same-line rejection.
 
 ## Current goal contract
 
@@ -60,7 +65,8 @@ replay. Its gates will be rerun against the merged TransitionInput semantics.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.3.2` | Built CLI reports `v0.3.2` | pass |
+| Version identity | CMake/generated header target `0.3.3` | Built CLI reports `v0.3.3` | pass |
+| Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
 | Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
 | Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |

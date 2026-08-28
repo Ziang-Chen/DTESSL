@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.3.2` state/trace slice.
+- **Implemented**: accepted and executed through the `v0.3.3` state/trace slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -150,6 +150,27 @@ Projection-specific data may annotate the AST, but cannot redefine core state
 or transition meaning.
 
 ## 3. Compact surface vocabulary
+
+### Quick automaton form (v0.3.3)
+
+A declaration beginning with `state`, `trans`, `procedure` or `trace` and
+ending in `;` on that same physical line is a compact AST form:
+
+```dtessl
+state a, b, c;
+trans a -> b when b.val == 0;
+trans a -> c when b.val != 0;
+procedure p1 a, b.val = 0, c & inject ctodo;
+trace @procedure;
+```
+
+It is syntax sugar for rapid modeling, not a second language. Transition-graph
+connected components derive orthogonal `@context` axes. The first procedure
+state named on an axis is initial; later names on that axis are non-active
+model hints. Scalar assignments declare typed axis data. A comma between
+top-level `when` expressions is logical conjunction. The compact AST lowers
+directly to the ordinary typed AST before verification, indexing, execution,
+capture or replay. Newlines before `;` are rejected.
 
 ### Structural words
 

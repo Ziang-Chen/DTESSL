@@ -3,6 +3,22 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.3.3
+
+- Added semicolon-terminated, single-physical-line compact declarations for
+  quick automata: `state`, `trans`, `procedure` and `trace`.
+- Kept compact declarations as explicit source AST nodes, then lowered them
+  directly into the existing typed state/transition/procedure/trace AST. There
+  is no second parser, verifier, search loop or replay engine.
+- Derived orthogonal state axes from transition-graph connectivity. In a
+  compact procedure, the first listed state on each axis is initial and later
+  names on that same axis are non-active model hints.
+- Added inferred bool/int/rational/string state fields, comma-as-conjunction in
+  compact `when`, named TransitionId injection, generated path identities and
+  one-round procedure replay/capture.
+- Added a runnable compact example plus execution, highlighting and invalid
+  multiline-form tests.
+
 ## v0.3.2
 
 - Added explicit transition optimization syntax

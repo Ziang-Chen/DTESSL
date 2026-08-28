@@ -281,7 +281,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.3.2", "compiled version must be v0.3.2");
+  require(dtessl::version == "0.3.3", "compiled version must be v0.3.3");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1575,5 +1575,60 @@ transition Break @ Go():
     relation_type_error = true;
   }
   require(relation_type_error, "relation verifier accepted duplicate project columns");
+
+  constexpr std::string_view compact_automaton = R"DTESSL(
+state a, b, c;
+trans a -> b when b.val == 0;
+trans a -> c when b.val != 0;
+procedure p1 a, b.val = 0, c & inject ctodo;
+trace @procedure;
+)DTESSL";
+  const dtessl::Program compact_program = dtessl::parse(compact_automaton);
+  const dtessl::TraceSnapshot compact_trace =
+      dtessl::run_named_trace(compact_program, "p1");
+  require(compact_trace.replayable && compact_trace.rounds.size() == 1U &&
+              compact_trace.rounds.front().transitions.size() == 1U &&
+              compact_trace.rounds.front().transitions.front().transition ==
+                  "ctodo.a_to_b" &&
+              compact_trace.procedure_states.at("p1").at("val").as_int() == 0,
+          "compact AST did not lower to deterministic procedure replay semantics");
+  const dtessl::LanguageAnalysis compact_language =
+      dtessl::analyze_source(compact_automaton, "test://compact", 1);
+  require(compact_language.valid() &&
+              std::any_of(compact_language.highlights.begin(),
+                          compact_language.highlights.end(), [&](const auto& token) {
+                            return token.syntax == dtessl::SyntaxClass::Keyword &&
+                                   compact_automaton.substr(
+                                       token.range.start.offset,
+                                       token.range.end.offset - token.range.start.offset) ==
+                                       "trans";
+                          }),
+          "compact syntax did not reuse the production language service");
+
+  constexpr std::string_view multiline_compact = R"DTESSL(
+state a,
+  b;
+)DTESSL";
+  bool multiline_compact_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(multiline_compact));
+  } catch (const dtessl::Error&) {
+    multiline_compact_rejected = true;
+  }
+  require(multiline_compact_rejected,
+          "compact syntax accepted a declaration split across physical lines");
+
+  constexpr std::string_view compact_inject_without_transition = R"DTESSL(
+state idle;
+procedure broken idle & inject go;
+)DTESSL";
+  bool empty_compact_transition_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(compact_inject_without_transition));
+  } catch (const dtessl::Error&) {
+    empty_compact_transition_rejected = true;
+  }
+  require(empty_compact_transition_rejected,
+          "compact injection without a transition family was not rejected safely");
   return 0;
 }

@@ -65,10 +65,13 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.3.2 optimized-transition boundary
+## Current v0.3.3 compact-automaton boundary
 
 - Work is restricted to the DTESSL repository and the
-  `codex/optimized-transition-v0-3-2` branch.
+  `codex/compact-automaton-v0-3-3` branch.
+- Compact syntax is a source-level AST and direct lowering only. It cannot
+  create a second semantic pipeline or bypass typing, deterministic search,
+  procedure isolation, causal RoundId, capture or replay checks.
 - The slice preserves the v0.3.0 state/trace semantics while separating the
   source frontend from runtime execution and making transition-occurrence
   injection explicit.

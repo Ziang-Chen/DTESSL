@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.3.2)
+set(DTESSL_VERSION 0.3.3)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -221,6 +221,19 @@ if(DTESSL_BUILD_TESTS)
                    Interleaved)
   set_tests_properties(dtessl.procedure_replay_claim PROPERTIES
                        PASS_REGULAR_EXPRESSION "Persisted satisfied")
+  add_test(NAME dtessl.compact_automaton_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/compact_automaton.dtessl)
+  set_tests_properties(dtessl.compact_automaton_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.compact_automaton_trace
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   trace
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/compact_automaton.dtessl
+                   p1)
+  set_tests_properties(dtessl.compact_automaton_trace PROPERTIES
+                       PASS_REGULAR_EXPRESSION "transition ctodo.a_to_b")
   add_test(NAME dtessl.repl_procedure_runtime
            COMMAND ${CMAKE_COMMAND}
                    -DCLI=$<TARGET_FILE:dtessl_cli>

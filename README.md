@@ -1,4 +1,4 @@
-# DTESSL v0.3.2
+# DTESSL v0.3.3
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -49,6 +49,23 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 
 ## 最小语法
 
+快速建模可使用以 `;` 结尾、且从关键字到 `;` 不跨物理行的 compact 形式：
+
+```dtessl
+state a, b, c;
+trans a -> b when b.val == 0;
+trans a -> c when b.val != 0;
+procedure p1 a, b.val = 0, c & inject ctodo;
+trace @procedure;
+```
+
+`trans` 边的连通分量自动成为一个正交状态轴。`procedure` 中每个轴首次出现的
+state 是初态；同轴后续名称不重复激活。`b.val = 0` 为该轴声明并初始化 typed field，
+`inject ctodo` 提供 TransitionId；只有一个 compact procedure 时，`trace @procedure`
+为它建立最小 replay + closed capture（也可以直接写 `trace @p1`）。
+compact 节点直接降到下述正式 typed AST，因此 check、搜索、round、trace 和 replay 的
+语义完全相同。逗号分隔的 compact `when` 谓词按合取解释。
+
 ```dtessl
 newtype TaskId = string
 
@@ -83,8 +100,16 @@ transition Schedule @ Submit(task: string, worker: string):
 核心词法和文法骨架如下；缩进构成块，Tab 非法，`//` 开始行注释。
 
 ```ebnf
-program     = { type-declaration | port | function | state | transition
+program     = { type-declaration | port | function | state | compact-state
+              | transition | compact-transition | compact-procedure | compact-trace
               | procedure | trace | claim } ;
+compact-state = "state" Name { "," Name } ";" NEWLINE ;
+compact-transition = "trans" Name "->" Name
+                     [ "when" expression { "," expression } ] ";" NEWLINE ;
+compact-procedure = "procedure" Name compact-item { "," compact-item }
+                    [ "&" "inject" Name ] ";" NEWLINE ;
+compact-item = Name | Name "." Name "=" scalar-literal ;
+compact-trace = "trace" "@" Name ";" NEWLINE ;
 type-declaration = name-type | newtype | record | variant | enum ;
 name-type   = "name" Name NEWLINE ;
 newtype     = "newtype" Name "=" type NEWLINE ;
@@ -367,7 +392,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.3.2 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.3.3 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
 下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
 与可替换 solver backend。
