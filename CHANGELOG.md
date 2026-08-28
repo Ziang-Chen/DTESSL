@@ -3,6 +3,20 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.2.1
+
+- Added canonical, serializable `SemanticDescriptor v1` for model projections
+  actively supplied by existing systems; no implementation or log inference.
+- Added descriptor-to-DTESSL generation, line source maps, descriptor/source
+  SHA-256 digests and structural coverage with classified gaps.
+- Added generated-operational-mirror versus independent-assurance-model
+  provenance without treating either self-assertion as proof.
+- Added typed action-port declarations and static call argument verification.
+- Added bounded native `DTESSL EventTrace` logical replay. It never consumes
+  chenRT journals, snapshots or receipts and never re-executes physical effects.
+- Added descriptor check/generate/source-map/manifest/run/replay CLI paths and
+  conformance fixtures.
+
 ## v0.2.0
 
 - First-class typed `tuple<T...>` and finite `relation<T...>` values with

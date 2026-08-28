@@ -1,6 +1,7 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
 #include "dtessl/scratch_pool.hpp"
+#include "dtessl/semantic_descriptor.hpp"
 #include "dtessl/value_codec.hpp"
 #include "dtessl/version.hpp"
 
@@ -201,10 +202,48 @@ void require(bool condition, const std::string& message) {
   if (!condition) fail(message);
 }
 
+dtessl::SemanticDescriptor semantic_fixture() {
+  dtessl::SemanticDescriptor descriptor;
+  descriptor.name = "SchedulerMirror";
+  descriptor.origin = {"declared-model-projection", "tests/scheduler",
+                       std::string(64, 'a')};
+  descriptor.ports = {{"audit.observe", {"string"}},
+                      {"scheduler.reserve", {"string"}},
+                      {"scheduler.commit", {"string"}}};
+  descriptor.states = {{
+      "Scheduler", "local", true,
+      {{"mode", "string", "\"Idle\"", "scheduler.lifecycle", true},
+       {"accepted", "int", "0", "scheduler.accepted", false},
+       {"edges", "relation<string,string>",
+        "relation{(\"submit\", \"reserve\")}", "scheduler.flow", false},
+       {"weights", "relation<string,int>",
+        "relation{(\"worker-a\", 2), (\"worker-b\", 1)}",
+        "scheduler.weights", false},
+       {"chosen", "option<tuple<string,int>>", "none", "scheduler.selection", false}},
+      {{"accepted_nonnegative", "accepted >= 0"}}}};
+  descriptor.events = {{"Submit", {{"task", "string"}, {"minimum", "int"}}}};
+  descriptor.transitions = {{
+      "Schedule", "Submit", "Scheduler", "Scheduler",
+      {{"flow_exists", "E edge in before.edges: edge.0 = \"submit\""}},
+      {{"chosen", "worker", "before.weights", "worker.1 >= minimum",
+        {"worker.1", "worker.0"}}},
+      {{"accepted", "before.accepted + 1"}, {"mode", "\"Active\""}},
+      {{0, "reserve", "scheduler.reserve", "", {"task"}},
+       {0, "audit", "audit.observe", "", {"task"}},
+       {1, "commit", "scheduler.commit", "", {"task"}}}}};
+  descriptor.lifecycle_mappings = {{
+      "scheduler_lifecycle", "Scheduler", "mode",
+      {{"idle", "\"Idle\""}, {"active", "\"Active\""}}}};
+  descriptor.gaps = {{"physical_receipts", dtessl::SemanticGapKind::ExternalRuntime,
+                      "provider receipts",
+                      "owned by chenRT runtime journal and excluded from this DTESSL model"}};
+  return descriptor;
+}
+
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.2.0", "compiled version must be v0.2.0");
+  require(dtessl::version == "0.2.1", "compiled version must be v0.2.1");
   const auto roundtrip = [](const dtessl::Value& value) {
     const std::vector<std::uint8_t> encoded = dtessl::encode_value(value);
     require(dtessl::decode_value(encoded) == value, "canonical value roundtrip failed");
@@ -650,6 +689,146 @@ int main() {
   }
   require(budget_error && bounded_search.current_round() == 0,
           "relation work budget must reject expansion without committing state");
+
+  const dtessl::SemanticDescriptor semantic = semantic_fixture();
+  const std::string canonical_descriptor = dtessl::print_semantic_descriptor(semantic);
+  const dtessl::SemanticDescriptor decoded_descriptor =
+      dtessl::parse_semantic_descriptor(canonical_descriptor);
+  dtessl::verify_semantic_origin(
+      decoded_descriptor, semantic.origin,
+      dtessl::SemanticProvenance::GeneratedOperationalMirror);
+  require(dtessl::print_semantic_descriptor(decoded_descriptor) == canonical_descriptor,
+          "SemanticDescriptor canonical parse/print is unstable");
+  dtessl::SemanticDescriptor reordered_descriptor = semantic;
+  std::reverse(reordered_descriptor.ports.begin(), reordered_descriptor.ports.end());
+  std::reverse(reordered_descriptor.states.front().fields.begin(),
+               reordered_descriptor.states.front().fields.end());
+  std::reverse(reordered_descriptor.transitions.front().actions.begin(),
+               reordered_descriptor.transitions.front().actions.end());
+  require(dtessl::semantic_descriptor_digest(reordered_descriptor) ==
+              dtessl::semantic_descriptor_digest(semantic),
+          "SemanticDescriptor digest depends on non-semantic record order");
+  bool origin_binding_error = false;
+  try {
+    dtessl::verify_semantic_origin(
+        decoded_descriptor,
+        dtessl::SemanticOrigin{"declared-model-projection", "tests/other",
+                               std::string(64, 'a')},
+        dtessl::SemanticProvenance::GeneratedOperationalMirror);
+  } catch (const dtessl::Error&) {
+    origin_binding_error = true;
+  }
+  require(origin_binding_error, "SemanticDescriptor origin mismatch was accepted");
+  const dtessl::SemanticCheckResult semantic_check =
+      dtessl::check_semantic_descriptor(decoded_descriptor);
+  require(semantic_check.coverage.structural_coverage_complete &&
+              !semantic_check.coverage.complete && !semantic_check.coverage.gap_free &&
+              semantic_check.coverage.external_runtime_gaps == 1 &&
+              !semantic_check.coverage.independent_assurance_claim &&
+              semantic_check.coverage.relation_fields == 2 &&
+              semantic_check.coverage.deterministic_selections == 1 &&
+              semantic_check.coverage.action_ports == 3,
+          "SemanticDescriptor coverage or provenance classification is wrong");
+  require(semantic_check.coverage.descriptor_digest.size() == 64 &&
+              semantic_check.coverage.generated_source_digest ==
+                  "8b7b34570f814a0f5d95b590b9468fc07c3fbf746625f6578290ba072846a761" &&
+              !semantic_check.generated.source_map.empty() &&
+              dtessl::print_source_map(decoded_descriptor, semantic_check.generated)
+                      .find("transitions.Schedule.select.chosen") != std::string::npos,
+          "SemanticDescriptor digest or source map is missing");
+  const dtessl::Program generated_program = dtessl::parse(semantic_check.generated.source);
+  require(dtessl::required_features(generated_program)
+              .contains(dtessl::LanguageFeature::TypedActionPorts),
+          "generated model did not preserve typed action ports");
+  dtessl::BackendDescriptor untyped_backend{
+      {"example", "untyped", 1}, {dtessl::Projection::Execute},
+      dtessl::required_features(generated_program)};
+  untyped_backend.features.erase(dtessl::LanguageFeature::TypedActionPorts);
+  const dtessl::BackendCompatibility untyped_compatibility =
+      dtessl::negotiate_backend(generated_program, untyped_backend,
+                                dtessl::Projection::Execute);
+  require(!untyped_compatibility.compatible &&
+              untyped_compatibility.missing.contains(
+                  dtessl::LanguageFeature::TypedActionPorts),
+          "backend negotiation ignored typed action-port support");
+  const dtessl::Event semantic_event{
+      "Submit", {{"minimum", dtessl::Value(std::int64_t{1})},
+                   {"task", dtessl::Value("task-1")}}};
+  const dtessl::ParallelStepResult semantic_run =
+      dtessl::run_semantic_descriptor(decoded_descriptor, {semantic_event});
+  const dtessl::ParallelStepResult semantic_replay =
+      dtessl::replay_semantic_descriptor(decoded_descriptor, {semantic_event});
+  require(semantic_run == semantic_replay && semantic_run.transitions.size() == 1 &&
+              semantic_run.transitions.front().actions.calls.size() == 3 &&
+              semantic_run.transitions.front().actions.dependencies.size() == 2 &&
+              semantic_run.state.at("accepted").as_int() == 1,
+          "SemanticDescriptor check/run/replay or typed ActionPlan is wrong");
+  const dtessl::EventTrace native_trace{{{{semantic_event}}, {{semantic_event}}}};
+  const dtessl::TraceResult trace_result =
+      dtessl::replay_semantic_descriptor_trace(decoded_descriptor, native_trace);
+  require(trace_result.rounds.size() == 2 &&
+              trace_result.final_state.at("accepted").as_int() == 2,
+          "native DTESSL EventTrace replay did not preserve sequential logical rounds");
+
+  dtessl::SemanticDescriptor forbidden_authority = semantic;
+  forbidden_authority.states.front().fields.front().type = "Handle";
+  bool authority_error = false;
+  try {
+    static_cast<void>(dtessl::check_semantic_descriptor(forbidden_authority));
+  } catch (const dtessl::Error&) {
+    authority_error = true;
+  }
+  require(authority_error,
+          "SemanticDescriptor was allowed to mint a Handle/Binding/Lease-like authority type");
+
+  dtessl::SemanticDescriptor wrong_port = semantic;
+  wrong_port.ports.front().parameter_types.front() = "int";
+  bool port_type_error = false;
+  try {
+    static_cast<void>(dtessl::check_semantic_descriptor(wrong_port));
+  } catch (const dtessl::Error&) {
+    port_type_error = true;
+  }
+  require(port_type_error, "typed action port accepted an argument of the wrong type");
+
+  dtessl::SemanticDescriptor bad_lifecycle = semantic;
+  bad_lifecycle.lifecycle_mappings.front().values.front().literal = "7";
+  bool lifecycle_type_error = false;
+  try {
+    static_cast<void>(dtessl::check_semantic_descriptor(bad_lifecycle));
+  } catch (const dtessl::Error&) {
+    lifecycle_type_error = true;
+  }
+  require(lifecycle_type_error, "lifecycle mapping bypassed its field type");
+
+  dtessl::SemanticDescriptor ambient_effect = semantic;
+  ambient_effect.transitions.front().assignments.front().expression = "$host.call()";
+  bool ambient_effect_error = false;
+  try {
+    static_cast<void>(dtessl::check_semantic_descriptor(ambient_effect));
+  } catch (const dtessl::Error&) {
+    ambient_effect_error = true;
+  }
+  require(ambient_effect_error, "descriptor expression admitted an ambient host call");
+
+  bool descriptor_limit_error = false;
+  try {
+    static_cast<void>(dtessl::parse_semantic_descriptor(
+        std::string(dtessl::semantic_descriptor_size_limit + 1U, 'x')));
+  } catch (const dtessl::Error&) {
+    descriptor_limit_error = true;
+  }
+  require(descriptor_limit_error, "oversized SemanticDescriptor was accepted");
+
+  bool empty_batch_error = false;
+  dtessl::EventTrace empty_batch_trace;
+  empty_batch_trace.rounds.push_back(dtessl::EventBatch{});
+  try {
+    static_cast<void>(dtessl::run_trace(generated_program, empty_batch_trace));
+  } catch (const dtessl::Error&) {
+    empty_batch_error = true;
+  }
+  require(empty_batch_error, "native EventTrace accepted an empty logical round");
 
   dtessl::ScratchPool pool(64, 128);
   struct Pair {

@@ -2,12 +2,23 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed by the released `v0.2.0` slice.
+- **Implemented**: accepted and executed by the released `v0.2.1` slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
 
 ## 1. Semantic center
+
+### Permanent system boundary (2026-08-28)
+
+DTESSL is not a model extractor or universal log engine. It accepts DTESSL
+programs and native typed event traces, then computes deterministic logical
+state and ActionPlans. Existing systems may actively export a lossy model
+projection with provenance, coverage and classified gaps; DTESSL never derives
+one from implementation code or runtime logs. Runtime journals, snapshots,
+receipts, effect suppression and reconcile are outside DTESSL. Generated mirrors
+must remain distinguishable from independent assurance models for the lifetime
+of the language.
 
 DTESSL models one discrete simulation round as a relation over an event bag:
 
@@ -250,7 +261,7 @@ Thus a complex `where` may itself compile to an internal search DAG, while the
 `do` block compiles to an effect DAG. They are different typed graphs and never
 share node kinds accidentally.
 
-## 9. External calls, receipts and replay
+## 9. External calls and native replay
 
 `do` may contain only pure local calculations and typed `$` calls. Each call
 record contains:
@@ -258,16 +269,15 @@ record contains:
 - stable call-site ID and label;
 - typed interface and operation ID;
 - canonical arguments;
-- explicit context/Binding;
+- explicit logical context (never authority or a host Binding);
 - dependency edges;
-- idempotency/retry/cancellation contract;
 - discrete round, causal predecessor set and trace correlation.
 
-The host registers implementations for typed interfaces. It owns handles,
-leases, credentials, provider objects and physical scheduling. Call results
-arrive later as typed receipt events. Runtime never treats “command emitted” as
-“physical work completed”. Replay consumes recorded receipts and never repeats
-physical calls.
+DTESSL verifies declared typed ports and emits calls as an ActionPlan. It owns
+no host handles, leases, credentials, provider objects, physical scheduling or
+completion facts. Native replay consumes only `Program + typed EventTrace` and
+recomputes logical results; runtime journals, snapshots and receipts are not
+DTESSL inputs.
 
 ## 10. Time, simultaneity and causality
 
@@ -342,8 +352,8 @@ DTESSL remains backend-neutral through three typed boundaries:
 1. Frontend produces a versioned `CanonicalModule`.
 2. A backend consumes that module for a specific projection: reference
    interpreter, native engine, VM lowering, monitor, explorer or formal export.
-3. A host provider consumes typed `ActionPlan` calls and returns typed receipt
-   events.
+3. An external host adapter may consume typed `ActionPlan` calls. No provider
+   result or receipt enters DTESSL through this boundary.
 
 Backend registration uses typed IDs and declared feature/capability sets, not a
 generic string operation bus. A backend must reject unsupported AST features
@@ -379,7 +389,7 @@ security and assurance annotations are typed AST nodes and included.
   collection cardinality and graph fan-out.
 - Canonical integer/rational operations reject overflow or use declared
   arbitrary precision; implicit platform arithmetic is forbidden.
-- Malformed source, ambiguous choices, stale bindings and receipt mismatches
+- Malformed source, ambiguous choices, stale logical references and typed-port mismatches
   fail before state commit.
 
 ## 16. Feature placement

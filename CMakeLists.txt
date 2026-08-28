@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.2.0)
+set(DTESSL_VERSION 0.2.1)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -11,6 +11,7 @@ option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 add_library(dtessl
   src/exact_numeric.cpp
   src/dtessl.cpp
+  src/semantic_descriptor.cpp
   src/value_codec.cpp)
 configure_file(include/dtessl/version.hpp.in
                generated/dtessl/version.hpp
@@ -78,4 +79,23 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/relations.dtessl)
   set_tests_properties(dtessl.cli_search_plans PROPERTIES
                        PASS_REGULAR_EXPRESSION "select-by-lex.*ambiguity=reject")
+  add_test(NAME dtessl.semantic_descriptor_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   descriptor-check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.semantic)
+  set_tests_properties(dtessl.semantic_descriptor_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok descriptor=41810c5b91ae8df0978be5899613561b7daa73a8e888f2317b61b3ccc90a0053 source=8b7b34570f814a0f5d95b590b9468fc07c3fbf746625f6578290ba072846a761")
+  add_test(NAME dtessl.semantic_descriptor_manifest
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   descriptor-manifest
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.semantic)
+  set_tests_properties(dtessl.semantic_descriptor_manifest PROPERTIES
+                       PASS_REGULAR_EXPRESSION "independent-assurance-claim no")
+  add_test(NAME dtessl.semantic_descriptor_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   descriptor-replay
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.semantic
+                   Submit minimum=1 task=task-1)
+  set_tests_properties(dtessl.semantic_descriptor_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "replay ok")
 endif()

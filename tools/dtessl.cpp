@@ -1,5 +1,6 @@
 #include "dtessl/dtessl.hpp"
 #include "dtessl/backend.hpp"
+#include "dtessl/semantic_descriptor.hpp"
 #include "dtessl/version.hpp"
 
 #include <algorithm>
@@ -75,6 +76,12 @@ void usage(std::ostream& out) {
       << "  dtessl version\n"
       << "  dtessl features <program.dtessl>\n"
       << "  dtessl plans <program.dtessl>\n"
+      << "  dtessl descriptor-check <model.semantic>\n"
+      << "  dtessl descriptor-generate <model.semantic>\n"
+      << "  dtessl descriptor-source-map <model.semantic>\n"
+      << "  dtessl descriptor-manifest <model.semantic>\n"
+      << "  dtessl descriptor-run <model.semantic> <Event> [field=value ...]\n"
+      << "  dtessl descriptor-replay <model.semantic> <Event> [field=value ...]\n"
       << "  dtessl check <program.dtessl>\n"
       << "  dtessl run <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
@@ -99,6 +106,48 @@ int main(int argc, char** argv) {
     if (argc < 3) {
       usage(std::cerr);
       return 2;
+    }
+    if (command.starts_with("descriptor-")) {
+      const dtessl::SemanticDescriptor descriptor =
+          dtessl::parse_semantic_descriptor(read_file(argv[2]));
+      if (command == "descriptor-check") {
+        if (argc != 3) throw dtessl::Error("descriptor-check does not accept event arguments");
+        const auto checked = dtessl::check_semantic_descriptor(descriptor);
+        std::cout << "ok descriptor=" << checked.coverage.descriptor_digest
+                  << " source=" << checked.coverage.generated_source_digest << '\n';
+        return 0;
+      }
+      if (command == "descriptor-generate") {
+        if (argc != 3) throw dtessl::Error("descriptor-generate does not accept event arguments");
+        std::cout << dtessl::generate_dtessl(descriptor).source;
+        return 0;
+      }
+      if (command == "descriptor-source-map") {
+        if (argc != 3) throw dtessl::Error("descriptor-source-map does not accept event arguments");
+        const auto generated = dtessl::generate_dtessl(descriptor);
+        std::cout << dtessl::print_source_map(descriptor, generated);
+        return 0;
+      }
+      if (command == "descriptor-manifest") {
+        if (argc != 3) throw dtessl::Error("descriptor-manifest does not accept event arguments");
+        const auto checked = dtessl::check_semantic_descriptor(descriptor);
+        std::cout << dtessl::print_semantic_coverage(checked.coverage);
+        return 0;
+      }
+      if (command != "descriptor-run" && command != "descriptor-replay") {
+        throw dtessl::Error("unknown descriptor command '" + command + "'");
+      }
+      const std::vector<dtessl::Event> events{parse_event(argv, 3, argc)};
+      const auto result = command == "descriptor-replay"
+                              ? dtessl::replay_semantic_descriptor(descriptor, events)
+                              : dtessl::run_semantic_descriptor(descriptor, events);
+      if (command == "descriptor-replay") std::cout << "replay ok\n";
+      std::cout << "batch round " << result.round << " transitions "
+                << result.transitions.size() << '\n';
+      for (const auto& transition : result.transitions) {
+        std::cout << dtessl::result_text(transition);
+      }
+      return 0;
     }
     const dtessl::Program program = dtessl::parse(read_file(argv[2]));
     if (command == "features") {

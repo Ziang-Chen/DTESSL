@@ -17,6 +17,8 @@ namespace dtessl {
 inline constexpr std::size_t relation_arity_limit = 64;
 inline constexpr std::size_t relation_row_limit = 4096;
 inline constexpr std::size_t relation_work_limit = 1'000'000;
+inline constexpr std::size_t event_trace_round_limit = 100'000;
+inline constexpr std::size_t event_batch_size_limit = 4096;
 
 class Value;
 struct ValueList;
@@ -213,6 +215,23 @@ struct ParallelStepResult {
   friend bool operator==(const ParallelStepResult&, const ParallelStepResult&) = default;
 };
 
+struct EventBatch {
+  std::vector<Event> events;
+  friend bool operator==(const EventBatch&, const EventBatch&) = default;
+};
+
+struct EventTrace {
+  std::vector<EventBatch> rounds;
+  friend bool operator==(const EventTrace&, const EventTrace&) = default;
+};
+
+struct TraceResult {
+  std::vector<ParallelStepResult> rounds;
+  std::string final_state_name;
+  std::map<std::string, Value, std::less<>> final_state;
+  friend bool operator==(const TraceResult&, const TraceResult&) = default;
+};
+
 class Error : public std::runtime_error {
  public:
   Error(std::string message, std::size_t line = 0, std::size_t column = 0);
@@ -270,5 +289,9 @@ class Engine {
 
 [[nodiscard]] std::string value_text(const Value& value);
 [[nodiscard]] std::string result_text(const StepResult& result);
+// Native DTESSL replay only: Program + typed EventTrace. It never consumes a
+// runtime journal or provider receipt and never executes an ActionPlan.
+[[nodiscard]] TraceResult run_trace(const Program& program, const EventTrace& trace);
+[[nodiscard]] TraceResult replay_trace(const Program& program, const EventTrace& trace);
 
 }  // namespace dtessl

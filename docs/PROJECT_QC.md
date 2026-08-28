@@ -13,10 +13,10 @@ Updated: 2026-08-28, Asia/Shanghai
 
 ## Current state
 
-**Released slice.** `v0.2.0` canonical relations, algebra, `E/A`, deterministic
-selection and bounded plans pass standard, `-Werror`, ASan/UBSan and installed
-CLI gates. The next gate is `v0.3.0`; this is not the complete DTESSL design
-described in `LANGUAGE_DESIGN.md`.
+**Released slice.** `v0.2.1` adds explicit SemanticDescriptor validation, typed
+action ports, canonical source/digest/coverage artifacts and native EventTrace
+logical replay. Standard, `-Werror`, ASan/UBSan and installed CLI gates pass.
+This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
@@ -25,8 +25,8 @@ described in `LANGUAGE_DESIGN.md`.
   ChenVM integration.
 - Non-goals: ambient authority, hidden JSON programs, runtime nondeterminism,
   universal bytecode and premature JIT.
-- Current exit gate: implement `v0.3.0` full state theory: typed derived data,
-  invariants, state sets, explicit shared inputs and trace/history relations.
+- Current exit gate: implement `v0.3.0` full state theory after the independent
+  validation slice remains stable.
 
 ## Evidence matrix
 
@@ -53,17 +53,21 @@ described in `LANGUAGE_DESIGN.md`.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.2.0` | Installed CLI reports `v0.2.0` | pass |
+| Version identity | CMake/generated header/CLI/test at `0.2.1` | Installed CLI reports `v0.2.1` | pass |
 | Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 7/7; installed graph replay/plans pass | pass |
+| Explicit model projection | Canonical descriptor parse/print, origin digest, provenance and classified-gap checks | Scheduler projection generates checked DTESSL | pass |
+| Generated source evidence | Stable descriptor/source SHA-256 and complete nonblank-line source map | CLI check/source-map/manifest exercised | pass |
+| Typed action ports | Declared port lookup plus exact argument-type verification | Three-port serial/parallel ActionPlan fixture passes; mismatch rejects | pass |
+| Lifecycle mappings | Unique field/phase/literal checks and generated literal typecheck | string lifecycle fixture passes; int literal rejects | pass |
+| Native EventTrace replay | Bounded typed batches, empty-batch rejection and fresh-engine equality | Two-round logical state/action replay passes | pass |
+| Runtime-log exclusion | No log, receipt, snapshot or journal types/adapters in public API | Descriptor contains explicit external-runtime gap | pass |
 | Multi-state transition model | Specification exists | Implementation absent | missing |
-| Typed host receipts/replay | Call plan baseline exists | Receipt protocol absent | missing |
+| Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
 ## Gaps and blockers
 
 - P0 gap: source AST is currently internal and has no canonical serialized form.
-- P0 gap: replay is one event and recomputes rather than consuming recorded
-  receipts.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
@@ -81,10 +85,9 @@ There is no external blocker for the `v0.3.0` gate.
 
 ## Next corrective focus
 
-1. Implement `v0.3.0` typed derived data, state sets and explicit shared inputs.
-2. Add trace/history relations without introducing ambient mutable globals.
-3. Preserve the out-of-tree VM/backend and host-provider boundaries while the
-   canonical module and receipt protocol are developed.
+1. Resume `v0.3.0` typed derived data, state sets and explicit shared inputs.
+2. Preserve the permanent native Program/EventTrace-only validation boundary.
+3. Keep external projection producers separate from DTESSL verification.
 4. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
@@ -115,3 +118,10 @@ There is no external blocker for the `v0.3.0` gate.
   quantifiers, explicit lex selection and bounded plan metadata; standard,
   `-Werror` and ASan/UBSan suites pass with seven tests and installed CLI replay
   and plan inspection pass.
+- 2026-08-28: fixed the permanent boundary that DTESSL consumes only native
+  Program/typed EventTrace and emits deterministic logical result/ActionPlan;
+  existing systems must actively provide an explicit projection artifact.
+- 2026-08-28: `v0.2.1` released SemanticDescriptor verification, canonical
+  generation/evidence, typed ports and native multi-round replay, with no
+  runtime-log, receipt, snapshot or journal adapter; standard, `-Werror` and
+  ASan/UBSan suites pass 10/10 and installed CLI evidence passes.

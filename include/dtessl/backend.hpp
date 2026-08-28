@@ -33,6 +33,7 @@ enum class LanguageFeature {
   RelationAlgebra,
   UniversalSearch,
   DeterministicSelect,
+  TypedActionPorts,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

@@ -4,7 +4,24 @@ Versions follow `vMilestone.MajorFeature.MinorFeature`. Each row is an
 acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
-`v0.1.2`, `v0.1.3`, `v0.2.0`. Current release gate: `v0.3.0`.
+`v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current release gate: `v0.3.0`.
+
+## Permanent architecture invariant — 2026-08-28
+
+This is a long-term product boundary, independent of the current milestone:
+
+- DTESSL consumes only a DTESSL `Program` and native typed `EventTrace`, and
+  produces deterministic logical results and typed `ActionPlan` proposals.
+- DTESSL does not ingest, normalize or replay chenRT/runtime journals, syslog,
+  audit logs, Provider receipts, snapshots, arbitrary JSON or free text.
+- An existing system must actively export a lossy DTESSL projection artifact
+  with provenance, coverage and classified gaps. DTESSL does not infer it.
+- A generated operational mirror is never represented as an independently
+  authored assurance model.
+- An ActionPlan can mention only declared typed ports. Physical authority,
+  execution, receipts, runtime replay and reconciliation are outside DTESSL.
+
+No v1/v2 feature, adapter or solver may weaken this invariant.
 
 ## Milestone 0 — semantic foundation
 
@@ -18,12 +35,13 @@ Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 | `v0.1.2` | Algebraic/nominal values | Records, variants, enums, newtypes, option/result, exhaustive matching and schema-aware canonical field/constructor IDs |
 | `v0.1.3` | Exact numeric profile | Arbitrary/exact integer policy, normalized rational, deterministic arithmetic and cross-backend golden corpus |
 | `v0.2.0` | Relation and deterministic search | Relation/join/project/compose/closure, `E/A`, `select ... by lex`, static and runtime search plans, ambiguity/budget adversarial tests |
+| `v0.2.1` | Declared semantic projection | Canonical SemanticDescriptor, typed action ports, descriptor-to-DTESSL generator, source map/digests, coverage/gaps and native EventTrace replay without runtime-log adapters |
 | `v0.3.0` | Full state theory | `data/derive/invariant`, state sets, explicit shared inputs, trace/history relations, transition occurrence claims |
 | `v0.4.0` | Whole-system transition relations | Multi-component `from/to`, typed before/after patterns, independent/dependent targets, lifecycle/completion library axes, atomic commit tests |
-| `v0.5.0` | Host action and scheduler contract | Canonical call DAG, typed interface registry, `requires` relation, receipts, retry/cancel/idempotency, accepted/logical/physical/reaped tests and backend-neutral provider API |
+| `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |
 | `v0.7.0` | Claims and monitors | `claim`, implication, trace projection/redaction, monitor automata, unknown/failed/proved status and evidence metadata |
-| `v0.8.0` | Trace, replay and migration | Multi-event trace format, receipt replay, state/schema migration, executable/source digests and compatibility corpus |
+| `v0.8.0` | Native trace, replay and migration | Versioned DTESSL EventTrace, logical replay, state/schema migration, executable/source digests and compatibility corpus |
 | `v0.9.0` | Foundation hardening | Parser/search limits, fuzzing, differential determinism, failure recovery, benchmarks and release candidate documentation |
 
 Milestone 0 exits only when the complete language design is represented in the

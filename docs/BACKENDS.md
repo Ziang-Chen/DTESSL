@@ -11,21 +11,27 @@ Adapters may live out of tree and consume DTESSL as an installed CMake package,
 linked library or pinned submodule. ChenVM is one such consumer, not a privileged
 semantic target. The same negotiation rules apply to every backend domain/name.
 
+`SemanticDescriptor v1` is a separate producer-to-model projection. An existing
+system must actively declare it; DTESSL never derives it from runtime logs,
+receipts, arbitrary JSON or implementation code. It can produce a checked
+`.dtessl` program and typed ActionPlan, but cannot grant a backend or host
+provider any authority.
+
 ## Three boundaries
 
 ```text
 source -> typed canonical module -> projection backend -> artifact/result
                                       |
-decision ActionPlan ----------------> host provider -> typed receipt event
+decision ActionPlan ----------------> external host adapter
 ```
 
 1. A frontend owns parsing, name resolution, typing, canonicalization and core
    verification.
 2. A projection backend consumes only a versioned canonical module. Projection
    kinds are typed: execute, monitor, explore and formal export.
-3. A host provider consumes typed action calls and returns typed receipts. It
-   does not receive the parser tree and cannot redefine state-transition
-   semantics.
+3. An external host adapter may consume typed action calls. DTESSL does not
+   ingest its runtime logs, results or receipts, and the adapter cannot redefine
+   state-transition semantics.
 
 ## v0.0.3 discovery seam
 
@@ -84,18 +90,17 @@ module or its stable read-only view.
 ## VM backend
 
 A VM backend may lower the executable projection to its own typed IR or
-bytecode. It must preserve atomic rounds, causal predecessors, action DAG edges,
-budget traps and receipt boundaries. It must reject features it cannot preserve.
+bytecode. It must preserve atomic rounds, causal predecessors, action DAG edges
+and budget traps. It must reject features it cannot preserve.
 DTESSL does not mandate ChenBytecode, Wasm, JVM bytecode or a universal common
 instruction set.
 
 ## Host providers
 
-Host providers are separate from projection backends. They register typed
-interfaces/capabilities and are selected by explicit Binding/requirement data.
-They own raw handles, file descriptors, sockets, keys, leases and physical
-completion. Provider output is untrusted until checked against the declared
-receipt schema and correlated call ID.
+Host adapters are separate from projection backends. DTESSL exposes only
+declared typed ports and ActionPlans. An external adapter owns raw handles, file
+descriptors, sockets, keys, leases, authorization, execution and physical
+completion. No adapter output is a DTESSL receipt or replay input.
 
 ## Compatibility
 

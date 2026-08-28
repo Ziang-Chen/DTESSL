@@ -15,7 +15,7 @@ completion into language-level fiction.
 - DTESSL grammar, canonical typed AST and verifier.
 - C++ reference compiler, simulator, search engine and host interface.
 - Standard finite collection, relation, matrix and modeling libraries.
-- Trace, receipt, replay, monitor and bounded exploration formats.
+- Native typed EventTrace, logical replay, monitor and bounded exploration formats.
 - Formal exporters and optional solver adapters.
 - Formatter, diagnostics, test corpus and language tooling.
 - DTESSL repository releases and the pinned ChenVM submodule reference.
@@ -40,16 +40,16 @@ The project is complete only when all of the following are evidenced:
    `LANGUAGE_DESIGN.md`.
 2. All executable programs are deterministic, total within declared budgets
    and reproducible across supported C++ platforms.
-3. External calls are typed proposals; receipt events distinguish accepted,
-   logical, physical and reaped completion.
+3. External calls are typed proposals only; DTESSL never mints or consumes
+   physical completion and exposes no runtime receipt/journal ingestion API.
 4. One typed AST has four verified projections: executable reducer, runtime
    monitor, bounded explorer and formal exporter.
 5. Parser, formatter, type checker, verifier, simulator, trace/replay and host
    adapter have positive, negative, adversarial and end-to-end evidence.
 6. Canonical forms and digests are invariant under formatting, aliases and
    declaration order where order is not semantic.
-7. Versioned migration and compatibility rules cover source, AST, trace and
-   host ABI formats.
+7. Versioned migration and compatibility rules cover source, AST, native trace
+   and typed ActionPlan formats.
 8. A tagged release can be built and tested standalone and through the ChenVM
    submodule without copied source.
 9. Documentation lets another operator implement a model and diagnose a failed

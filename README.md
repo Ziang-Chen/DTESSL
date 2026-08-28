@@ -1,4 +1,4 @@
-# DTESSL v0.2.0
+# DTESSL v0.2.1
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -16,6 +16,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [Canonical Value Format v1](docs/CANONICAL_VALUE_V1.md)
 - [Exact Numeric Profile v1](docs/EXACT_NUMERIC_PROFILE_V1.md)
 - [Relation and Search Profile v1](docs/RELATION_SEARCH_V1.md)
+- [SemanticDescriptor Projection v1](docs/SEMANTIC_DESCRIPTOR_V1.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
@@ -45,6 +46,10 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 ```dtessl
 newtype TaskId = string
 
+port ipc.accept(string)
+port pool.reserve(string)
+port log.append(string)
+
 variant Mode:
   Idle
   Assigned(TaskId)
@@ -72,7 +77,7 @@ transition Schedule @ Submit(task: string, worker: string):
 核心词法和文法骨架如下；缩进构成块，Tab 非法，`//` 开始行注释。
 
 ```ebnf
-program     = { type-declaration | state | transition } ;
+program     = { type-declaration | port | state | transition } ;
 type-declaration = newtype | record | variant | enum ;
 newtype     = "newtype" Name "=" type NEWLINE ;
 record      = "record" Name ":" INDENT { Name ":" type NEWLINE } DEDENT ;
@@ -80,6 +85,7 @@ variant     = "variant" Name ":" INDENT
                 { Name [ "(" type ")" ] NEWLINE }
               DEDENT ;
 enum        = "enum" Name ":" INDENT { Name NEWLINE } DEDENT ;
+port        = "port" qualified-name "(" [ type { "," type } ] ")" NEWLINE ;
 state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
                 { field | invariant }
               DEDENT ;
@@ -184,8 +190,10 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 - 调用标签在一个 transition 内必须唯一；
 - 输出的 map/set、调用和依赖边都有规范顺序。
 
-`replay` 使用一个全新引擎重新计算同一事件，并比较完整 `StepResult`。正式的多事件 trace
-文件、回执输入和外部调用结果属于下一层协议，不在 v0 中伪造。
+`replay` 使用一个全新引擎重新计算同一事件，并比较完整 `StepResult`。库级
+`DTESSL EventTrace` 是一组按 round 排列的原生 typed event batch，只重建逻辑状态与
+ActionPlan。它不读取 chenRT journal、snapshot、Provider receipt 或自由文本，也不重新
+执行物理副作用；runtime replay 不属于 DTESSL。
 
 ## 构建与运行
 
@@ -200,14 +208,26 @@ build/dtessl run examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay examples/scheduler.dtessl Submit task=task-1 worker=worker-a
 build/dtessl replay-batch examples/scheduler.dtessl \
   Submit task=task-1 worker=worker-a -- Note text=same-round
+build/dtessl descriptor-check examples/scheduler.semantic
+build/dtessl descriptor-generate examples/scheduler.semantic
+build/dtessl descriptor-source-map examples/scheduler.semantic
+build/dtessl descriptor-manifest examples/scheduler.semantic
+build/dtessl descriptor-replay examples/scheduler.semantic \
+  Submit minimum=1 task=task-1
 ctest --test-dir build --output-on-failure
 ```
 
+`SemanticDescriptor v1` 是由已有系统主动提供给 DTESSL 的显式、有损模型投影，
+不是 DTESSL 对已有系统、JavaScript 或日志的逆向建模。它固定 provenance、source map、
+descriptor/source digest、coverage 与 gap 分类。生成的 operational mirror 永远不会被工具
+冒充 independently-authored assurance model。生成的 `do` 只能调用静态声明并检查过参数类型
+的 port，DTESSL 仍只返回 ActionPlan。
+
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.2.0 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.2.1 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、solver、字节码和 JIT。
-下一个增量进入完整 state theory 与多组件 transition，随后是 receipt replay，
+下一个增量进入完整 state theory 与多组件 transition，随后扩展原生 typed EventTrace，
 最后才加入稀疏矩阵与可替换 solver backend。
 它们应继续服从同一条边界：
 transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。

@@ -333,6 +333,11 @@ struct Parameter {
   DataType type;
 };
 
+struct ActionPortDeclaration {
+  std::string name;
+  std::vector<DataType> parameters;
+};
+
 struct ActionExpr {
   enum class Kind { Call, Sequence, Parallel };
   Kind kind{Kind::Call};
@@ -797,6 +802,7 @@ class Parser {
   DataType type();
   Value initial_value(DataType type);
   TypeDefinition type_definition();
+  ActionPortDeclaration action_port_declaration();
   State state();
   Transition transition();
   ExprPtr line_expression();
@@ -813,6 +819,7 @@ class Parser {
 
 struct Program::Impl {
   TypeRegistry types;
+  std::vector<ActionPortDeclaration> action_ports;
   std::vector<State> states;
   std::vector<Transition> transitions;
 };
@@ -933,6 +940,22 @@ TypeDefinition Parser::type_definition() {
   if ((record && result.fields.empty()) || (!record && result.constructors.empty())) {
     fail(peek(), "type declaration must not be empty");
   }
+  return result;
+}
+
+ActionPortDeclaration Parser::action_port_declaration() {
+  expect("port");
+  ActionPortDeclaration result;
+  result.name = identifier();
+  while (match(".")) result.name += "." + identifier();
+  expect("(");
+  if (!match(")")) {
+    do {
+      result.parameters.push_back(type());
+    } while (match(","));
+    expect(")");
+  }
+  newline();
   return result;
 }
 
@@ -1303,12 +1326,14 @@ std::shared_ptr<Program::Impl> Parser::program() {
         fail(peek(), "duplicate type '" + definition.name + "'");
       }
       types_.emplace(definition.name, std::move(definition));
+    } else if (at("port")) {
+      result->action_ports.push_back(action_port_declaration());
     } else if (at("state")) {
       result->states.push_back(state());
     } else if (at("transition")) {
       result->transitions.push_back(transition());
     } else {
-      fail(peek(), "expected type, state, or transition declaration");
+      fail(peek(), "expected type, port, state, or transition declaration");
     }
   }
   result->types = types_;
@@ -1486,6 +1511,8 @@ const Field& find_field(const State& state, std::string_view name) {
 }
 
 using TypeEnvironment = std::map<std::string, DataType, std::less<>>;
+using ActionPortRegistry =
+    std::map<std::string, std::vector<DataType>, std::less<>>;
 
 DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
                     const TypeEnvironment& event, TypeEnvironment locals,
@@ -1934,19 +1961,30 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
 
 void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironment& state,
                    const TypeEnvironment& event, std::unordered_set<std::string>& labels,
-                   const TypeRegistry& types) {
+                   const TypeRegistry& types, const ActionPortRegistry& ports) {
   if (!action) return;
   if (action->kind != ActionExpr::Kind::Call) {
     for (const auto& child : action->children) {
-      verify_action(child, state, event, labels, types);
+      verify_action(child, state, event, labels, types, ports);
     }
     return;
   }
   if (!labels.insert(action->label).second) {
     throw Error("duplicate action label '" + action->label + "'");
   }
+  std::vector<DataType> argument_types;
+  argument_types.reserve(action->arguments.size());
   for (const ExprPtr& argument : action->arguments) {
-    static_cast<void>(infer_type(argument, state, event, {}, types));
+    argument_types.push_back(infer_type(argument, state, event, {}, types));
+  }
+  if (!ports.empty()) {
+    const auto found = ports.find(action->function);
+    if (found == ports.end()) {
+      throw Error("action calls undeclared typed port '" + action->function + "'");
+    }
+    if (found->second != argument_types) {
+      throw Error("action arguments do not match typed port '" + action->function + "'");
+    }
   }
   if (const auto parameter = event.find(action->context);
       parameter != event.end() && parameter->second.kind != DataType::Kind::String) {
@@ -2034,6 +2072,12 @@ void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
 void verify_program(Program::Impl& program) {
   if (program.states.empty()) throw Error("program must define at least one state");
   std::unordered_set<std::string> names;
+  ActionPortRegistry action_ports;
+  for (const ActionPortDeclaration& port : program.action_ports) {
+    if (!action_ports.emplace(port.name, port.parameters).second) {
+      throw Error("duplicate typed action port '" + port.name + "'");
+    }
+  }
   std::size_t initial_count = 0;
   for (const State& state : program.states) {
     if (!names.insert(state.name).second) throw Error("duplicate state '" + state.name + "'");
@@ -2096,7 +2140,8 @@ void verify_program(Program::Impl& program) {
       }
     }
     std::unordered_set<std::string> labels;
-    verify_action(transition.action, state_types, event_types, labels, program.types);
+    verify_action(transition.action, state_types, event_types, labels, program.types,
+                  action_ports);
 
     std::set<std::string, std::less<>> shadowed;
     for (const Parameter& parameter : transition.parameters) shadowed.insert(parameter.name);
@@ -3241,6 +3286,32 @@ std::string Engine::current_state() const { return current_state_; }
 std::uint64_t Engine::current_round() const noexcept { return round_; }
 const std::map<std::string, Value, std::less<>>& Engine::values() const { return values_; }
 
+TraceResult run_trace(const Program& program, const EventTrace& trace) {
+  if (trace.rounds.size() > event_trace_round_limit) {
+    throw Error("DTESSL EventTrace exceeds round limit");
+  }
+  Engine engine(program);
+  TraceResult result;
+  result.rounds.reserve(trace.rounds.size());
+  for (const EventBatch& batch : trace.rounds) {
+    if (batch.events.empty()) throw Error("DTESSL EventTrace contains an empty event batch");
+    if (batch.events.size() > event_batch_size_limit) {
+      throw Error("DTESSL EventTrace batch exceeds event limit");
+    }
+    result.rounds.push_back(engine.step_parallel(batch.events));
+  }
+  result.final_state_name = engine.current_state();
+  result.final_state = engine.values();
+  return result;
+}
+
+TraceResult replay_trace(const Program& program, const EventTrace& trace) {
+  const TraceResult first = run_trace(program, trace);
+  const TraceResult second = run_trace(program, trace);
+  if (first != second) throw Error("DTESSL EventTrace replay diverged");
+  return first;
+}
+
 std::string value_text(const Value& value) {
   switch (value.kind()) {
     case Value::Kind::Bool: return value.as_bool() ? "true" : "false";
@@ -3493,6 +3564,7 @@ FeatureSet required_features(const Program& program) {
   if (program.empty()) throw Error("cannot inspect features of an empty program");
   FeatureSet result{LanguageFeature::TypedState, LanguageFeature::ParallelEventBag};
   const Program::Impl& implementation = *program.implementation();
+  if (!implementation.action_ports.empty()) result.insert(LanguageFeature::TypedActionPorts);
   if (!implementation.types.empty()) result.insert(LanguageFeature::NominalTypes);
   for (const auto& [name, definition] : implementation.types) {
     static_cast<void>(name);
@@ -3570,6 +3642,7 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::RelationAlgebra: return "relation-algebra";
     case LanguageFeature::UniversalSearch: return "universal-search";
     case LanguageFeature::DeterministicSelect: return "deterministic-select";
+    case LanguageFeature::TypedActionPorts: return "typed-action-ports";
   }
   return "unknown";
 }

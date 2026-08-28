@@ -1,0 +1,26 @@
+dtessl.semantic 1 "SchedulerMirror" generated-operational-mirror
+origin "declared-model-projection" "example/scheduler" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+port "audit.observe" 1 "string"
+port "scheduler.commit" 1 "string"
+port "scheduler.reserve" 1 "string"
+state "Scheduler" "local" 1
+field "Scheduler" "accepted" "int" "0" "scheduler.accepted" 0
+field "Scheduler" "chosen" "option<tuple<string,int>>" "none" "scheduler.selection" 0
+field "Scheduler" "edges" "relation<string,string>" "relation{(\"submit\", \"reserve\")}" "scheduler.flow" 0
+field "Scheduler" "mode" "string" "\"Idle\"" "scheduler.lifecycle" 1
+field "Scheduler" "weights" "relation<string,int>" "relation{(\"worker-a\", 2), (\"worker-b\", 1)}" "scheduler.weights" 0
+invariant "Scheduler" "accepted_nonnegative" "accepted >= 0"
+event "Submit"
+event.field "Submit" "minimum" "int"
+event.field "Submit" "task" "string"
+transition "Schedule" "Submit" "Scheduler" "Scheduler"
+require "Schedule" "flow_exists" "E edge in before.edges: edge.0 = \"submit\""
+select "Schedule" "chosen" "worker" "before.weights" "worker.1 >= minimum" 2 "worker.1" "worker.0"
+assign "Schedule" "accepted" "before.accepted + 1"
+assign "Schedule" "mode" "\"Active\""
+action "Schedule" 0 "audit" "audit.observe" "" 1 "task"
+action "Schedule" 0 "reserve" "scheduler.reserve" "" 1 "task"
+action "Schedule" 1 "commit" "scheduler.commit" "" 1 "task"
+lifecycle "scheduler_lifecycle" "Scheduler" "mode" 2 "active" "\"Active\"" "idle" "\"Idle\""
+gap "physical_receipts" external-runtime "provider receipts" "owned by chenRT runtime journal and excluded from this DTESSL model"
+end
