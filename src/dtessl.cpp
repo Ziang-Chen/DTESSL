@@ -33,6 +33,7 @@ std::vector<Token> lex(std::string_view source) {
   std::vector<std::size_t> indents{0};
   std::size_t offset = 0;
   std::size_t line_number = 1;
+  std::size_t delimiter_depth = 0;
 
   while (offset <= source.size()) {
     const std::size_t line_end = source.find('\n', offset);
@@ -58,16 +59,18 @@ std::vector<Token> lex(std::string_view source) {
     }
     const bool blank = first == line.size() || line.substr(first, 2) == "//";
     if (!blank) {
-      if (indent > indents.back()) {
-        indents.push_back(indent);
-        result.push_back({TokenKind::Indent, "<indent>", line_number, 1});
-      } else {
-        while (indent < indents.back()) {
-          indents.pop_back();
-          result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1});
-        }
-        if (indent != indents.back()) {
-          throw Error("indentation does not match an outer block", line_number, 1);
+      if (delimiter_depth == 0) {
+        if (indent > indents.back()) {
+          indents.push_back(indent);
+          result.push_back({TokenKind::Indent, "<indent>", line_number, 1});
+        } else {
+          while (indent < indents.back()) {
+            indents.pop_back();
+            result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1});
+          }
+          if (indent != indents.back()) {
+            throw Error("indentation does not match an outer block", line_number, 1);
+          }
         }
       }
 
@@ -145,8 +148,16 @@ std::vector<Token> lex(std::string_view source) {
           cursor += 2;
           continue;
         }
-        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.*" "/";
+        static constexpr std::string_view symbols = "@:$,|(){}[]<>=+-.*~/";
         if (symbols.find(static_cast<char>(ch)) != std::string_view::npos) {
+          if (ch == '(' || ch == '[' || ch == '{') {
+            ++delimiter_depth;
+          } else if (ch == ')' || ch == ']' || ch == '}') {
+            if (delimiter_depth == 0) {
+              throw Error("unmatched closing delimiter", line_number, column);
+            }
+            --delimiter_depth;
+          }
           result.push_back({TokenKind::Symbol, std::string(1, static_cast<char>(ch)), line_number,
                             column});
           ++cursor;
@@ -154,7 +165,9 @@ std::vector<Token> lex(std::string_view source) {
         }
         throw Error("unexpected character", line_number, column);
       }
-      result.push_back({TokenKind::Newline, "<newline>", line_number, line.size() + 1});
+      if (delimiter_depth == 0) {
+        result.push_back({TokenKind::Newline, "<newline>", line_number, line.size() + 1});
+      }
     }
 
     if (line_end == std::string_view::npos) {
@@ -168,6 +181,7 @@ std::vector<Token> lex(std::string_view source) {
     indents.pop_back();
     result.push_back({TokenKind::Dedent, "<dedent>", line_number, 1});
   }
+  if (delimiter_depth != 0) throw Error("unterminated delimiter", line_number, 1);
   result.push_back({TokenKind::End, "<end>", line_number, 1});
   return result;
 }
@@ -194,6 +208,7 @@ struct DataType {
   std::shared_ptr<DataType> first;
   std::shared_ptr<DataType> second;
   std::vector<DataType> elements;
+  bool direct_relation_row{false};
 
   explicit DataType(Kind value = Kind::Bool) : kind(value) {}
   DataType(Kind value, DataType nested)
@@ -208,6 +223,7 @@ struct DataType {
 
   friend bool operator==(const DataType& left, const DataType& right) {
     if (left.kind != right.kind || left.name != right.name ||
+        left.direct_relation_row != right.direct_relation_row ||
         left.elements != right.elements) return false;
     if (static_cast<bool>(left.first) != static_cast<bool>(right.first) ||
         static_cast<bool>(left.second) != static_cast<bool>(right.second)) return false;
@@ -232,7 +248,7 @@ struct VariantConstructor {
 };
 
 struct TypeDefinition {
-  enum class Kind { Record, Variant, Newtype };
+  enum class Kind { Record, Variant, Newtype, Name };
   Kind kind{Kind::Record};
   std::string name;
   std::vector<TypeField> fields;
@@ -264,6 +280,8 @@ struct Expr {
     SetErase,
     ForAll,
     Select,
+    OptionLiteral,
+    NameConstruct,
     Construct,
     RecordConstruct,
     Match,
@@ -279,6 +297,7 @@ struct Expr {
   std::vector<MatchArm> arms;
   std::optional<DataType> type_argument;
   std::optional<DataType> resolved_type;
+  bool direct_relation_binding{false};
 };
 
 ExprPtr make_literal(Value value) {
@@ -434,6 +453,29 @@ class FlatParser {
     if (match("int")) return int_type();
     if (match("rational")) return rational_type();
     if (match("string")) return string_type();
+    if (match("[")) {
+      DataType item = parse_type();
+      expect("]");
+      return DataType(DataType::Kind::Option, std::move(item));
+    }
+    if (match("~")) {
+      std::vector<DataType> elements;
+      if (match("(")) {
+        do {
+          elements.push_back(parse_type());
+        } while (match(","));
+        expect(")");
+      } else {
+        elements.push_back(parse_type());
+      }
+      if (elements.empty() || elements.size() > relation_arity_limit) {
+        fail(peek(), "relation type exceeds arity limit");
+      }
+      const bool direct = elements.size() == 1U;
+      DataType relation(DataType::Kind::Relation, std::move(elements));
+      relation.direct_relation_row = direct;
+      return relation;
+    }
     if (match("list") || match("set") || match("bag") || match("option")) {
       const std::string constructor = tokens_[cursor_ - 1].text;
       expect("<");
@@ -493,7 +535,7 @@ class FlatParser {
   ExprPtr parse_compare() {
     auto left = parse_add();
     static const std::unordered_set<std::string> operators{
-        "=", "==", "!=", "<", "<=", ">", ">=", "in"};
+        "=", "==", "!=", "<", "<=", ">", ">=", "in", "~"};
     if (!at_end() && operators.contains(peek().text)) {
       const std::string op = take().text;
       return make_binary(op, std::move(left), parse_add());
@@ -539,7 +581,7 @@ class FlatParser {
         peek().text == "A") {
       const std::string quantifier = take().text;
       const std::string variable = identifier().text;
-      expect("in");
+      if (!match("~")) expect("in");
       auto domain = parse_add();
       if (!match("where")) expect(":");
       auto predicate = parse_or();
@@ -556,7 +598,7 @@ class FlatParser {
       auto result = std::make_shared<Expr>();
       result->kind = Expr::Kind::Select;
       result->text = identifier().text;
-      expect("in");
+      if (!match("~")) expect("in");
       result->left = parse_add();
       if (!match("where")) expect(":");
       result->right = parse_or();
@@ -583,7 +625,15 @@ class FlatParser {
       expect("{");
       do {
         MatchArm arm;
-        if (match("_")) {
+        if (match("[")) {
+          if (match("]")) {
+            arm.constructor = "none";
+          } else {
+            arm.constructor = "some";
+            arm.binding = identifier().text;
+            expect("]");
+          }
+        } else if (match("_")) {
           arm.wildcard = true;
         } else {
           arm.constructor = identifier().text;
@@ -617,6 +667,15 @@ class FlatParser {
       expect(",");
       result->right = parse_or();
       expect(")");
+      return result;
+    }
+    if (match("[")) {
+      auto result = std::make_shared<Expr>();
+      result->kind = Expr::Kind::OptionLiteral;
+      if (!match("]")) {
+        result->children.push_back(parse_or());
+        expect("]");
+      }
       return result;
     }
     if (peek().kind == TokenKind::Integer) {
@@ -665,7 +724,14 @@ class FlatParser {
       result->kind = Expr::Kind::Construct;
       result->text = std::move(path);
       result->type_argument = std::move(type_argument);
-      if (!match(")")) {
+      const auto named = types_.find(result->text);
+      if (named != types_.end() && named->second.kind == TypeDefinition::Kind::Name) {
+        result->kind = Expr::Kind::NameConstruct;
+        if (match(")")) fail(peek(), "name constructor requires one atom");
+        const Token atom = identifier();
+        result->children.push_back(make_literal(Value(atom.text)));
+        expect(")");
+      } else if (!match(")")) {
         do {
           result->children.push_back(parse_or());
         } while (match(","));
@@ -831,6 +897,29 @@ DataType Parser::type() {
   if (match("int")) return int_type();
   if (match("rational")) return rational_type();
   if (match("string")) return string_type();
+  if (match("[")) {
+    DataType item = type();
+    expect("]");
+    return DataType(DataType::Kind::Option, std::move(item));
+  }
+  if (match("~")) {
+    std::vector<DataType> elements;
+    if (match("(")) {
+      do {
+        elements.push_back(type());
+        if (elements.size() > relation_arity_limit) {
+          fail(peek(), "relation type exceeds arity limit");
+        }
+      } while (match(","));
+      expect(")");
+    } else {
+      elements.push_back(type());
+    }
+    const bool direct = elements.size() == 1U;
+    DataType relation(DataType::Kind::Relation, std::move(elements));
+    relation.direct_relation_row = direct;
+    return relation;
+  }
   if (match("list")) {
     expect("<");
     DataType item = type();
@@ -896,6 +985,12 @@ DataType Parser::type() {
 
 TypeDefinition Parser::type_definition() {
   TypeDefinition result;
+  if (match("name")) {
+    result.kind = TypeDefinition::Kind::Name;
+    result.name = identifier();
+    newline();
+    return result;
+  }
   if (match("newtype")) {
     result.kind = TypeDefinition::Kind::Newtype;
     result.name = identifier();
@@ -1017,6 +1112,7 @@ Value Parser::initial_value(DataType expected_type) {
     return Value(take().text);
   }
   if (expected_type.kind == DataType::Kind::List) {
+    match("list");
     expect("[");
     ValueList value;
     if (!match("]")) {
@@ -1076,7 +1172,7 @@ Value Parser::initial_value(DataType expected_type) {
     return Value(std::move(tuple));
   }
   if (expected_type.kind == DataType::Kind::Relation) {
-    expect("relation");
+    if (!match("~")) expect("relation");
     expect("{");
     ValueRelation relation{expected_type.elements.size(), {}};
     const DataType row_type(DataType::Kind::Tuple, expected_type.elements);
@@ -1085,7 +1181,13 @@ Value Parser::initial_value(DataType expected_type) {
         if (relation.rows.size() == relation_row_limit) {
           fail(peek(), "relation literal exceeds row budget");
         }
-        relation.rows.push_back(initial_value(row_type).as_tuple());
+        if (expected_type.direct_relation_row) {
+          ValueTuple row;
+          row.fields.push_back(initial_value(expected_type.elements.front()));
+          relation.rows.push_back(std::move(row));
+        } else {
+          relation.rows.push_back(initial_value(row_type).as_tuple());
+        }
       } while (match(","));
       expect("}");
     }
@@ -1094,6 +1196,12 @@ Value Parser::initial_value(DataType expected_type) {
   if (expected_type.kind == DataType::Kind::Named) {
     const TypeDefinition& definition = types_.at(expected_type.name);
     expect(definition.name);
+    if (definition.kind == TypeDefinition::Kind::Name) {
+      expect("(");
+      const std::string atom = identifier();
+      expect(")");
+      return Value(ValueName{definition.name, atom});
+    }
     if (definition.kind == TypeDefinition::Kind::Newtype) {
       expect("(");
       Value item = initial_value(*definition.underlying);
@@ -1139,6 +1247,14 @@ Value Parser::initial_value(DataType expected_type) {
     return Value(std::move(variant));
   }
   if (expected_type.kind == DataType::Kind::Option) {
+    if (match("[")) {
+      if (match("]")) {
+        return Value(ValueVariant{type_identity(expected_type), "none", {}});
+      }
+      Value item = initial_value(*expected_type.first);
+      expect("]");
+      return Value(ValueVariant{type_identity(expected_type), "some", {std::move(item)}});
+    }
     if (match("none")) {
       return Value(ValueVariant{type_identity(expected_type), "none", {}});
     }
@@ -1320,7 +1436,8 @@ std::shared_ptr<Program::Impl> Parser::program() {
   while (!at(TokenKind::End)) {
     if (at(TokenKind::Newline)) {
       take();
-    } else if (at("record") || at("variant") || at("enum") || at("newtype")) {
+    } else if (at("record") || at("variant") || at("enum") || at("newtype") ||
+               at("name")) {
       TypeDefinition definition = type_definition();
       if (types_.contains(definition.name)) {
         fail(peek(), "duplicate type '" + definition.name + "'");
@@ -1333,7 +1450,7 @@ std::shared_ptr<Program::Impl> Parser::program() {
     } else if (at("transition")) {
       result->transitions.push_back(transition());
     } else {
-      fail(peek(), "expected type, port, state, or transition declaration");
+      fail(peek(), "expected type, name, port, state, or transition declaration");
     }
   }
   result->types = types_;
@@ -1380,6 +1497,8 @@ DataType value_type(const Value& value) {
       return DataType(DataType::Kind::Named, value.as_variant().type_id);
     case Value::Kind::Newtype:
       return DataType(DataType::Kind::Named, value.as_newtype().type_id);
+    case Value::Kind::Name:
+      return DataType(DataType::Kind::Named, value.as_name().type_id);
     case Value::Kind::Tuple: {
       std::vector<DataType> elements;
       elements.reserve(value.as_tuple().fields.size());
@@ -1449,6 +1568,10 @@ bool value_matches_type(const Value& value, const DataType& type,
                value.as_newtype().type_id == type.name &&
                value_matches_type(value.as_newtype().payload.front(),
                                   *definition->second.underlying, types);
+      }
+      if (definition->second.kind == TypeDefinition::Kind::Name) {
+        return value.kind() == Value::Kind::Name &&
+               value.as_name().type_id == type.name;
       }
       if (value.kind() != Value::Kind::Variant || value.as_variant().type_id != type.name) {
         return false;
@@ -1561,7 +1684,10 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
               index >= current.elements.size()) {
             throw Error("tuple index '" + field_name + "' is out of range");
           }
-          current = current.elements[index];
+          // Copy out before replacing current: the selected element is owned
+          // by current.elements and would otherwise be invalidated mid-copy.
+          DataType selected = current.elements[index];
+          current = std::move(selected);
           continue;
         }
         if (current.kind != DataType::Kind::Named) {
@@ -1602,10 +1728,14 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
         }
         return bool_type();
       }
-      if (expr->text == "in") {
+      if (expr->text == "in" || expr->text == "~") {
         const bool set_member = right.kind == DataType::Kind::Set && left == *right.first;
         const bool relation_row = right.kind == DataType::Kind::Relation &&
-                                  left == DataType(DataType::Kind::Tuple, right.elements);
+            (right.direct_relation_row
+                 ? left == right.elements.front()
+                 : left == DataType(DataType::Kind::Tuple, right.elements));
+        expr->direct_relation_binding = right.kind == DataType::Kind::Relation &&
+                                        right.direct_relation_row;
         if (!set_member && !relation_row) {
           throw Error("membership item type does not match finite domain row type");
         }
@@ -1642,8 +1772,11 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
       if (domain.kind == DataType::Kind::Set) {
         locals.insert_or_assign(expr->text, *domain.first);
       } else if (domain.kind == DataType::Kind::Relation) {
-        locals.insert_or_assign(expr->text,
-                                DataType(DataType::Kind::Tuple, domain.elements));
+        expr->direct_relation_binding = domain.direct_relation_row;
+        locals.insert_or_assign(
+            expr->text, domain.direct_relation_row
+                            ? domain.elements.front()
+                            : DataType(DataType::Kind::Tuple, domain.elements));
       } else {
         throw Error("quantifier needs a finite set or relation domain");
       }
@@ -1666,7 +1799,10 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
       if (domain.kind != DataType::Kind::Relation) {
         throw Error("select needs a finite relation domain");
       }
-      const DataType row_type(DataType::Kind::Tuple, domain.elements);
+      expr->direct_relation_binding = domain.direct_relation_row;
+      const DataType row_type = domain.direct_relation_row
+                                    ? domain.elements.front()
+                                    : DataType(DataType::Kind::Tuple, domain.elements);
       locals.insert_or_assign(expr->text, row_type);
       if (infer_type(expr->right, state, event, locals, types).kind !=
           DataType::Kind::Bool) {
@@ -1675,14 +1811,41 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
       if (expr->children.empty()) throw Error("select requires a lexicographic score");
       for (const ExprPtr& score : expr->children) {
         const DataType score_type = infer_type(score, state, event, locals, types);
+        const bool logical_name = score_type.kind == DataType::Kind::Named &&
+            types.at(score_type.name).kind == TypeDefinition::Kind::Name;
         if (score_type.kind != DataType::Kind::Bool &&
             score_type.kind != DataType::Kind::Int &&
             score_type.kind != DataType::Kind::Rational &&
-            score_type.kind != DataType::Kind::String) {
-          throw Error("select lex score must be bool, exact numeric, or string");
+            score_type.kind != DataType::Kind::String && !logical_name) {
+          throw Error("select lex score must be bool, exact numeric, string, or name");
         }
       }
       DataType result(DataType::Kind::Option, row_type);
+      expr->resolved_type = result;
+      return result;
+    }
+    case Expr::Kind::OptionLiteral: {
+      if (expr->children.empty()) {
+        throw Error("empty option [] requires an expected [T] type");
+      }
+      if (expr->children.size() != 1U) throw Error("option literal has too many values");
+      DataType result(DataType::Kind::Option,
+                      infer_type(expr->children.front(), state, event, locals, types));
+      expr->resolved_type = result;
+      return result;
+    }
+    case Expr::Kind::NameConstruct: {
+      if (expr->children.size() != 1U || expr->type_argument ||
+          expr->children.front()->kind != Expr::Kind::Literal ||
+          !expr->children.front()->literal ||
+          expr->children.front()->literal->kind() != Value::Kind::String) {
+        throw Error("name constructor '" + expr->text + "' requires one static atom");
+      }
+      const auto definition = types.find(expr->text);
+      if (definition == types.end() || definition->second.kind != TypeDefinition::Kind::Name) {
+        throw Error("unknown name type '" + expr->text + "'");
+      }
+      DataType result(DataType::Kind::Named, expr->text);
       expr->resolved_type = result;
       return result;
     }
@@ -1712,7 +1875,13 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
         if (field == definition->second.fields.end()) {
           throw Error("unknown field '" + expr->names[index] + "' in record '" + expr->text + "'");
         }
-        if (infer_type(expr->children[index], state, event, locals, types) != field->type) {
+        if (expr->children[index]->kind == Expr::Kind::OptionLiteral &&
+            expr->children[index]->children.empty()) {
+          if (field->type.kind != DataType::Kind::Option) {
+            throw Error("empty option [] requires an expected [T] type");
+          }
+          expr->children[index]->resolved_type = field->type;
+        } else if (infer_type(expr->children[index], state, event, locals, types) != field->type) {
           throw Error("wrong value type for record field '" + field->name + "'");
         }
       }
@@ -1972,18 +2141,29 @@ void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironm
   if (!labels.insert(action->label).second) {
     throw Error("duplicate action label '" + action->label + "'");
   }
-  std::vector<DataType> argument_types;
-  argument_types.reserve(action->arguments.size());
-  for (const ExprPtr& argument : action->arguments) {
-    argument_types.push_back(infer_type(argument, state, event, {}, types));
-  }
   if (!ports.empty()) {
     const auto found = ports.find(action->function);
     if (found == ports.end()) {
       throw Error("action calls undeclared typed port '" + action->function + "'");
     }
-    if (found->second != argument_types) {
+    if (found->second.size() != action->arguments.size()) {
       throw Error("action arguments do not match typed port '" + action->function + "'");
+    }
+    for (std::size_t index = 0; index < action->arguments.size(); ++index) {
+      const ExprPtr& argument = action->arguments[index];
+      const DataType& expected = found->second[index];
+      if (argument->kind == Expr::Kind::OptionLiteral && argument->children.empty()) {
+        if (expected.kind != DataType::Kind::Option) {
+          throw Error("empty option [] requires an expected [T] type");
+        }
+        argument->resolved_type = expected;
+      } else if (infer_type(argument, state, event, {}, types) != expected) {
+        throw Error("action arguments do not match typed port '" + action->function + "'");
+      }
+    }
+  } else {
+    for (const ExprPtr& argument : action->arguments) {
+      (void)infer_type(argument, state, event, {}, types);
     }
   }
   if (const auto parameter = event.find(action->context);
@@ -2135,7 +2315,14 @@ void verify_program(Program::Impl& program) {
       if (!assigned.insert(assignment.field).second) {
         throw Error("field '" + assignment.field + "' is assigned twice");
       }
-      if (infer_type(assignment.value, state_types, event_types, {}, program.types) != field.type) {
+      if (assignment.value->kind == Expr::Kind::OptionLiteral &&
+          assignment.value->children.empty()) {
+        if (field.type.kind != DataType::Kind::Option) {
+          throw Error("empty option [] requires an expected [T] type");
+        }
+        assignment.value->resolved_type = field.type;
+      } else if (infer_type(assignment.value, state_types, event_types, {}, program.types) !=
+                 field.type) {
         throw Error("assignment to '" + assignment.field + "' has the wrong type");
       }
     }
@@ -2216,6 +2403,12 @@ int compare_values(const Value& left, const Value& right) {
     case Value::Kind::String:
       return left.as_string() < right.as_string() ? -1
              : left.as_string() > right.as_string() ? 1 : 0;
+    case Value::Kind::Name:
+      if (left.as_name().type_id != right.as_name().type_id) {
+        throw Error("comparison operands have different name types");
+      }
+      return left.as_name().atom < right.as_name().atom ? -1
+             : left.as_name().atom > right.as_name().atom ? 1 : 0;
     case Value::Kind::StringSet:
     case Value::Kind::List:
     case Value::Kind::Set:
@@ -2313,6 +2506,12 @@ int canonical_value_order(const Value& left, const Value& right) {
     if (lhs.type_id != rhs.type_id) return lhs.type_id < rhs.type_id ? -1 : 1;
     return canonical_value_order(lhs.payload.front(), rhs.payload.front());
   }
+  if (left.kind() == Value::Kind::Name) {
+    const auto& lhs = left.as_name();
+    const auto& rhs = right.as_name();
+    if (lhs.type_id != rhs.type_id) return lhs.type_id < rhs.type_id ? -1 : 1;
+    return lhs.atom < rhs.atom ? -1 : lhs.atom > rhs.atom ? 1 : 0;
+  }
   if (left.kind() == Value::Kind::Tuple) {
     const auto& lhs = left.as_tuple().fields;
     const auto& rhs = right.as_tuple().fields;
@@ -2401,7 +2600,8 @@ Value resolve_name(const std::string& name, const Environment& environment) {
           index >= value.as_tuple().fields.size()) {
         throw Error("tuple index '" + field_name + "' is out of range");
       }
-      value = value.as_tuple().fields[index];
+      Value selected = value.as_tuple().fields[index];
+      value = std::move(selected);
       continue;
     }
     const auto field = std::lower_bound(
@@ -2410,7 +2610,8 @@ Value resolve_name(const std::string& name, const Environment& environment) {
     if (field == value.as_record().fields.end() || field->first != field_name) {
       throw Error("record has no field '" + field_name + "'");
     }
-    value = field->second;
+    Value selected = field->second;
+    value = std::move(selected);
   }
   return value;
 }
@@ -2442,13 +2643,15 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       const Value right = evaluate(expr->right, environment);
       if (expr->text == "=" || expr->text == "==") return Value(equal_values(left, right));
       if (expr->text == "!=") return Value(!equal_values(left, right));
-      if (expr->text == "in") {
+      if (expr->text == "in" || expr->text == "~") {
         if (right.kind() == Value::Kind::StringSet) {
           return Value(right.as_string_set().values.contains(left.as_string()));
         }
         if (right.kind() == Value::Kind::Relation) {
           const auto& rows = right.as_relation().rows;
-          const ValueTuple& target = left.as_tuple();
+          const ValueTuple target = expr->direct_relation_binding
+                                        ? ValueTuple{{left}}
+                                        : left.as_tuple();
           return Value(std::binary_search(
               rows.begin(), rows.end(), target,
               [](const ValueTuple& a, const ValueTuple& b) {
@@ -2520,7 +2723,8 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         }
       } else {
         for (const ValueTuple& row : domain_value.as_relation().rows) {
-          if (accept(Value(row))) break;
+          const Value item = expr->direct_relation_binding ? row.fields.front() : Value(row);
+          if (accept(item)) break;
         }
       }
       if (saved) environment.locals.insert_or_assign(expr->text, *saved);
@@ -2536,7 +2740,8 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       std::optional<ValueTuple> selected;
       std::vector<Value> selected_score;
       for (const ValueTuple& row : domain.as_relation().rows) {
-        environment.locals.insert_or_assign(expr->text, Value(row));
+        const Value item = expr->direct_relation_binding ? row.fields.front() : Value(row);
+        environment.locals.insert_or_assign(expr->text, item);
         if (!evaluate(expr->right, environment).as_bool()) continue;
         std::vector<Value> score;
         score.reserve(expr->children.size());
@@ -2565,7 +2770,10 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       else environment.locals.erase(expr->text);
       const std::string identity = type_identity(*expr->resolved_type);
       if (!selected) return Value(ValueVariant{identity, "none", {}});
-      return Value(ValueVariant{identity, "some", {Value(std::move(*selected))}});
+      const Value selected_value = expr->direct_relation_binding
+                                       ? selected->fields.front()
+                                       : Value(std::move(*selected));
+      return Value(ValueVariant{identity, "some", {selected_value}});
     }
     case Expr::Kind::Count: {
       const Value collection = evaluate(expr->left, environment);
@@ -2584,6 +2792,7 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         case Value::Kind::Record:
         case Value::Kind::Variant:
         case Value::Kind::Newtype: throw Error("count needs a finite collection");
+        case Value::Kind::Name: throw Error("count needs a finite collection");
         case Value::Kind::Tuple: throw Error("count needs a finite collection");
       }
       if (size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
@@ -2620,6 +2829,20 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       }
       return Value(std::move(record));
     }
+    case Expr::Kind::OptionLiteral: {
+      if (!expr->resolved_type) throw Error("unverified option literal");
+      const std::string identity = type_identity(*expr->resolved_type);
+      if (expr->children.empty()) return Value(ValueVariant{identity, "none", {}});
+      return Value(ValueVariant{identity, "some",
+                                {evaluate(expr->children.front(), environment)}});
+    }
+    case Expr::Kind::NameConstruct:
+      if (!expr->resolved_type || expr->children.size() != 1U ||
+          !expr->children.front()->literal) {
+        throw Error("unverified name constructor");
+      }
+      return Value(ValueName{expr->text,
+                             expr->children.front()->literal->as_string()});
     case Expr::Kind::Construct: {
       if (!expr->resolved_type) throw Error("unverified constructor expression");
       if (expr->text == "tuple") {
@@ -2977,6 +3200,23 @@ Value::Value(ValueNewtype value) : kind_(Kind::Newtype) {
   if (value.payload.size() != 1U) throw Error("newtype requires exactly one payload");
   newtype_value_ = std::make_shared<const ValueNewtype>(std::move(value));
 }
+Value::Value(ValueName value) : kind_(Kind::Name) {
+  const auto valid_atom = [](std::string_view atom) {
+    if (atom.empty()) return false;
+    const auto first = static_cast<unsigned char>(atom.front());
+    if (!(first == '_' || (first >= 'A' && first <= 'Z') ||
+          (first >= 'a' && first <= 'z'))) return false;
+    return std::all_of(atom.begin() + 1, atom.end(), [](char ch) {
+      const auto item = static_cast<unsigned char>(ch);
+      return item == '_' || (item >= 'A' && item <= 'Z') ||
+             (item >= 'a' && item <= 'z') || (item >= '0' && item <= '9');
+    });
+  };
+  if (!valid_atom(value.type_id) || !valid_atom(value.atom)) {
+    throw Error("name type and atom must be canonical identifiers");
+  }
+  name_value_ = std::make_shared<const ValueName>(std::move(value));
+}
 Value::Value(ValueTuple value) : kind_(Kind::Tuple) {
   if (value.fields.empty() || value.fields.size() > relation_arity_limit) {
     throw Error("tuple has invalid arity");
@@ -3058,6 +3298,10 @@ const ValueNewtype& Value::as_newtype() const {
   if (kind_ != Kind::Newtype) throw Error("expected newtype value");
   return *newtype_value_;
 }
+const ValueName& Value::as_name() const {
+  if (kind_ != Kind::Name) throw Error("expected name value");
+  return *name_value_;
+}
 const ValueTuple& Value::as_tuple() const {
   if (kind_ != Kind::Tuple) throw Error("expected tuple value");
   return *tuple_value_;
@@ -3082,6 +3326,7 @@ bool operator==(const Value& left, const Value& right) {
     case Value::Kind::Record: return *left.record_value_ == *right.record_value_;
     case Value::Kind::Variant: return *left.variant_value_ == *right.variant_value_;
     case Value::Kind::Newtype: return *left.newtype_value_ == *right.newtype_value_;
+    case Value::Kind::Name: return *left.name_value_ == *right.name_value_;
     case Value::Kind::Tuple: return *left.tuple_value_ == *right.tuple_value_;
     case Value::Kind::Relation: return *left.relation_value_ == *right.relation_value_;
   }
@@ -3330,7 +3575,7 @@ std::string value_text(const Value& value) {
       return result;
     }
     case Value::Kind::List: {
-      std::string result = "[";
+      std::string result = "list[";
       for (std::size_t index = 0; index < value.as_list().values.size(); ++index) {
         if (index != 0) result += ", ";
         result += value_text(value.as_list().values[index]);
@@ -3373,6 +3618,10 @@ std::string value_text(const Value& value) {
       return result + "}";
     }
     case Value::Kind::Variant: {
+      if (value.as_variant().type_id.starts_with("option<")) {
+        if (value.as_variant().constructor == "none") return "[]";
+        return "[" + value_text(value.as_variant().payload.front()) + "]";
+      }
       std::string result = value.as_variant().type_id + "." + value.as_variant().constructor;
       if (!value.as_variant().payload.empty()) {
         result += "(" + value_text(value.as_variant().payload.front()) + ")";
@@ -3382,6 +3631,8 @@ std::string value_text(const Value& value) {
     case Value::Kind::Newtype:
       return value.as_newtype().type_id + "(" +
              value_text(value.as_newtype().payload.front()) + ")";
+    case Value::Kind::Name:
+      return value.as_name().type_id + "(" + value.as_name().atom + ")";
     case Value::Kind::Tuple: {
       std::string result = "(";
       for (std::size_t index = 0; index < value.as_tuple().fields.size(); ++index) {
@@ -3391,10 +3642,12 @@ std::string value_text(const Value& value) {
       return result + ")";
     }
     case Value::Kind::Relation: {
-      std::string result = "relation{";
+      std::string result = "~{";
       for (std::size_t index = 0; index < value.as_relation().rows.size(); ++index) {
         if (index != 0) result += ", ";
-        result += value_text(Value(value.as_relation().rows[index]));
+        const ValueTuple& row = value.as_relation().rows[index];
+        result += row.fields.size() == 1U ? value_text(row.fields.front())
+                                         : value_text(Value(row));
       }
       return result + "}";
     }
@@ -3472,6 +3725,13 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
       features.insert(LanguageFeature::AlgebraicDataTypes);
       features.insert(LanguageFeature::NominalTypes);
       break;
+    case Expr::Kind::NameConstruct:
+      features.insert(LanguageFeature::NominalTypes);
+      features.insert(LanguageFeature::LogicalNames);
+      break;
+    case Expr::Kind::OptionLiteral:
+      features.insert(LanguageFeature::AlgebraicDataTypes);
+      break;
     case Expr::Kind::Construct:
       if (expr->text == "tuple" || expr->text == "project" ||
           expr->text == "join" || expr->text == "compose" ||
@@ -3516,6 +3776,9 @@ void collect_type_features(const DataType& type, FeatureSet& features) {
   }
   if (type.kind == DataType::Kind::Tuple || type.kind == DataType::Kind::Relation) {
     features.insert(LanguageFeature::RelationAlgebra);
+  }
+  if (type.kind == DataType::Kind::Relation && type.direct_relation_row) {
+    features.insert(LanguageFeature::DirectRelationBinding);
   }
   if (type.kind == DataType::Kind::Named) features.insert(LanguageFeature::NominalTypes);
   if (type.kind == DataType::Kind::Int || type.kind == DataType::Kind::Rational) {
@@ -3570,6 +3833,9 @@ FeatureSet required_features(const Program& program) {
     static_cast<void>(name);
     if (definition.kind == TypeDefinition::Kind::Variant) {
       result.insert(LanguageFeature::AlgebraicDataTypes);
+    }
+    if (definition.kind == TypeDefinition::Kind::Name) {
+      result.insert(LanguageFeature::LogicalNames);
     }
     if (definition.underlying) collect_type_features(*definition.underlying, result);
     for (const TypeField& field : definition.fields) collect_type_features(field.type, result);
@@ -3643,6 +3909,8 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::UniversalSearch: return "universal-search";
     case LanguageFeature::DeterministicSelect: return "deterministic-select";
     case LanguageFeature::TypedActionPorts: return "typed-action-ports";
+    case LanguageFeature::LogicalNames: return "logical-names";
+    case LanguageFeature::DirectRelationBinding: return "direct-relation-binding";
   }
   return "unknown";
 }

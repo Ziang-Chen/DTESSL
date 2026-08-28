@@ -3,6 +3,27 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.2.3 (integration candidate)
+
+- Added first-class `name T` declarations and canonical `T(atom)` values,
+  distinct from human strings, newtypes and authority-bearing references.
+- Added additive Canonical Value Format v1 tag `0f` for nominal logical names.
+- Added compact relation types `~T`/`~(A,B)`, `~{...}` literals and `~`
+  membership/binding in predicates, quantifiers and deterministic selection.
+- Direct unary relations bind their element, enabling `~Worker` searches over
+  named record fields without tuple `.0/.1`; legacy unary `relation<T>` keeps
+  its tuple binding semantics during v0 migration.
+- Added `[T]`, `[]` and `[value]` option syntax plus `[]`/`[binding]` exhaustive
+  match patterns. Untyped empty options are rejected.
+- Made list literals explicit as `list[...]` in canonical rendering while
+  retaining the previous spelling as v0 input compatibility syntax.
+- Made newline/indentation layout inert inside balanced delimiters, enabling
+  readable multiline relation and record literals.
+- Fixed self-referential tuple/type field projection assignments exposed by
+  container-overflow sanitization.
+- Added positive, negative, canonical-codec and CLI replay evidence in the
+  `core_logic.dtessl` scheduler model.
+
 ## v0.2.1
 
 - Added canonical, serializable `SemanticDescriptor v1` for model projections

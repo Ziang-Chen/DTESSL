@@ -77,6 +77,11 @@ The project is complete only when all of the following are evidenced:
 - `,` composes actions serially; `|` composes them in parallel.
 - Logical implication uses `->`; action sequencing does not use `then`.
 - `where` is the single surface for guards and relational eligibility/search.
+- `name T` and `T(atom)` are nominal logical identifiers, not strings,
+  capabilities or authority.
+- `~` is reserved for relation types, literals and typed relation matching.
+- `[T]`, `[]` and `[value]` express typed optional cardinality; ordered lists
+  use explicit `list[...]` values.
 - Physical effects stay in the host; DTESSL computes logical change and typed
   call plans.
 

@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed by the released `v0.2.1` slice.
+- **Implemented**: accepted and executed through the `v0.2.3` integration slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -120,9 +120,12 @@ shared input topology: Relation<Node, Node>
 ### P0 core values
 
 - `bool`, exact bounded/unbounded `int`, exact `rational`, `string`, `bytes`.
-- `option<T>`, `result<T,E>`, `list<T>`, `set<T>`, `map<K,V>`, `bag<T>`.
-- `relation<A,B,...>` with deterministic iteration.
+- `[T]` options with `[]`/`[value]`, plus `result<T,E>`, explicit
+  `list<T> = list[...]`, `set<T>`, `map<K,V>` and `bag<T>`.
+- direct unary `~T`, tuple relation `~(A,B,...)` and deterministic iteration.
 - records, variants, enums and nominal `newtype`.
+- `name T` with nominal logical atoms `T(a)`, separate from string text and
+  from authority-bearing host references.
 - opaque `ObjectRef<T>`, `VersionRef<T>`, `RegionRef<T>` and `Binding<K>` values
   that models cannot fabricate from strings or bytes.
 
@@ -143,6 +146,11 @@ project/equijoin/compose/inverse/closure/set algebra, `E/A`, deterministic
 `select ... by lex`, typed static search-plan summaries and explicit row/work
 budgets. Its executable contract is frozen in `RELATION_SEARCH_V1.md`.
 
+The `v0.2.3` surface adds first-class canonical logical names, direct
+unary-record relations, `~` relation matching and bracket option forms. Legacy
+`relation<T...>`, `in`, `option<T>`, `none` and `some` remain accepted during
+v0 migration, but canonical value rendering uses the compact forms.
+
 ### Relation and search algebra
 
 P0 operations include membership, union/intersection/difference, cartesian
@@ -150,8 +158,8 @@ product, select, project, join, inverse, relational composition and bounded
 transitive closure. Quantifiers are written compactly:
 
 ```text
-E x in xs: predicate(x)
-A x in xs: predicate(x)
+E x ~ xs: predicate(x)
+A x ~ xs: predicate(x)
 ```
 
 Long aliases `exists` and `all` may be accepted as surface sugar; canonical AST
@@ -160,7 +168,7 @@ uses `Exists` and `ForAll` nodes.
 Deterministic choice is explicit:
 
 ```text
-select worker in eligible
+select worker ~ eligible
   by lex(load(worker), distance(worker, task), worker.id)
 ```
 

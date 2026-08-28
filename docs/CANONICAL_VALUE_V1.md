@@ -1,7 +1,7 @@
 # Canonical Value Format v1
 
 This format is a backend-neutral, length-delimited encoding for the value kinds
-implemented since DTESSL `v0.1.0` and extended additively in `v0.1.x`. It is
+implemented since DTESSL `v0.1.0` and extended additively through `v0.2.3`. It is
 not the future canonical module format.
 
 ## Common rules
@@ -35,6 +35,7 @@ not the future canonical module format.
 | `0c` | rational | canonical integer numerator followed by canonical positive integer denominator |
 | `0d` | tuple | positive arity followed by that many canonical values |
 | `0e` | relation | positive arity, row count, then strictly tuple-sorted row fields |
+| `0f` | logical name | nominal type identity followed by canonical atom, both length-prefixed |
 
 Unknown tags are invalid.
 
@@ -52,6 +53,7 @@ Phase.Running     09 05 50 68 61 73 65 07 52 75 6e 6e 69 6e 67 00
 1/2               0c 01 00 00 00 00 00 00 00 01 01 00 00 00 00 00 00 00 02
 ("edge", 7)       0d 02 02 04 65 64 67 65 01 00 00 00 00 00 00 00 07
 {("a", 1)}        0e 02 01 02 01 61 01 00 00 00 00 00 00 00 01
+WorkerId(a)       0f 08 57 6f 72 6b 65 72 49 64 01 61
 ```
 
 ## Canonicality
@@ -67,3 +69,7 @@ the original tag `01`. Rational components must already be gcd-normalized with
 a positive denominator, so decoding never accepts bytes whose re-encoding would
 change. Recursive decoding is bounded by maximum depth,
 collection cardinality, string size and total bytes.
+
+Logical-name atoms use `[A-Za-z_][A-Za-z0-9_]*`. Tag `0f` stores an atom
+directly rather than nesting tag `02`; therefore a logical name cannot be
+mistaken for human string text by a canonical-value consumer.

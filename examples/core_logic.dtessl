@@ -1,0 +1,34 @@
+name WorkerId
+
+record Worker:
+  id: WorkerId
+  capacity: int
+
+state Scheduler initial:
+  workers: ~Worker = ~{
+    Worker{id: WorkerId(a), capacity: 2},
+    Worker{id: WorkerId(b), capacity: 1},
+    Worker{id: WorkerId(c), capacity: 3}
+  }
+  chosen: [Worker] = []
+  edges: ~(WorkerId, WorkerId) = ~{
+    (WorkerId(a), WorkerId(b)),
+    (WorkerId(b), WorkerId(c))
+  }
+  connected: bool = false
+  had_choice: bool = false
+
+  invariant:
+    E worker ~ workers: worker.capacity > 0
+
+transition Choose @ Submit(minimum: int):
+  from Scheduler
+  to Scheduler:
+    chosen = select worker ~ before.workers where worker.capacity >= minimum by lex(worker.capacity, worker.id)
+    connected = tuple(WorkerId(a), WorkerId(b)) ~ before.edges
+
+transition Clear @ Reset():
+  from Scheduler
+  to Scheduler:
+    chosen = []
+    had_choice = match before.chosen { [] -> false, [worker] -> worker.capacity > 0 }

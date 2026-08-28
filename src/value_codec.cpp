@@ -24,6 +24,7 @@ enum class Tag : std::uint8_t {
   Rational = 12,
   Tuple = 13,
   Relation = 14,
+  Name = 15,
 };
 
 void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
@@ -196,6 +197,12 @@ class Decoder {
         if (wrapped.type_id.empty()) throw Error("canonical newtype identity is empty");
         wrapped.payload.push_back(value(depth + 1U));
         return Value(std::move(wrapped));
+      }
+      case Tag::Name: {
+        ValueName name;
+        name.type_id = string();
+        name.atom = string();
+        return Value(std::move(name));
       }
       case Tag::Tuple: {
         const std::size_t count = collection_count();
@@ -398,6 +405,11 @@ void encode_into(const Value& value, std::vector<std::uint8_t>& output,
       output.push_back(static_cast<std::uint8_t>(Tag::Newtype));
       append_string(output, value.as_newtype().type_id);
       encode_into(value.as_newtype().payload.front(), output, limits, depth + 1U);
+      break;
+    case Value::Kind::Name:
+      output.push_back(static_cast<std::uint8_t>(Tag::Name));
+      append_string(output, value.as_name().type_id);
+      append_string(output, value.as_name().atom);
       break;
     case Value::Kind::Tuple:
       output.push_back(static_cast<std::uint8_t>(Tag::Tuple));

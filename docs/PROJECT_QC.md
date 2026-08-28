@@ -8,15 +8,16 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule
-- Current target: `v0.3.0`
+- Current target: integrate and release `v0.2.3`, then resume `v0.3.0`
 - Stop orders: none
 
 ## Current state
 
-**Released slice.** `v0.2.1` adds explicit SemanticDescriptor validation, typed
-action ports, canonical source/digest/coverage artifacts and native EventTrace
-logical replay. Standard, `-Werror`, ASan/UBSan and installed CLI gates pass.
-This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
+**Integration candidate.** The isolated `v0.2.3` branch adds the compact core
+logical surface over the released `v0.2.1` baseline. Standard tests and the
+new scheduler CLI path passes under standard, `-Werror`, ASan/UBSan and an
+isolated installed CLI; merge remains required before release. This is not the complete DTESSL
+design described in `LANGUAGE_DESIGN.md`.
 
 ## Current goal contract
 
@@ -53,7 +54,11 @@ This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header/CLI/test at `0.2.1` | Installed CLI reports `v0.2.1` | pass |
+| Version identity | Isolated branch CMake/generated header/test at `0.2.3` | Installed isolated CLI reports `v0.2.3`; merged CLI not yet tested | candidate |
+| Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
+| Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
+| Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
+| Explicit list literals | `list[...]` parse and canonical rendering | Scheduler fixture contains typed logical-name list | pass |
 | Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 7/7; installed graph replay/plans pass | pass |
 | Explicit model projection | Canonical descriptor parse/print, origin digest, provenance and classified-gap checks | Scheduler projection generates checked DTESSL | pass |
 | Generated source evidence | Stable descriptor/source SHA-256 and complete nonblank-line source map | CLI check/source-map/manifest exercised | pass |
@@ -71,7 +76,10 @@ This is not the complete DTESSL design described in `LANGUAGE_DESIGN.md`.
 - P0 gap: backend/provider contracts are designed but wait on canonical AST.
 - P1 gap: no external user dogfood model beyond the bundled fixtures.
 
-There is no external blocker for the `v0.3.0` gate.
+- Integration dependency: `v0.2.3` was developed in an isolated worktree to
+  avoid overwriting unrelated uncommitted language-service work in the main
+  worktree. It must be rebased/merged only after that owner has produced a
+  stable commit.
 
 ## Risks
 
@@ -85,10 +93,12 @@ There is no external blocker for the `v0.3.0` gate.
 
 ## Next corrective focus
 
-1. Resume `v0.3.0` typed derived data, state sets and explicit shared inputs.
-2. Preserve the permanent native Program/EventTrace-only validation boundary.
-3. Keep external projection producers separate from DTESSL verification.
-4. Reject any claim that the full language is complete until all roadmap gates
+1. Integrate the fully gated `v0.2.3` branch without overwriting the main
+   worktree, then repeat the gates on the merged tree.
+2. Resume `v0.3.0` typed derived data, state sets and explicit shared inputs.
+3. Preserve the permanent native Program/EventTrace-only validation boundary.
+4. Keep external projection producers separate from DTESSL verification.
+5. Reject any claim that the full language is complete until all roadmap gates
    have evidence.
 
 ## Decision log
@@ -125,3 +135,5 @@ There is no external blocker for the `v0.3.0` gate.
   generation/evidence, typed ports and native multi-round replay, with no
   runtime-log, receipt, snapshot or journal adapter; standard, `-Werror` and
   ASan/UBSan suites pass 10/10 and installed CLI evidence passes.
+- 2026-08-28: `v0.2.3` core logical surface implemented as an isolated
+  integration candidate so concurrent uncommitted tooling work was preserved.

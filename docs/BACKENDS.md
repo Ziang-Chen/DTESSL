@@ -53,6 +53,11 @@ typed operation, row/work limits, determinism and ambiguity policy. It is
 diagnostic/negotiation data, not the private expression tree and not yet the
 CanonicalModule lowering interface.
 
+`v0.2.3` adds `logical-names` because the canonical `Name` value is neither a
+string nor a newtype, and `direct-relation-binding` because `~T` binds `T`
+rather than a legacy unary tuple. A backend missing either semantic must reject
+the corresponding program during negotiation.
+
 ```cpp
 dtessl::BackendDescriptor chen_vm{
     {"chen", "vm", 1},
