@@ -303,11 +303,25 @@ DTESSL inputs.
   configuration: one initial context and a finite initial state combination.
   It contains no events, transitions, replay, capture or ordered steps. Once
   started, ordinary typed events are dispatched by the global transition set.
-- A procedure is not a trace. A trace never selects a procedure implicitly;
-  tools compose a procedure entry with an EventTrace explicitly when they need
-  to test that entry configuration.
-- `trace T @ root: replay:` is a closed, source-authored native EventTrace.
-  One source line is one discrete round and `|` joins simultaneous events.
+- A procedure is not a trace. The language RuntimeContext owns persistent
+  procedure instances; each replay occurrence explicitly names its target as
+  `Transition.case(...) @ Procedure`.
+- `trace T @ root: replay:` is a closed, source-authored transition-occurrence
+  trace. `Transition.case(...) @ Procedure` identifies both the expected path
+  and persistent procedure instance; its arguments use that transition's typed
+  event schema. The engine re-runs ordinary dispatch and rejects a round if
+  another path is selected, so replay never bypasses a guard or forces a state
+  rewrite.
+- One replay source line is one 1-based discrete round and `|` joins
+  simultaneous transition occurrences.
+- RoundId is a causal-DAG layer shared by all simultaneous occurrences, never a
+  per-transition or per-procedure increment. Procedure revision is separate;
+  stable occurrence identity plus predecessor edges carry happens-before.
+- Capture lowers to `CaptureFilter{states, transitions, procedures}`. A captured
+  procedure retains one immutable frame for every global RoundId, including
+  idle frames, and can be queried by `(trace, procedure, RoundId)`. RoundId is a
+  semantic identifier so a future logical-ID representation need not change
+  the lookup model.
 - A trace may put `capture closed/projected:` after `replay:` to declare both a
   replay input and a capture projection; the section order is semantic and
   cannot be reversed.

@@ -25,26 +25,25 @@ transition Dispatch @ Tick():
   case ready (SchedulerIdle @ scheduler, {ProcessReady, ProcessRetrying} @ process) -> (SchedulerBusy @ scheduler, ProcessRunning @ process):
     where:
       hasCredits(scheduler.credits)
-    set @ scheduler:
-      credits = before.scheduler.credits - 1
-    set @ process:
-      started = true
+    set:
+      credits = before.scheduler.credits - 1 @ scheduler
+      started = true @ process
 
 procedure DispatchRun @ system:
   initial (SchedulerIdle @ scheduler, ProcessRetrying @ process)
 
-trace Happy @ system:
+trace Happy:
   replay:
-    Tick()
+    Dispatch.ready() @ DispatchRun
   capture closed:
-    SchedulerBusy @ scheduler
-    ProcessRunning @ process
-    Dispatch.ready
+    state (SchedulerBusy @ scheduler, ProcessRunning @ process)
+    transition (Dispatch.ready)
+    procedure (DispatchRun)
 
 trace ProcessView @ system:
   capture projected:
-    ProcessRunning @ process
-    Dispatch.ready
+    state (ProcessRunning @ process)
+    transition (Dispatch.ready)
 
 Claim DispatchReachesRunning @ Happy:
   eventually:

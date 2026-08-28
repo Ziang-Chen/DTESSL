@@ -208,6 +208,12 @@ struct StepResult {
   // Stable within the canonical event bag. The numeric suffix is an identity,
   // not a happens-before relation between same-round decisions.
   std::string id;
+  // Set when the decision belongs to a persistent procedure instance during
+  // a named replay. Empty for a standalone Engine step.
+  std::string procedure;
+  // Monotonic state revision of that procedure. It is not a logical clock and
+  // cannot order occurrences in different procedures.
+  std::uint64_t procedure_revision{0};
   // Qualified as Transition.caseName when the selected case is named.
   std::string transition;
   std::string case_name;
@@ -256,6 +262,19 @@ enum class TraceCaptureMode {
   Projected,
 };
 
+struct ProcedureTraceFrame {
+  // Global trace round. This is a semantic identifier, not a vector offset.
+  std::uint64_t round{0};
+  // Persistent local state revision; distinct from the causal RoundId.
+  std::uint64_t procedure_revision{0};
+  std::string context;
+  std::map<std::string, std::string, std::less<>> active_states;
+  std::map<std::string, Value, std::less<>> state;
+  std::vector<std::string> transitions;
+
+  friend bool operator==(const ProcedureTraceFrame&, const ProcedureTraceFrame&) = default;
+};
+
 struct TraceSnapshot {
   std::string name;
   std::string root_context;
@@ -263,8 +282,14 @@ struct TraceSnapshot {
   bool closed{false};
   std::set<std::string, std::less<>> captured_contexts;
   std::set<std::string, std::less<>> captured_paths;
+  std::set<std::string, std::less<>> captured_procedures;
   std::vector<ParallelStepResult> rounds;
   std::map<std::string, Value, std::less<>> final_state;
+  std::map<std::string,
+           std::map<std::string, Value, std::less<>>, std::less<>> procedure_states;
+  std::map<std::string, std::string, std::less<>> procedure_contexts;
+  std::map<std::string, std::vector<ProcedureTraceFrame>, std::less<>>
+      procedure_history;
   std::vector<std::string> causal_gaps;
 
   friend bool operator==(const TraceSnapshot&, const TraceSnapshot&) = default;
@@ -337,6 +362,11 @@ class Engine {
   // available in the language.
   [[nodiscard]] ParallelStepResult step_parallel(const std::vector<Event>& events);
 
+  // Executes a batch at an externally derived causal DAG layer. The supplied
+  // RoundId may jump over layers in which this Engine's procedure was idle.
+  [[nodiscard]] ParallelStepResult step_parallel_at(
+      const std::vector<Event>& events, std::uint64_t round_id);
+
   [[nodiscard]] std::string current_state() const;
   [[nodiscard]] const std::map<std::string, std::string, std::less<>>&
   current_states() const noexcept;
@@ -370,6 +400,9 @@ class Engine {
                                             std::string_view name);
 [[nodiscard]] std::vector<ClaimEvaluation> evaluate_named_trace(
     const Program& program, std::string_view name);
+[[nodiscard]] const ProcedureTraceFrame& captured_procedure_at(
+    const TraceSnapshot& trace, std::string_view procedure,
+    std::uint64_t round_id);
 [[nodiscard]] std::string_view claim_status_name(ClaimStatus status) noexcept;
 
 }  // namespace dtessl

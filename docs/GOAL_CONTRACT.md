@@ -75,7 +75,11 @@ The project is complete only when all of the following are evidenced:
   entry configurations.
 - A procedure contains only an initial context and initial state combination.
   It owns no transitions, events, trace or execution steps; after explicit
-  startup, the global transition engine handles later typed events.
+  startup, the language RuntimeContext persists its isolated typed state and
+  the global transition engine handles later typed occurrences.
+- Named replay routes `Transition.case(...) @ Procedure` occurrences through
+  that RuntimeContext. RoundId is derived from the dynamic causal DAG layer,
+  while per-procedure revision is a distinct state-version counter.
 - Completion requires parser/verifier/runtime/CLI evidence plus standard,
   `-Werror` and ASan/UBSan gates, followed by a scoped commit and push.
 - This slice does not authorize changes to `main`, tags, chenRT, ChenVM or any

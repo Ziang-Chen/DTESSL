@@ -106,7 +106,9 @@ transition  = "transition" Name "@" event-pattern ":" INDENT
               DEDENT ;
 case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                 [ "where" ":" INDENT expression DEDENT ]
-                { "set" "@" Name ":" INDENT { Name "=" expression NEWLINE } DEDENT }
+                [ "set" ":" INDENT
+                    { Name "=" expression "@" Name NEWLINE }
+                  DEDENT ]
                 [ "do" ":" INDENT action-expression DEDENT ]
               DEDENT ;
 state-pattern-set = "(" state-pattern { "," state-pattern } ")" ;
@@ -116,12 +118,18 @@ state-binding = Name [ "@" Name ] ;
 procedure   = "procedure" Name "@" Name ":" INDENT
                 "initial" exact-state-set NEWLINE
               DEDENT ;
-trace       = "trace" Name "@" Name ":" INDENT
-                [ "replay" ":" INDENT event-round { event-round } DEDENT ]
+trace       = "trace" Name [ "@" Name ] ":" INDENT
+                [ "replay" ":" INDENT replay-round { replay-round } DEDENT ]
                 [ "capture" ( "closed" | "projected" ) ":"
-                    INDENT ( state-binding | qualified-name )
-                           { state-binding | qualified-name } DEDENT ]
+                    INDENT { capture-filter } DEDENT ]
               DEDENT ;
+replay-round = transition-occurrence
+                 { "|" transition-occurrence } NEWLINE ;
+transition-occurrence = qualified-name "(" [ literal { "," literal } ] ")"
+                        "@" Name ;
+capture-filter = "state" "(" [ state-binding { "," state-binding } ] ")" NEWLINE
+               | "transition" "(" [ qualified-name { "," qualified-name } ] ")" NEWLINE
+               | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE ;
 claim       = "Claim" Name "@" Name ":" INDENT
                 ( ( "always" | "eventually" ) ":" INDENT expression DEDENT
                 | "count" Name "<=" integer NEWLINE )
@@ -178,17 +186,26 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 绝不从多个目标中暗选。`where` 是 path-local 的动态 typed guard，`set` 与 `do` 也只属于
 被唯一选中的 path。可选的 case 名形成 `Transition.caseName` 规范身份，供 trace 捕获和
 `Claim count` 精确引用；不写名字的单 path 仍使用 transition 名。v0 旧式
-`from/to/where/do` 仍作为单状态兼容输入。
+`from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
+`set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
 
-`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。replay 中一行
-是一个 round，`|` 分隔同 round 事件；下一行表示下一 round。动态
-`capture closed/projected` 只观察当前 Engine 的原生 typed step，不读取外部日志。
+`trace` 可先有 `replay:`，再有 `capture:`，两者可同时存在但次序不可颠倒。replay 列出
+`Transition.caseName(...) @ Procedure` occurrence：一行就是一个 1-based causal
+round，`|` 分隔同 round occurrence。同 round 的跨 procedure transition 共享同一 RoundId，
+运行器的遍历顺序不能产生时间顺序。引擎从 transition 声明恢复其 typed event schema，
+在 RuntimeContext 中找到指定 procedure 的持久 logical state，重新执行完整匹配/守卫/不变量，并断言
+实际选中的正是该 path；replay 不直接强制改状态。动态
+`capture closed/projected` 的 canonical AST 是 `CaptureFilter{states, transitions, procedures}`。
+捕获 procedure 会为每个全局 RoundId 保留不可变帧，包括该 procedure 本 round 空闲时的帧；
+公共 API 可按 `(trace, procedure, RoundId)` 精确访问。capture 只观察 DTESSL RuntimeContext
+的原生 typed step，不读取外部日志。
 `Claim` 对闭合 trace 返回 `satisfied/violated`；开放 trace 在没有反例或见证时返回
 `pending`。有 causal gap 的 projected trace 不得给出肯定的 `satisfied`。
 
-`procedure P @ context` 只命名一个 Engine 入口：`@ context` 是 initial context，
+`procedure P @ context` 只命名一个 RuntimeContext 中的 logical instance 入口：`@ context` 是 initial context，
 `initial (...)` 是正交状态轴的 initial state 组合。它没有 transition、event、replay、
-capture 或步骤正文。启动后，后续 typed event 仍由全局 transition engine 自动匹配与推进；
+capture 或步骤正文。启动后，active states、typed values、revision 和 causal frontier 在语言
+RuntimeContext 中持续存在，后续 occurrence 仍由全局 transition engine 自动匹配与推进；
 `trace` 只是独立的测试/判定投影，不是 procedure 的步骤容器。`function` 是非递归、纯、总的
 typed expression 封装；只能读取
 参数，不能观察 `before`/`round`，不能修改状态或生成 ActionPlan。

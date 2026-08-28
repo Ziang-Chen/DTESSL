@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <tuple>
 #include <unordered_set>
 #include <variant>
 
@@ -504,7 +505,10 @@ struct TraceDeclaration {
   TraceCaptureMode capture_mode{TraceCaptureMode::Closed};
   std::vector<StateBinding> capture;
   std::set<std::string, std::less<>> paths;
+  std::set<std::string, std::less<>> captured_procedures;
   EventTrace events;
+  std::vector<std::vector<std::string>> replay_paths;
+  std::vector<std::vector<std::string>> replay_procedures;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -1658,6 +1662,36 @@ Transition Parser::transition() {
     }
     return result;
   };
+  const auto scoped_assignments = [&]() {
+    std::vector<std::pair<std::string, Assignment>> result;
+    while (!at(TokenKind::Dedent)) {
+      Assignment assignment;
+      const Token assignment_start = peek();
+      assignment.field = identifier();
+      assignment.line = assignment_start.line;
+      assignment.column = assignment_start.column;
+      expect("=");
+      std::vector<Token> expression_tokens;
+      while (!at(TokenKind::Newline)) {
+        if (at(TokenKind::End)) fail(peek(), "expected end of set assignment");
+        expression_tokens.push_back(take());
+      }
+      newline();
+      if (expression_tokens.size() < 3U ||
+          expression_tokens[expression_tokens.size() - 2U].text != "@" ||
+          expression_tokens.back().kind != TokenKind::Identifier) {
+        fail(assignment_start,
+             "compact set assignment requires 'field = expression @ context'");
+      }
+      const std::string context = expression_tokens.back().text;
+      expression_tokens.resize(expression_tokens.size() - 2U);
+      FlatParser parser(std::move(expression_tokens), types_);
+      assignment.value = parser.expression();
+      parser.expect_end();
+      result.emplace_back(context, std::move(assignment));
+    }
+    return result;
+  };
   const auto source_patterns = [&]() {
     std::vector<std::vector<StateBinding>> expansions(1);
     expect("(");
@@ -1724,21 +1758,34 @@ Transition Parser::transition() {
           continue;
         }
         if (match("set")) {
-          expect("@");
-          const std::string context = identifier();
-          expect(":");
-          newline();
-          indent();
-          const std::vector<Assignment> updates = assignments();
-          dedent();
-          const auto found = std::find_if(
-              targets.begin(), targets.end(), [&](const TransitionTarget& target) {
-                return target.binding.context == context;
-              });
-          if (found == targets.end()) {
-            fail(peek(), "set @" + context + " has no matching path target");
+          const auto attach = [&](std::string_view context,
+                                  const Assignment& update) {
+            const auto found = std::find_if(
+                targets.begin(), targets.end(), [&](const TransitionTarget& target) {
+                  return target.binding.context == context;
+                });
+            if (found == targets.end()) {
+              fail(peek(), "set @" + std::string(context) +
+                               " has no matching path target");
+            }
+            found->assignments.push_back(update);
+          };
+          if (match("@")) {
+            const std::string context = identifier();
+            expect(":");
+            newline();
+            indent();
+            const std::vector<Assignment> updates = assignments();
+            dedent();
+            for (const Assignment& update : updates) attach(context, update);
+          } else {
+            expect(":");
+            newline();
+            indent();
+            const auto updates = scoped_assignments();
+            dedent();
+            for (const auto& [context, update] : updates) attach(context, update);
           }
-          found->assignments.insert(found->assignments.end(), updates.begin(), updates.end());
           continue;
         }
         if (match("do")) {
@@ -1765,25 +1812,41 @@ Transition Parser::transition() {
       continue;
     }
     if (match("set")) {
-      expect("@");
-      const std::string context = identifier();
-      expect(":");
-      newline();
-      indent();
-      const std::vector<Assignment> updates = assignments();
-      dedent();
-      auto attach = [&](std::vector<TransitionTarget>& targets) {
+      const auto attach = [&](std::vector<TransitionTarget>& targets,
+                              std::string_view context,
+                              const Assignment& update) {
         const auto found = std::find_if(targets.begin(), targets.end(),
                                         [&](const TransitionTarget& target) {
                                           return target.binding.context == context;
                                         });
         if (found == targets.end()) {
-          fail(peek(), "set @" + context + " has no matching target context");
+          fail(peek(), "set @" + std::string(context) +
+                           " has no matching target context");
         }
-        found->assignments.insert(found->assignments.end(), updates.begin(), updates.end());
+        found->assignments.push_back(update);
       };
-      attach(result.to);
-      for (TransitionAlternative& alternative : result.alternatives) attach(alternative.to);
+      const auto attach_all = [&](std::string_view context, const Assignment& update) {
+        attach(result.to, context, update);
+        for (TransitionAlternative& alternative : result.alternatives) {
+          attach(alternative.to, context, update);
+        }
+      };
+      if (match("@")) {
+        const std::string context = identifier();
+        expect(":");
+        newline();
+        indent();
+        const std::vector<Assignment> updates = assignments();
+        dedent();
+        for (const Assignment& update : updates) attach_all(context, update);
+      } else {
+        expect(":");
+        newline();
+        indent();
+        const auto updates = scoped_assignments();
+        dedent();
+        for (const auto& [context, update] : updates) attach_all(context, update);
+      }
       continue;
     }
     if (match("from")) {
@@ -1854,8 +1917,7 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
   result.line = start.line;
   result.column = start.column;
   result.name = identifier();
-  expect("@");
-  result.root_context = identifier();
+  if (match("@")) result.root_context = identifier();
   expect(":");
   newline();
   indent();
@@ -1864,33 +1926,67 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
     expect(":");
     newline();
     indent();
-    const auto schema = [&](std::string_view event_name) -> const std::vector<Parameter>& {
+    const auto transition_for = [&](std::string_view transition_name,
+                                    std::string_view case_name) -> const Transition& {
       const auto found = std::find_if(
           transitions.begin(), transitions.end(), [&](const Transition& item) {
-            return item.event == event_name;
+            return item.name == transition_name;
           });
       if (found == transitions.end()) {
-        fail(peek(), "trace references unknown event '" + std::string(event_name) + "'");
+        fail(peek(), "replay references unknown transition '" +
+                         std::string(transition_name) + "'");
       }
-      return found->parameters;
+      const auto has_named_path = [&](std::string_view path) {
+        return found->case_name == path ||
+               std::any_of(found->alternatives.begin(), found->alternatives.end(),
+                           [&](const TransitionAlternative& alternative) {
+                             return alternative.name == path;
+                           });
+      };
+      const bool declares_named_paths = !found->case_name.empty() ||
+          std::any_of(found->alternatives.begin(), found->alternatives.end(),
+                      [](const TransitionAlternative& alternative) {
+                        return !alternative.name.empty();
+                      });
+      if (case_name.empty() && declares_named_paths) {
+        fail(peek(), "replay must name an exact path of transition '" +
+                         std::string(transition_name) + "'");
+      }
+      if (!case_name.empty() && !has_named_path(case_name)) {
+        fail(peek(), "replay references unknown transition path '" +
+                         std::string(transition_name) + "." + std::string(case_name) + "'");
+      }
+      return *found;
     };
     while (!at(TokenKind::Dedent)) {
       EventBatch batch;
+      std::vector<std::string> paths;
+      std::vector<std::string> procedures;
       for (;;) {
+        const std::string transition_name = identifier();
+        std::string case_name;
+        if (match(".")) case_name = identifier();
+        const Transition& transition = transition_for(transition_name, case_name);
         Event event;
-        event.name = identifier();
-        const auto& parameters = schema(event.name);
+        event.name = transition.event;
         expect("(");
-        for (std::size_t index = 0; index < parameters.size(); ++index) {
+        for (std::size_t index = 0; index < transition.parameters.size(); ++index) {
           if (index != 0) expect(",");
-          event.fields.emplace(parameters[index].name,
-                               initial_value(parameters[index].type));
+          event.fields.emplace(transition.parameters[index].name,
+                               initial_value(transition.parameters[index].type));
         }
         expect(")");
+        expect("@");
+        const std::string procedure_name = identifier();
         batch.events.push_back(std::move(event));
+        paths.push_back(transition_name +
+                        (case_name.empty() ? "" : "." + case_name));
+        procedures.push_back(procedure_name);
         if (!match("|")) break;
       }
       result.events.rounds.push_back(std::move(batch));
+      result.replay_paths.push_back(std::move(paths));
+      result.replay_procedures.push_back(std::move(procedures));
       static_cast<void>(match(","));
       newline();
     }
@@ -1906,6 +2002,60 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
     indent();
     while (!at(TokenKind::Dedent)) {
       const Token binding_start = peek();
+      if (match("state")) {
+        expect("(");
+        if (!match(")")) {
+          do {
+            StateBinding binding;
+            binding.line = binding_start.line;
+            binding.column = binding_start.column;
+            binding.state = identifier();
+            expect("@");
+            binding.context = identifier();
+            const bool duplicate = std::any_of(
+                result.capture.begin(), result.capture.end(),
+                [&](const StateBinding& item) {
+                  return item.state == binding.state && item.context == binding.context;
+                });
+            if (duplicate) fail(binding_start, "capture filter repeats a state");
+            result.capture.push_back(std::move(binding));
+          } while (match(","));
+          expect(")");
+        }
+        newline();
+        continue;
+      }
+      if (match("transition")) {
+        expect("(");
+        if (!match(")")) {
+          do {
+            const std::string transition_name = identifier();
+            std::string path = transition_name;
+            if (match(".")) path += "." + identifier();
+            if (!result.paths.insert(path).second) {
+              fail(binding_start, "capture filter repeats a transition path");
+            }
+          } while (match(","));
+          expect(")");
+        }
+        newline();
+        continue;
+      }
+      if (match("procedure")) {
+        expect("(");
+        if (!match(")")) {
+          do {
+            const std::string procedure_name = identifier();
+            if (!result.captured_procedures.insert(procedure_name).second) {
+              fail(binding_start, "capture filter repeats a procedure");
+            }
+          } while (match(","));
+          expect(")");
+        }
+        newline();
+        continue;
+      }
+      // v0 compatibility: bare State @ context and Transition.case selectors.
       const std::string state_name = identifier();
       if (match(".")) {
         const std::string path = state_name + "." + identifier();
@@ -1922,8 +2072,10 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
       }
       const bool duplicate = std::any_of(
           result.capture.begin(), result.capture.end(),
-          [&](const StateBinding& item) { return item.context == context; });
-      if (duplicate) fail(peek(), "trace captures the same context twice");
+          [&](const StateBinding& item) {
+            return item.state == state_name && item.context == context;
+          });
+      if (duplicate) fail(peek(), "trace captures the same state twice");
       result.capture.push_back(
           StateBinding{state_name, context, binding_start.line, binding_start.column});
       newline();
@@ -3336,9 +3488,26 @@ void verify_program(Program::Impl& program) {
       }
     }
     for (const std::string& path : trace.paths) {
-      if (!qualified_paths.contains(path)) {
+      const bool base_transition = std::any_of(
+          program.transitions.begin(), program.transitions.end(),
+          [&](const Transition& transition) { return transition.name == path; });
+      if (!base_transition && !qualified_paths.contains(path)) {
         throw Error("trace captures unknown transition path '" + path + "'",
                     trace.line, trace.column);
+      }
+    }
+    for (const std::string& procedure : trace.captured_procedures) {
+      if (!program.procedures.contains(procedure)) {
+        throw Error("capture filter references unknown procedure '" + procedure + "'",
+                    trace.line, trace.column);
+      }
+    }
+    for (const auto& round : trace.replay_procedures) {
+      for (const std::string& procedure : round) {
+        if (!program.procedures.contains(procedure)) {
+          throw Error("replay references unknown procedure '" + procedure + "'",
+                      trace.line, trace.column);
+        }
       }
     }
   }
@@ -3354,6 +3523,18 @@ void verify_program(Program::Impl& program) {
                     " disagree on claim field type '" + field.name + "'");
       }
       if (single_context) claim_types.emplace(field.name, field.type);
+    }
+  }
+  for (const auto& [procedure, declaration] : program.procedures) {
+    static_cast<void>(declaration);
+    for (const State& state : program.states) {
+      for (const Field& field : state.fields) {
+        claim_types.emplace(procedure + "." + state_key(state.context, field.name),
+                            field.type);
+        if (single_context) {
+          claim_types.emplace(procedure + "." + field.name, field.type);
+        }
+      }
     }
   }
   for (ClaimDeclaration& claim : program.claims) {
@@ -4480,9 +4661,17 @@ Engine Engine::from_procedure(Program program, std::string_view procedure_name) 
 }
 
 ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
-  if (events.empty()) throw Error("a parallel step needs at least one event");
   if (round_ == std::numeric_limits<std::uint64_t>::max()) {
     throw Error("simulation round overflow");
+  }
+  return step_parallel_at(events, round_ + 1U);
+}
+
+ParallelStepResult Engine::step_parallel_at(const std::vector<Event>& events,
+                                            std::uint64_t round_id) {
+  if (events.empty()) throw Error("a parallel step needs at least one event");
+  if (round_id == 0U || round_id <= round_) {
+    throw Error("causal RoundId must advance monotonically for an Engine");
   }
   const Program::Impl& program = *program_.implementation();
   FunctionScope function_scope(program.functions);
@@ -4548,7 +4737,7 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
           });
        if (!sources_active) continue;
        validate_event(transition, event, program.types);
-       Environment environment{values_, &event, {}, round_};
+       Environment environment{values_, &event, {}, round_id - 1U};
        if (evaluate(*route.condition, environment).as_bool()) {
          enabled.push_back(Enabled{&transition, route.case_name, route.from, route.to,
                                    route.condition, route.action,
@@ -4568,7 +4757,7 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     const Enabled selected = enabled.front();
     const Transition& transition = *selected.transition;
     const State& source = find_state(program, selected.from->front().state);
-    Environment environment{values_, &event, {}, round_};
+    Environment environment{values_, &event, {}, round_id - 1U};
     Prepared decision{&transition, selected.case_name, selected.from, selected.to,
                       selected.reads, selected.writes, {}, {}, {}, {}};
     for (const std::string& field : *selected.reads) {
@@ -4681,11 +4870,11 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
   }
   for (const auto& [context, state_name] : next_active) {
     const State& state = find_state(program, state_name);
-    verify_invariants(state, local_state_values(next, context, state), round_ + 1U);
+    verify_invariants(state, local_state_values(next, context, state), round_id);
   }
 
   ParallelStepResult result;
-  result.round = round_ + 1U;
+  result.round = round_id;
   result.state = next;
   result.transitions.reserve(prepared.size());
   for (std::size_t index = 0; index < prepared.size(); ++index) {
@@ -4717,7 +4906,7 @@ ParallelStepResult Engine::step_parallel(const std::vector<Event>& events) {
     }
   }
 
-  ++round_;
+  round_ = round_id;
   active_states_ = std::move(next_active);
   values_ = std::move(next);
 
@@ -4862,32 +5051,251 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
     if (found->events.rounds.size() > event_trace_round_limit) {
       throw Error("DTESSL replay exceeds round limit");
     }
-    Engine engine(program);
     NamedReplayExecution execution;
-    for (const EventBatch& batch : found->events.rounds) {
+    std::set<std::string, std::less<>> referenced_procedures;
+    for (const auto& procedures : found->replay_procedures) {
+      referenced_procedures.insert(procedures.begin(), procedures.end());
+    }
+    referenced_procedures.insert(found->captured_procedures.begin(),
+                                 found->captured_procedures.end());
+    std::map<std::string, std::unique_ptr<Engine>, std::less<>> engines;
+    std::map<std::string, std::uint64_t, std::less<>> revisions;
+    for (const std::string& procedure : referenced_procedures) {
+      engines.emplace(
+          procedure,
+          std::make_unique<Engine>(Engine::from_procedure(program, procedure)));
+      revisions.emplace(procedure, 0U);
+    }
+    const bool single_procedure = engines.size() == 1U;
+    const auto state_snapshot = [&]() {
+      std::map<std::string, Value, std::less<>> state;
+      for (const auto& [procedure, engine] : engines) {
+        for (const auto& [field, value] : engine->values()) {
+          state.emplace(procedure + "." + field, value);
+          if (single_procedure) state.emplace(field, value);
+        }
+      }
+      return state;
+    };
+    for (std::size_t round_index = 0; round_index < found->events.rounds.size();
+         ++round_index) {
+      const EventBatch& batch = found->events.rounds[round_index];
       if (batch.events.empty()) throw Error("DTESSL replay contains an empty event batch");
       if (batch.events.size() > event_batch_size_limit) {
         throw Error("DTESSL replay batch exceeds event limit");
       }
-      execution.logical.rounds.push_back(engine.step_parallel(batch.events));
+      const auto& procedures = found->replay_procedures.at(round_index);
+      if (procedures.size() != batch.events.size()) {
+        throw Error("replay round has inconsistent procedure bindings");
+      }
+      std::map<std::string, std::vector<std::size_t>, std::less<>> by_procedure;
+      for (std::size_t index = 0; index < procedures.size(); ++index) {
+        by_procedure[procedures[index]].push_back(index);
+      }
+      ParallelStepResult aggregate;
+      aggregate.round = static_cast<std::uint64_t>(round_index + 1U);
+      for (const auto& [procedure, indices] : by_procedure) {
+        std::vector<Event> events;
+        std::vector<std::string> expected_paths;
+        events.reserve(indices.size());
+        expected_paths.reserve(indices.size());
+        for (const std::size_t index : indices) {
+          events.push_back(batch.events[index]);
+          expected_paths.push_back(found->replay_paths.at(round_index).at(index));
+        }
+        ParallelStepResult local = engines.at(procedure)->step_parallel_at(
+            events, aggregate.round);
+        const std::uint64_t revision = ++revisions.at(procedure);
+        std::vector<std::string> actual_paths;
+        actual_paths.reserve(local.transitions.size());
+        for (StepResult& step : local.transitions) {
+          actual_paths.push_back(step.transition);
+          step.procedure = procedure;
+          step.procedure_revision = revision;
+          step.round = aggregate.round;
+          step.id = procedure + "/" + step.id;
+          std::set<std::string, std::less<>> qualified_predecessors;
+          for (const std::string& predecessor : step.causal_predecessors) {
+            qualified_predecessors.insert(procedure + "/" + predecessor);
+          }
+          step.causal_predecessors = std::move(qualified_predecessors);
+          aggregate.transitions.push_back(std::move(step));
+        }
+        std::sort(actual_paths.begin(), actual_paths.end());
+        std::sort(expected_paths.begin(), expected_paths.end());
+        if (actual_paths != expected_paths) {
+          throw Error("replay round " + std::to_string(round_index + 1U) +
+                      " selected a different transition path for procedure '" +
+                      procedure + "'");
+        }
+      }
+      std::sort(aggregate.transitions.begin(), aggregate.transitions.end(),
+                [](const StepResult& left, const StepResult& right) {
+                  return std::tie(left.procedure, left.transition, left.id) <
+                         std::tie(right.procedure, right.transition, right.id);
+                });
+      aggregate.state = state_snapshot();
+      for (const std::string& procedure : found->captured_procedures) {
+        ProcedureTraceFrame frame;
+        frame.round = aggregate.round;
+        frame.procedure_revision = revisions.at(procedure);
+        frame.context = engines.at(procedure)->initial_context();
+        frame.active_states = engines.at(procedure)->current_states();
+        frame.state = engines.at(procedure)->values();
+        for (const StepResult& step : aggregate.transitions) {
+          if (step.procedure == procedure) frame.transitions.push_back(step.transition);
+        }
+        execution.snapshot.procedure_history[procedure].push_back(std::move(frame));
+      }
+      execution.logical.rounds.push_back(std::move(aggregate));
     }
-    execution.logical.final_state_name = engine.current_state();
-    execution.logical.final_state = engine.values();
-    if (found->has_capture) {
-      execution.snapshot = engine.captured_trace(found->name, true);
-      return execution;
+    bool first_state = true;
+    for (const auto& [procedure, engine] : engines) {
+      if (!first_state) execution.logical.final_state_name += ", ";
+      first_state = false;
+      execution.logical.final_state_name += procedure + "=" + engine->current_state();
     }
+    execution.logical.final_state = state_snapshot();
     execution.snapshot.name = found->name;
     execution.snapshot.root_context = found->root_context;
-    execution.snapshot.mode = TraceCaptureMode::Static;
+    execution.snapshot.mode = found->has_capture ? found->capture_mode
+                                                 : TraceCaptureMode::Static;
     execution.snapshot.closed = true;
     execution.snapshot.rounds = execution.logical.rounds;
     execution.snapshot.final_state = execution.logical.final_state;
-    if (!execution.logical.rounds.empty()) {
-      for (const auto& [context, state] :
-           execution.logical.rounds.back().transitions.front().active_states) {
-        static_cast<void>(state);
-        execution.snapshot.captured_contexts.insert(context);
+    for (const auto& [procedure, engine] : engines) {
+      if (found->has_capture && !found->captured_procedures.empty() &&
+          !found->captured_procedures.contains(procedure)) {
+        continue;
+      }
+      execution.snapshot.procedure_states.emplace(procedure, engine->values());
+      execution.snapshot.procedure_contexts.emplace(procedure, engine->initial_context());
+    }
+    for (const StateBinding& binding : found->capture) {
+      execution.snapshot.captured_contexts.insert(binding.context);
+    }
+    execution.snapshot.captured_paths = found->paths;
+    execution.snapshot.captured_procedures = found->captured_procedures;
+    if (found->has_capture) {
+      const auto local_field = [&](std::string_view field) {
+        for (const std::string& procedure : referenced_procedures) {
+          const std::string prefix = procedure + ".";
+          if (field.starts_with(prefix)) return std::string(field.substr(prefix.size()));
+        }
+        return std::string(field);
+      };
+      const auto field_procedure_selected = [&](std::string_view field) {
+        if (execution.snapshot.captured_procedures.empty()) return true;
+        if (single_procedure &&
+            std::none_of(referenced_procedures.begin(), referenced_procedures.end(),
+                         [&](const std::string& procedure) {
+                           return field.starts_with(procedure + ".");
+                         })) {
+          return true;
+        }
+        return std::any_of(
+            execution.snapshot.captured_procedures.begin(),
+            execution.snapshot.captured_procedures.end(),
+            [&](const std::string& procedure) {
+              return field.starts_with(procedure + ".");
+            });
+      };
+      const auto belongs = [&](std::string_view field) {
+        if (!field_procedure_selected(field)) return false;
+        if (execution.snapshot.captured_contexts.empty()) return true;
+        const std::string local = local_field(field);
+        return std::any_of(
+            execution.snapshot.captured_contexts.begin(),
+            execution.snapshot.captured_contexts.end(),
+            [&](const std::string& context) {
+              return context.empty() || local.starts_with(context + ".") ||
+                     (local.find('.') == std::string::npos &&
+                      referenced_procedures.size() == 1U);
+            });
+      };
+      const auto path_selected = [&](const StepResult& step) {
+        return execution.snapshot.captured_paths.empty() ||
+               execution.snapshot.captured_paths.contains(step.transition);
+      };
+      const auto procedure_selected = [&](const StepResult& step) {
+        return execution.snapshot.captured_procedures.empty() ||
+               execution.snapshot.captured_procedures.contains(step.procedure);
+      };
+      const auto state_selected = [&](const StepResult& step) {
+        return found->capture.empty() ||
+               std::any_of(found->capture.begin(), found->capture.end(),
+                           [&](const StateBinding& binding) {
+                             const auto active = step.active_states.find(binding.context);
+                             return active != step.active_states.end() &&
+                                    active->second == binding.state;
+                           });
+      };
+      if (found->capture_mode == TraceCaptureMode::Projected) {
+        execution.snapshot.causal_gaps.push_back(
+            "projected capture omits decisions outside selected procedures, paths, or contexts");
+      }
+      for (auto round = execution.snapshot.rounds.begin();
+           round != execution.snapshot.rounds.end();) {
+        if (!execution.snapshot.captured_paths.empty() ||
+            !execution.snapshot.captured_procedures.empty() || !found->capture.empty()) {
+          round->transitions.erase(
+              std::remove_if(
+                  round->transitions.begin(), round->transitions.end(),
+                  [&](const StepResult& step) {
+                    const bool touches = execution.snapshot.captured_contexts.empty() ||
+                        std::any_of(step.reads.begin(), step.reads.end(), belongs) ||
+                        std::any_of(step.writes.begin(), step.writes.end(), belongs);
+                    return !procedure_selected(step) || !path_selected(step) ||
+                           !state_selected(step) || !touches;
+                  }),
+              round->transitions.end());
+          if (round->transitions.empty() &&
+              execution.snapshot.procedure_history.empty()) {
+            round = execution.snapshot.rounds.erase(round);
+            continue;
+          }
+        }
+        for (auto item = round->state.begin(); item != round->state.end();) {
+          if (!belongs(item->first)) item = round->state.erase(item);
+          else ++item;
+        }
+        for (StepResult& step : round->transitions) {
+          for (auto item = step.state.begin(); item != step.state.end();) {
+            const bool local_belongs = execution.snapshot.captured_contexts.empty() ||
+                std::any_of(
+                    execution.snapshot.captured_contexts.begin(),
+                    execution.snapshot.captured_contexts.end(),
+                    [&](const std::string& context) {
+                      return item->first.starts_with(context + ".") ||
+                             item->first.find('.') == std::string::npos;
+                    });
+            if (!procedure_selected(step) || !local_belongs) {
+              item = step.state.erase(item);
+            }
+            else ++item;
+          }
+        }
+        ++round;
+      }
+      for (auto item = execution.snapshot.final_state.begin();
+           item != execution.snapshot.final_state.end();) {
+        if (!belongs(item->first)) item = execution.snapshot.final_state.erase(item);
+        else ++item;
+      }
+      for (auto& [procedure, state] : execution.snapshot.procedure_states) {
+        static_cast<void>(procedure);
+        for (auto item = state.begin(); item != state.end();) {
+          const bool local_belongs = execution.snapshot.captured_contexts.empty() ||
+              std::any_of(
+                  execution.snapshot.captured_contexts.begin(),
+                  execution.snapshot.captured_contexts.end(),
+                  [&](const std::string& context) {
+                    return item->first.starts_with(context + ".") ||
+                           item->first.find('.') == std::string::npos;
+                  });
+          if (!local_belongs) item = state.erase(item);
+          else ++item;
+        }
       }
     }
     return execution;
@@ -4992,6 +5400,25 @@ std::vector<ClaimEvaluation> Engine::evaluate_claims(
 std::vector<ClaimEvaluation> evaluate_named_trace(
     const Program& program, std::string_view name) {
   return evaluate_trace_claims(*program.implementation(), run_named_trace(program, name));
+}
+
+const ProcedureTraceFrame& captured_procedure_at(
+    const TraceSnapshot& trace, std::string_view procedure,
+    std::uint64_t round_id) {
+  const auto found = trace.procedure_history.find(procedure);
+  if (found == trace.procedure_history.end()) {
+    throw Error("trace did not capture procedure '" + std::string(procedure) + "'");
+  }
+  const auto frame = std::lower_bound(
+      found->second.begin(), found->second.end(), round_id,
+      [](const ProcedureTraceFrame& item, std::uint64_t value) {
+        return item.round < value;
+      });
+  if (frame == found->second.end() || frame->round != round_id) {
+    throw Error("captured procedure has no frame at RoundId " +
+                std::to_string(round_id));
+  }
+  return *frame;
 }
 
 std::string_view claim_status_name(ClaimStatus status) noexcept {
@@ -5104,6 +5531,10 @@ std::string value_text(const Value& value) {
 std::string result_text(const StepResult& result) {
   std::ostringstream out;
   out << "round " << result.round << '\n';
+  if (!result.procedure.empty()) {
+    out << "procedure " << result.procedure
+        << " revision " << result.procedure_revision << '\n';
+  }
   out << "decision " << result.id << '\n';
   out << "transition " << result.transition << '\n';
   out << "reads {";

@@ -74,7 +74,9 @@ DTESSL design in `LANGUAGE_DESIGN.md`.
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Finite-prefix claims | always/eventually/count plus implication and three statuses | Closed trace claim CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
-| Procedure entry boundary | Parser accepts only initial context/state configuration; explicit Engine startup test proves later dispatch uses global transitions | Trace replay is tested not to select a same-model procedure implicitly | pass |
+| Procedure entry boundary | Parser accepts only initial context/state configuration; each replay occurrence must explicitly name its target procedure | Explicit Engine startup and named replay both dispatch through global transitions | pass |
+| Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle procedure frame remains queryable at the next global RoundId | pass |
+| Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
@@ -154,3 +156,9 @@ DTESSL design in `LANGUAGE_DESIGN.md`.
 - 2026-08-28: fixed procedure as an entry configuration only: initial context
   plus initial state combination. It is neither a trace nor a transition
   container; only explicit Engine startup applies it.
+- 2026-08-28: replay occurrences now explicitly bind
+  `Transition.case(...) @ Procedure`; the language runtime preserves isolated
+  procedure state across rounds and qualifies causal decision IDs by procedure.
+- 2026-08-28: RoundId is the shared dynamic-DAG layer, not a per-procedure
+  counter. Procedure revision is separate, and captured procedures retain an
+  immutable frame at every global RoundId, including idle frames.

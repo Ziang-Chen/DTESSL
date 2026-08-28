@@ -20,6 +20,20 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   `projected` native Engine capture scoped by explicit `@context`.
 - Static trace input is spelled `replay:`; one trace may declare replay followed
   by capture, while the reverse order is rejected.
+- Source replay now names transition occurrences/paths rather than raw events.
+  `Transition.case(...) @ Procedure` is lowered through the transition's typed
+  event schema and routed to persistent logical state in the language
+  RuntimeContext; execution must select the asserted path without bypassing
+  normal guards.
+- Added procedure-aware capture filters and immutable per-RoundId procedure
+  frames, including idle rounds, with exact public lookup by procedure and
+  RoundId.
+- Separated causal RoundId, procedure revision and occurrence identity. All
+  transitions in one dynamic-DAG layer share one RoundId regardless of runtime
+  traversal order.
+- Added compact multi-context updates with one `set:` block and
+  `field = expression @ context` assignments; `set @ context:` remains accepted
+  as v0 compatibility syntax.
 - Added pure, total, non-recursive typed expression `function` declarations.
 - Added `procedure` as a named Engine entry configuration containing only an
   initial context and initial orthogonal state set. Procedure startup and trace

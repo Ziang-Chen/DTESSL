@@ -1106,33 +1106,31 @@ transition Dispatch @ Tick():
   case ready (Idle @ scheduler, {Ready, Retrying} @ process) -> (Busy @ scheduler, Running @ process):
     where:
       positive(scheduler.credits)
-    set @ scheduler:
-      credits = before.scheduler.credits - 1
-    set @ process:
-      started = true
+    set:
+      credits = before.scheduler.credits - 1 @ scheduler
+      started = true @ process
 
 transition BreakInvariant @ Break():
   case violate (Idle @ scheduler, Ready @ process) -> (Idle @ scheduler, Running @ process):
-    set @ scheduler:
-      credits = -1
-    set @ process:
-      started = true
+    set:
+      credits = -1 @ scheduler
+      started = true @ process
 
 procedure RetryEntry @ system:
   initial (Idle @ scheduler, Retrying @ process)
 
-trace Happy @ system:
+trace Happy:
   replay:
-    Tick()
+    Dispatch.ready() @ RetryEntry
   capture closed:
-    Busy @ scheduler
-    Running @ process
-    Dispatch.ready
+    state (Busy @ scheduler, Running @ process)
+    transition (Dispatch.ready)
+    procedure (RetryEntry)
 
 trace ProcessView @ system:
   capture projected:
-    Running @ process
-    Dispatch.ready
+    state (Running @ process)
+    transition (Dispatch.ready)
 
 Claim ReachedRunning @ Happy:
   eventually:
@@ -1149,8 +1147,12 @@ Claim OneDispatch @ Happy:
   const dtessl::TraceSnapshot static_trace =
       dtessl::run_named_trace(composite_program, "Happy");
   require(static_trace.closed && static_trace.rounds.size() == 1U &&
-              static_trace.rounds.front().transitions.front().from_state.find("Ready") !=
+              static_trace.rounds.front().transitions.front().from_state.find("Retrying") !=
                   std::string::npos &&
+              static_trace.rounds.front().transitions.front().procedure == "RetryEntry" &&
+              static_trace.procedure_history.at("RetryEntry").front().round == 1U &&
+              static_trace.procedure_history.at("RetryEntry").front()
+                      .procedure_revision == 1U &&
               static_trace.final_state.at("process.started").as_bool(),
           "static typed trace did not execute the composite state rewrite");
   const auto claim_results = dtessl::evaluate_named_trace(composite_program, "Happy");
@@ -1199,6 +1201,86 @@ Claim OneDispatch @ Happy:
               rollback_engine.current_states().at("process") == "Ready" &&
               rollback_engine.values().at("scheduler.credits").as_int() == 2,
           "failed composite invariant partially committed another state axis");
+
+  constexpr std::string_view persistent_procedure_replay = R"DTESSL(
+state Counter @ counter initial:
+  value: int = 0
+
+transition Add @ Increment(delta: int):
+  case stay (Counter @ counter) -> (Counter @ counter):
+    set:
+      value = before.value + delta @ counter
+
+procedure SessionA @ alpha:
+  initial (Counter @ counter)
+
+procedure SessionB @ beta:
+  initial (Counter @ counter)
+
+trace Interleaved:
+  replay:
+    Add.stay(1) @ SessionA | Add.stay(2) @ SessionB
+    Add.stay(3) @ SessionA
+  capture closed:
+    procedure (SessionA, SessionB)
+
+Claim Persisted @ Interleaved:
+  eventually:
+    SessionA.value = 4 and SessionB.value = 2
+)DTESSL";
+  const dtessl::Program persistent_program =
+      dtessl::parse(persistent_procedure_replay);
+  const dtessl::TraceSnapshot persistent_trace =
+      dtessl::run_named_trace(persistent_program, "Interleaved");
+  require(persistent_trace.rounds.size() == 2U &&
+              persistent_trace.rounds.front().transitions.size() == 2U &&
+              persistent_trace.rounds.front().transitions[0].round == 1U &&
+              persistent_trace.rounds.front().transitions[1].round == 1U &&
+              persistent_trace.procedure_contexts.at("SessionA") == "alpha" &&
+              persistent_trace.procedure_contexts.at("SessionB") == "beta" &&
+              persistent_trace.procedure_states.at("SessionA").at("value").as_int() == 4 &&
+              persistent_trace.procedure_states.at("SessionB").at("value").as_int() == 2 &&
+              persistent_trace.rounds.back().transitions.front().procedure == "SessionA" &&
+              persistent_trace.rounds.back().transitions.front().procedure_revision == 2U &&
+              persistent_trace.rounds.back().transitions.front()
+                      .causal_predecessors.contains("SessionA/r1:0") &&
+              persistent_trace.procedure_history.at("SessionA").size() == 2U &&
+              persistent_trace.procedure_history.at("SessionB").size() == 2U &&
+              persistent_trace.procedure_history.at("SessionB").back().round == 2U &&
+              persistent_trace.procedure_history.at("SessionB").back()
+                      .procedure_revision == 1U &&
+              persistent_trace.procedure_history.at("SessionB").back()
+                      .transitions.empty(),
+          "replay did not persist independent procedure state across global rounds");
+  const auto persistent_claims =
+      dtessl::evaluate_named_trace(persistent_program, "Interleaved");
+  require(persistent_claims.size() == 1U &&
+              persistent_claims.front().status == dtessl::ClaimStatus::Satisfied,
+          "procedure-qualified Claim did not observe persistent replay state");
+  const dtessl::ProcedureTraceFrame& session_b_at_two =
+      dtessl::captured_procedure_at(persistent_trace, "SessionB", 2U);
+  require(session_b_at_two.state.at("value").as_int() == 2 &&
+              session_b_at_two.procedure_revision == 1U &&
+              session_b_at_two.transitions.empty(),
+          "RoundId lookup did not retain an idle captured procedure frame");
+
+  constexpr std::string_view missing_set_context = R"DTESSL(
+state Idle @ local initial:
+  value: int = 0
+
+transition Bad @ Go():
+  case (Idle @ local) -> (Idle @ local):
+    set:
+      value = 1
+)DTESSL";
+  bool missing_set_context_error = false;
+  try {
+    static_cast<void>(dtessl::parse(missing_set_context));
+  } catch (const dtessl::Error&) {
+    missing_set_context_error = true;
+  }
+  require(missing_set_context_error,
+          "compact set accepted an assignment without @ context");
 
   constexpr std::string_view ambiguous_cases = R"DTESSL(
 state Idle @ scheduler initial:
@@ -1288,7 +1370,7 @@ trace Bad @ system:
   capture projected:
     Idle @ system
   replay:
-    Go()
+    Stay() @ Entry
 )DTESSL";
   bool trace_order_error = false;
   try {
