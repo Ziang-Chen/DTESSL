@@ -371,6 +371,17 @@ injection、所有 RoundId（包括空闲帧）和派生 decision，输出 `Proc
 `replayable=yes`。这比裁剪单条因果边更宽，但不会漏依赖。`capture projected` 只供观察，始终
 `replayable=no`，也不会生成可冒充完整重放输入的 artifact。
 
+每个 accepted decision 在所属 RoundId 内直接保存不可变 `OccurrenceInput`：区分开放
+Event dispatch 与精确 TransitionId injection，保留请求 symbol、规范化 event、全部 typed
+fields、目标 procedure 和 initial context。同时保存 before/after active states 与 typed
+values，及其派生 ActionPlan。procedure frame 也保存该 procedure 本轮的 before/after
+Embedding 与 input 列表；空闲轮的两侧相等且 input 为空。`captured_round_at(trace, RoundId)` 和
+`captured_procedure_at(trace, procedure, RoundId)` 分别按全局 round 与 procedure frame 查询。
+`$port(...) @ context` 是出站 ActionPlan，不是入站变量读取；它的求值后 arguments 和 context
+已随 decision 保存。任何宿主 context/value 必须作为 typed occurrence field value-copy 后进入。
+DTESSL 不捕获活指针或环境内存；未来的大对象只能使用不可伪造的 immutable ArtifactRef/digest
+profile。逻辑时间及 `[time=...]` 映射仍与 RoundId 分离，未在本阶段引入。
+
 `state`、`transition`、`procedure` 可用统一后缀扩展把分散的 capture seed 汇入显式 `trace`：
 
 ```dtessl

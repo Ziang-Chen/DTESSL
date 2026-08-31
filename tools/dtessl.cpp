@@ -239,6 +239,22 @@ void print_repl_result(
             << " ─────────────────────────────────────────────\n"
             << "│ " << styled("round", dim, color) << ' ' << result.round
             << "    " << styled("id", dim, color) << ' ' << result.id << '\n'
+            << "│ " << styled("input", dim, color) << ' '
+            << (result.input.kind == dtessl::OccurrenceInputKind::Transition
+                    ? "transition "
+                    : "event ")
+            << result.input.symbol;
+  if (!result.input.fields.empty()) {
+    std::cout << " {";
+    bool first_input = true;
+    for (const auto& [name, value] : result.input.fields) {
+      if (!first_input) std::cout << ", ";
+      first_input = false;
+      std::cout << name << '=' << dtessl::value_text(value);
+    }
+    std::cout << '}';
+  }
+  std::cout << '\n'
             << "│ " << styled(result.transition, magenta, color) << "    "
             << result.from_state << " ──▶ " << result.to_state << '\n'
             << "├─ " << styled("Δ state", cyan, color) << '\n';

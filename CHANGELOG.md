@@ -5,6 +5,15 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 
 ## v0.4.0
 
+- Attached a complete immutable `OccurrenceInput` to every accepted decision
+  at its causal RoundId: admission kind, requested symbol, normalized Event,
+  typed fields and target procedure/context.
+- Trace decisions now retain before/after typed state snapshots; procedure
+  RoundId frames retain their admitted inputs, and `captured_round_at` provides
+  exact global-round lookup alongside procedure-frame lookup.
+- Clarified and enforced the boundary that `$port` is an outbound ActionPlan
+  call whose evaluated arguments/context are traced, never an ambient host
+  variable or live-memory read.
 - Added unified declaration extensions on `state`, `transition` and
   `procedure`, including `[capture=Trace/Session | Other/default]` and the
   existing transition optimizer in the same bracket grammar.

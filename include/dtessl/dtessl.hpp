@@ -214,6 +214,29 @@ struct ActionPlan {
   friend bool operator==(const ActionPlan&, const ActionPlan&) = default;
 };
 
+enum class OccurrenceInputKind {
+  // Open dispatch by Event identity. Transition selection remains an output.
+  Event,
+  // Exact typed TransitionId admission into a procedure/runtime instance.
+  Transition,
+};
+
+// Immutable value-copy of everything the DTESSL runtime admitted from its
+// host-facing input boundary for one decision. It never contains a live host
+// pointer, provider object or ambient memory reference.
+struct OccurrenceInput {
+  OccurrenceInputKind kind{OccurrenceInputKind::Event};
+  // Event name for Event admission, exact TransitionId for Transition
+  // admission. `event` retains the normalized event family in both cases.
+  std::string symbol;
+  std::string event;
+  std::map<std::string, Value, std::less<>> fields;
+  std::string target_procedure;
+  std::string target_context;
+
+  friend bool operator==(const OccurrenceInput&, const OccurrenceInput&) = default;
+};
+
 struct StepResult {
   // A round is one atomic simulation batch, not a per-transition clock.
   // Independent transitions in the same batch share this value.
@@ -233,6 +256,9 @@ struct StepResult {
   // not infer structure from a display string.
   std::string transition_family;
   std::string case_name;
+  // The complete typed input is attached to the decision in its causal round,
+  // rather than recoverable only from a side artifact.
+  OccurrenceInput input;
   // Present when an explicit transition optimizer resolved the candidate.
   // Higher exact numeric scores are better; ties are rejected.
   std::string optimization_scope;
@@ -245,6 +271,7 @@ struct StepResult {
   // Active state per explicit @ context after this decision. The empty
   // context is the legacy single-state root.
   std::map<std::string, std::string, std::less<>> active_states;
+  std::map<std::string, Value, std::less<>> before_state;
   std::map<std::string, Value, std::less<>> state;
   ActionPlan actions;
   std::set<std::string, std::less<>> reads;
@@ -322,9 +349,14 @@ struct ProcedureTraceFrame {
   // Persistent local state revision; distinct from the causal RoundId.
   std::uint64_t procedure_revision{0};
   std::string context;
+  std::map<std::string, std::string, std::less<>> before_active_states;
   std::map<std::string, std::string, std::less<>> active_states;
+  std::map<std::string, Value, std::less<>> before_state;
   std::map<std::string, Value, std::less<>> state;
   std::vector<std::string> transitions;
+  // Empty for an idle procedure frame. Otherwise these are the exact typed
+  // inputs admitted for this procedure at this RoundId.
+  std::vector<OccurrenceInput> inputs;
 
   friend bool operator==(const ProcedureTraceFrame&, const ProcedureTraceFrame&) = default;
 };
@@ -514,6 +546,8 @@ class RuntimeContext {
 [[nodiscard]] const ProcedureTraceFrame& captured_procedure_at(
     const TraceSnapshot& trace, std::string_view procedure,
     std::uint64_t round_id);
+[[nodiscard]] const ParallelStepResult& captured_round_at(
+    const TraceSnapshot& trace, std::uint64_t round_id);
 [[nodiscard]] std::string_view claim_status_name(ClaimStatus status) noexcept;
 
 }  // namespace dtessl

@@ -242,6 +242,7 @@ ParallelStepResult Engine::step_inputs_at(
     std::set<std::string, std::less<>> causal_predecessors;
     std::string optimization_scope;
     std::optional<Value> optimized_score;
+    OccurrenceInput input;
   };
   std::vector<Prepared> prepared;
   prepared.reserve(inputs.size());
@@ -379,7 +380,17 @@ ParallelStepResult Engine::step_inputs_at(
       const State& source = find_state(program, candidate.from->front().state);
       Environment environment{values_, &event, {}, round_id - 1U};
       Prepared decision{&transition, candidate.case_name, candidate.from, candidate.to,
-                        candidate.reads, candidate.writes, {}, {}, {}, {}, {}, {}, {}};
+                        candidate.reads, candidate.writes, {}, {}, {}, {}, {}, {}, {}, {}};
+      decision.input.kind = injected_transition.empty()
+                                ? OccurrenceInputKind::Event
+                                : OccurrenceInputKind::Transition;
+      decision.input.symbol = injected_transition.empty()
+                                  ? event.name
+                                  : injected_transition;
+      decision.input.event = event.name;
+      decision.input.fields = event.fields;
+      decision.input.target_procedure = procedure_name_;
+      decision.input.target_context = initial_context_;
       for (const std::string& field : *candidate.reads) {
         const auto writers = last_writers_.find(field);
         if (writers != last_writers_.end()) {
@@ -597,12 +608,14 @@ ParallelStepResult Engine::step_inputs_at(
     step_result.transition_family = decision.transition->name;
     step_result.transition = step_result.transition_family;
     if (!step_result.case_name.empty()) step_result.transition += "." + step_result.case_name;
+    step_result.input = std::move(decision.input);
     step_result.optimization_scope = std::move(decision.optimization_scope);
     step_result.optimized_score = std::move(decision.optimized_score);
     step_result.from_state = binding_set_text(*decision.from);
     step_result.to_state = target_set_text(*decision.to);
     step_result.before_active_states = active_states_;
     step_result.active_states = next_active;
+    step_result.before_state = values_;
     step_result.state = next;
     step_result.actions = std::move(decision.actions);
     step_result.reads = *decision.read_set;
@@ -654,6 +667,11 @@ ParallelStepResult Engine::step_inputs_at(
       else ++it;
     }
     for (StepResult& step_result : captured.transitions) {
+      for (auto it = step_result.before_state.begin();
+           it != step_result.before_state.end();) {
+        if (!belongs(it->first)) it = step_result.before_state.erase(it);
+        else ++it;
+      }
       for (auto it = step_result.state.begin(); it != step_result.state.end();) {
         if (!belongs(it->first)) it = step_result.state.erase(it);
         else ++it;
@@ -816,8 +834,17 @@ ParallelStepResult RuntimeContext::inject_at(
     frame.context = engine->initial_context();
     frame.active_states = engine->current_states();
     frame.state = engine->values();
+    frame.before_active_states = frame.active_states;
+    frame.before_state = frame.state;
     for (const StepResult& step : aggregate.transitions) {
-      if (step.procedure == procedure) frame.transitions.push_back(step.transition);
+      if (step.procedure == procedure) {
+        if (frame.inputs.empty()) {
+          frame.before_active_states = step.before_active_states;
+          frame.before_state = step.before_state;
+        }
+        frame.transitions.push_back(step.transition);
+        frame.inputs.push_back(step.input);
+      }
     }
     impl_->history[procedure].push_back(std::move(frame));
   }
@@ -914,6 +941,27 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
         } else {
           ++field;
         }
+      }
+    }
+    for (StepResult& step : round->transitions) {
+      const auto local_selected = [&](std::string_view field) {
+        return declaration->capture_mode == TraceCaptureMode::Closed ||
+            result.captured_contexts.empty() ||
+            std::any_of(result.captured_contexts.begin(),
+                        result.captured_contexts.end(),
+                        [&](const std::string& context) {
+                          return field.starts_with(context + ".") ||
+                                 field.find('.') == std::string_view::npos;
+                        });
+      };
+      for (auto field = step.before_state.begin();
+           field != step.before_state.end();) {
+        if (!local_selected(field->first)) field = step.before_state.erase(field);
+        else ++field;
+      }
+      for (auto field = step.state.begin(); field != step.state.end();) {
+        if (!local_selected(field->first)) field = step.state.erase(field);
+        else ++field;
       }
     }
     ++round;
@@ -1200,8 +1248,17 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         frame.context = engines.at(procedure)->initial_context();
         frame.active_states = engines.at(procedure)->current_states();
         frame.state = engines.at(procedure)->values();
+        frame.before_active_states = frame.active_states;
+        frame.before_state = frame.state;
         for (const StepResult& step : aggregate.transitions) {
-          if (step.procedure == procedure) frame.transitions.push_back(step.transition);
+          if (step.procedure == procedure) {
+            if (frame.inputs.empty()) {
+              frame.before_active_states = step.before_active_states;
+              frame.before_state = step.before_state;
+            }
+            frame.transitions.push_back(step.transition);
+            frame.inputs.push_back(step.input);
+          }
         }
         execution.snapshot.procedure_history[procedure].push_back(std::move(frame));
       }
@@ -1397,6 +1454,23 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
           else ++item;
         }
         for (StepResult& step : round->transitions) {
+          for (auto item = step.before_state.begin();
+               item != step.before_state.end();) {
+            const bool local_belongs = found->capture_mode == TraceCaptureMode::Closed ||
+                execution.snapshot.captured_contexts.empty() ||
+                std::any_of(
+                    execution.snapshot.captured_contexts.begin(),
+                    execution.snapshot.captured_contexts.end(),
+                    [&](const std::string& context) {
+                      return item->first.starts_with(context + ".") ||
+                             item->first.find('.') == std::string::npos;
+                    });
+            if (!procedure_selected(step) || !local_belongs) {
+              item = step.before_state.erase(item);
+            } else {
+              ++item;
+            }
+          }
           for (auto item = step.state.begin(); item != step.state.end();) {
             const bool local_belongs = found->capture_mode == TraceCaptureMode::Closed ||
                 execution.snapshot.captured_contexts.empty() ||
@@ -1692,6 +1766,19 @@ const ProcedureTraceFrame& captured_procedure_at(
                 std::to_string(round_id));
   }
   return *frame;
+}
+
+const ParallelStepResult& captured_round_at(
+    const TraceSnapshot& trace, std::uint64_t round_id) {
+  const auto round = std::lower_bound(
+      trace.rounds.begin(), trace.rounds.end(), round_id,
+      [](const ParallelStepResult& item, std::uint64_t value) {
+        return item.round < value;
+      });
+  if (round == trace.rounds.end() || round->round != round_id) {
+    throw Error("trace has no captured RoundId " + std::to_string(round_id));
+  }
+  return *round;
 }
 
 std::string_view claim_status_name(ClaimStatus status) noexcept {

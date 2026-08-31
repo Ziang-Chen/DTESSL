@@ -6591,6 +6591,28 @@ std::string result_text(const StepResult& result) {
         << " revision " << result.procedure_revision << '\n';
   }
   out << "decision " << result.id << '\n';
+  out << "input "
+      << (result.input.kind == OccurrenceInputKind::Transition
+              ? "transition "
+              : "event ")
+      << result.input.symbol;
+  if (result.input.event != result.input.symbol) {
+    out << " as event " << result.input.event;
+  }
+  if (!result.input.target_procedure.empty()) {
+    out << " @ " << result.input.target_procedure;
+  }
+  if (!result.input.target_context.empty()) {
+    out << "/" << result.input.target_context;
+  }
+  out << " {";
+  bool first_input = true;
+  for (const auto& [name, value] : result.input.fields) {
+    if (!first_input) out << ", ";
+    first_input = false;
+    out << name << " = " << value_text(value);
+  }
+  out << "}\n";
   out << "transition " << result.transition << '\n';
   if (result.optimized_score) {
     out << "optimized_score " << value_text(*result.optimized_score)
@@ -6618,6 +6640,11 @@ std::string result_text(const StepResult& result) {
     if (!first_predecessor) out << ", ";
     first_predecessor = false;
     out << predecessor;
+  }
+  out << "}\n";
+  out << "before " << result.from_state << " {\n";
+  for (const auto& [name, value] : result.before_state) {
+    out << "  " << name << " = " << value_text(value) << '\n';
   }
   out << "}\n";
   out << "state " << result.from_state << " -> " << result.to_state << " {\n";

@@ -635,6 +635,13 @@ int main() {
   const dtessl::StepResult first = engine.step(submit);
   require(first.round == 1, "the first accepted batch must advance the round to one");
   require(first.transition == "Schedule", "wrong transition selected");
+  require(first.input.kind == dtessl::OccurrenceInputKind::Event &&
+              first.input.symbol == "Submit" && first.input.event == "Submit" &&
+              first.input.fields.at("task").as_string() == "task-1" &&
+              first.input.fields.at("worker").as_string() == "worker-a" &&
+              first.input.target_procedure.empty() &&
+              first.before_state.at("credits").as_int() == 2,
+          "standalone trace decision did not retain its complete typed input/before snapshot");
   require(first.state.at("mode").as_string() == "Waiting", "state update was not committed");
   require(first.state.at("credits").as_int() == 1, "integer update is wrong");
   require(first.state.at("busy").as_string_set().values.contains("worker-a"),
@@ -1278,9 +1285,33 @@ Claim Persisted @ Interleaved:
                       .procedure_revision == 1U &&
               persistent_trace.procedure_history.at("SessionB").back()
                       .transitions.empty() &&
+              persistent_trace.procedure_history.at("SessionB").back()
+                      .inputs.empty() &&
+              persistent_trace.procedure_history.at("SessionB").back()
+                      .before_state ==
+                  persistent_trace.procedure_history.at("SessionB").back().state &&
               persistent_trace.replayable &&
               persistent_trace.procedure_artifacts.size() == 2U,
           "replay did not persist independent procedure state across global rounds");
+  const dtessl::ParallelStepResult& captured_round_one =
+      dtessl::captured_round_at(persistent_trace, 1U);
+  const dtessl::ProcedureTraceFrame& captured_session_a =
+      dtessl::captured_procedure_at(persistent_trace, "SessionA", 1U);
+  require(captured_round_one.transitions.size() == 2U &&
+              captured_round_one.transitions.front().input.kind ==
+                  dtessl::OccurrenceInputKind::Transition &&
+              captured_round_one.transitions.front().input.target_procedure ==
+                  "SessionA" &&
+              captured_round_one.transitions.front().input.target_context ==
+                  "alpha" &&
+              captured_round_one.transitions.front().input.fields.at("delta").as_int() == 1 &&
+              captured_round_one.transitions.front().before_state.at("value").as_int() == 0 &&
+              captured_session_a.inputs.size() == 1U &&
+              captured_session_a.before_state.at("value").as_int() == 0 &&
+              captured_session_a.state.at("value").as_int() == 1 &&
+              captured_session_a.inputs.front() ==
+                  captured_round_one.transitions.front().input,
+          "closed trace did not place the immutable external input at its RoundId");
   const std::vector<dtessl::ProcedureArtifact> persistent_artifacts{
       persistent_trace.procedure_artifacts.at("SessionA"),
       persistent_trace.procedure_artifacts.at("SessionB")};
@@ -1339,6 +1370,14 @@ procedure Indexed @ system:
                       "ChooseLeft", {{"value", dtessl::Value(std::int64_t{7})}}}}});
   require(open_event_ambiguous && indexed_step.transitions.size() == 1U &&
               indexed_step.transitions.front().transition == "ChooseLeft.stay" &&
+              indexed_step.transitions.front().input.kind ==
+                  dtessl::OccurrenceInputKind::Transition &&
+              indexed_step.transitions.front().input.symbol == "ChooseLeft" &&
+              indexed_step.transitions.front().input.event == "Choose" &&
+              indexed_step.transitions.front().input.target_procedure == "Indexed" &&
+              indexed_step.transitions.front().input.target_context == "system" &&
+              indexed_step.transitions.front().input.fields.at("value").as_int() == 7 &&
+              indexed_step.transitions.front().before_state.at("value").as_int() == 0 &&
               indexed_step.state.at("value").as_int() == 7,
           "TransitionId injection did not bypass unrelated event families");
 

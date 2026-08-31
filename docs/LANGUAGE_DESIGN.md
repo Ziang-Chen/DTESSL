@@ -496,6 +496,21 @@ DTESSL inputs.
 - RoundId is a causal-DAG layer shared by all simultaneous occurrences, never a
   per-transition or per-procedure increment. Procedure revision is separate;
   stable occurrence identity plus predecessor edges carry happens-before.
+- Every accepted decision owns an immutable `OccurrenceInput` in that RoundId:
+  admission kind (open Event or exact TransitionId), requested symbol,
+  normalized Event identity, all typed fields, target procedure and its entry
+  context. The same decision stores before/after active states and typed values
+  plus the resolved ActionPlan. This is primary trace evidence, not something
+  reconstructed only from a side artifact.
+- A procedure's immutable RoundId frame repeats its before/after Embedding and
+  admitted input list so procedure-scoped inspection is complete; idle frames
+  have equal before/after values and an empty input list.
+  `captured_round_at` and `captured_procedure_at` provide exact RoundId access.
+- `$port(...) @ context` is an outbound command description. Its evaluated
+  arguments and resolved context live in the ActionPlan; it is never an ambient
+  read from host variables or memory. Host input must cross the typed occurrence
+  boundary by value. Live pointers are forbidden; future large-memory input
+  requires an immutable opaque reference plus content/range evidence.
 - Capture lowers to `CaptureFilter{states, transitions, procedures}`. Closed
   capture treats this filter as a seed, identifies matching procedure
   instances and conservatively retains each complete procedure from initial
