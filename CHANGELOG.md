@@ -5,6 +5,12 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 
 ## v0.4.0
 
+- Split volatile frontend parsing from stable instantaneous semantics, finite
+  trace semantics, incremental monitor semantics, Solver exploration and
+  backend negotiation without creating duplicate semantic pipelines.
+- Changed the on-demand Product representation to retain one executable Engine
+  snapshot per unique Embedding. Product nodes now reference that base snapshot
+  and carry only monitor/obligation/path state; CLI metrics expose the invariant.
 - Added one recursive `StateSchema` AST shared by general block and compact
   single-line state syntax. `,` is product, `|` is choice, and `A(B)` is nested
   state containment; typed values and local invariants may occur recursively.

@@ -133,6 +133,9 @@ struct ClaimSolveResult {
   // explored_embeddings for history-sensitive `since`, bounded `within`, and
   // counting monitors without duplicating the base EmbeddingExpand node.
   std::size_t explored_product_states{0};
+  // Exactly one executable Engine snapshot is retained per unique base
+  // Embedding. Product nodes reference these snapshots and never own copies.
+  std::size_t executable_embedding_snapshots{0};
   std::size_t claim_monitor_states{0};
   std::size_t max_depth_reached{0};
   std::vector<CounterexampleFrame> counterexample;

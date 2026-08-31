@@ -11,16 +11,33 @@ option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 add_library(dtessl
   src/exact_numeric.cpp
   src/frontend.cpp
+  src/semantics.cpp
   src/runtime.cpp
+  src/trace_semantics.cpp
+  src/monitor_semantics.cpp
   src/language_service.cpp
   src/semantic_descriptor.cpp
   src/embedding.cpp
   src/solver.cpp
+  src/backend.cpp
   src/value_codec.cpp)
-# runtime.cpp and solver.cpp are included once by frontend.cpp while the typed
-# AST is private. Listing them as header-only keeps all three boundaries visible
-# to IDEs without compiling a second implementation copy.
-set_source_files_properties(src/runtime.cpp src/solver.cpp
+# The source AST remains private, so these implementation fragments are
+# textually included once after the required private types exist. Listing the
+# stability boundaries as header-only keeps them visible to IDEs without
+# compiling duplicate implementation copies:
+#   semantics        stable instantaneous typed relations
+#   runtime          procedure/replay orchestration
+#   trace_semantics  finite trace interpretation
+#   monitor_semantics incremental temporal automata
+#   solver           EmbeddingExpand x ClaimMonitor exploration
+#   backend          feature/projection negotiation
+set_source_files_properties(
+  src/semantics.cpp
+  src/runtime.cpp
+  src/trace_semantics.cpp
+  src/monitor_semantics.cpp
+  src/solver.cpp
+  src/backend.cpp
                             PROPERTIES HEADER_FILE_ONLY TRUE)
 configure_file(include/dtessl/version.hpp.in
                generated/dtessl/version.hpp

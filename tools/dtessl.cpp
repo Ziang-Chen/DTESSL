@@ -1034,6 +1034,7 @@ int main(int argc, char** argv) {
                 << " claim=" << verified.claim
                 << " embeddings=" << verified.explored_embeddings
                 << " product=" << verified.explored_product_states
+                << " snapshots=" << verified.executable_embedding_snapshots
                 << " monitors=" << verified.claim_monitor_states
                 << " edges=" << verified.explored_edges
                 << " depth=" << verified.max_depth_reached << '\n'

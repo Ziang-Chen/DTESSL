@@ -111,6 +111,7 @@ false relation constraints and exact-raw node identity are covered. Standard,
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Temporal Claim AST | always/eventually/until/within/since plus derived never/before/weak_until share typed predicate leaves | Finite trace and procedure examples exercise all primitives | pass |
 | ClaimMonitor Product | Embedding and monitor state have separate keys; deadlock/lasso/finite counterexamples are reconstructed | Positive and negative procedure claims plus transition obligation cycle tests pass | pass |
+| Product snapshot ownership | Product nodes reference one Engine snapshot per unique base Embedding; monitor histories do not copy Engine | `StartedSinceDone` reaches more Product nodes than Embeddings while `snapshots == embeddings` | pass |
 | Finite-prefix claims | logical Round 0, temporal evaluation, count plus three statuses | Closed temporal trace CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
 | Procedure entry boundary | Parser accepts initial context/state plus anonymous local automaton edges; ordered steps/admission scripts remain forbidden | Solver expands local edges only for the owning procedure | pass |
@@ -121,7 +122,7 @@ false relation constraints and exact-raw node identity are covered. Standard,
 | Transition occurrence injection | Exact TransitionId plus typed fields are appended to a started procedure; no direct state mutation or case selection | Same Event family is ambiguous through legacy dispatch but exact TransitionId injection selects only its own family | pass |
 | Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
 | Explicit optimized choice | Typed exact after-state score, greatest unique winner, tie rollback and unchanged unannotated ambiguity rule | Runnable `optimized_transition.dtessl`, feature/plan/output evidence and positive/tie/type-error tests; all three suites pass 25/25 | pass |
-| Frontend/runtime source split | Lexing/parsing/type verification live in `src/frontend.cpp`; round/procedure/replay/search execution lives in `src/runtime.cpp` | One public parser and one runtime semantics remain; standard suite passes | pass |
+| Semantic source boundaries | Volatile parsing remains in `frontend.cpp`; instantaneous, trace and monitor semantics, runtime orchestration, Solver exploration and backend negotiation have explicit files | One public parser and one semantic route remain; standard, warning-clean and sanitizer suites pass | pass |
 | Filter-to-procedure closure | State/transition/procedure filter seeds automatic causal/data closure into a replayable procedure artifact | Closed path/state seed retains whole matching procedure; projected capture emits no artifact | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |

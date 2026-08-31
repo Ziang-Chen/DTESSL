@@ -1903,9 +1903,18 @@ Claim RunningDone @ state Running @ (scheduler):
         dtessl::Solver(temporal_program).verify_claim(claim);
     require(solved.status == dtessl::ClaimSolveStatus::Verified &&
                 solved.explored_product_states != 0U &&
-                solved.claim_monitor_states != 0U,
+                solved.claim_monitor_states != 0U &&
+                solved.executable_embedding_snapshots ==
+                    solved.explored_embeddings,
             std::string("temporal Claim did not verify: ") + std::string(claim));
   }
+  const dtessl::ClaimSolveResult history_product =
+      dtessl::Solver(temporal_program).verify_claim("StartedSinceDone");
+  require(history_product.explored_product_states >
+              history_product.explored_embeddings &&
+              history_product.executable_embedding_snapshots ==
+                  history_product.explored_embeddings,
+          "Product history duplicated an executable Embedding snapshot");
   const dtessl::ClaimSolveResult state_claim =
       dtessl::Solver(temporal_program).verify_claim("RunningDone");
   require(state_claim.status == dtessl::ClaimSolveStatus::Verified,

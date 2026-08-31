@@ -10,6 +10,23 @@ source -> frontend -> typed Program -> Solver -> backend
                                                    -> counterexample
 ```
 
+The implementation follows the same stability boundary:
+
+| File | Ownership | Expected change rate |
+| --- | --- | --- |
+| `frontend.cpp` | source AST, lexer, parser, typing/lowering orchestration | high |
+| `semantics.cpp` | typed instantaneous relation verification/evaluation | low |
+| `runtime.cpp` | Engine, procedure and replay orchestration | medium |
+| `trace_semantics.cpp` | finite trace-position and temporal interpretation | low |
+| `monitor_semantics.cpp` | formula normalization and incremental ClaimMonitor | low |
+| `solver.cpp` | EmbeddingExpand × ClaimMonitor Product exploration | low |
+| `backend.cpp` | feature discovery and projection negotiation | low |
+
+The private typed AST is still shared by one translation unit, so these are
+textual implementation fragments rather than independently compiled public
+modules. The split is nevertheless semantic: parser changes must lower into
+the stable operations instead of adding alternate evaluator paths.
+
 Predicate evaluation has one typed route. Surface equality/order/membership
 operators (`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `~`) lower to the
 `RelationMatch` AST family. Boolean nodes only compose those matches. Runtime
@@ -33,6 +50,12 @@ primitive, not a second predicate evaluator.
 - The explored verification node is `(Embedding, ClaimMonitorState)`.
   EmbeddingExpand remains the base graph; history-sensitive monitor state is not
   smuggled into the source `state` declaration or Embedding digest.
+- One `verify_claim` call owns one on-demand Product graph and one base
+  EmbeddingStore. Exactly one executable Engine snapshot is retained per unique
+  base Embedding. Product nodes contain only the Embedding index, monitor state,
+  active obligations and witness edge; different monitor histories therefore
+  do not copy the Engine. Separate `verify_claim` calls do not yet share a
+  cross-claim cache.
 - `RawKeyMap` maps recursive semantic control/value paths to offsets in the
   lowered raw embedding vector. It is representation metadata, not identity.
 - `EmbeddingStore` canonically encodes and content-deduplicates nodes by exact
@@ -112,6 +135,11 @@ finite counterexamples; waiting liveness states use cycle detection and return
 a prefix plus a closing cycle edge. A result is `verified` only after complete
 finite closure; `bounded-verified` means no counterexample was found within the
 configured Product-state/depth bounds.
+
+The CLI reports `embeddings`, `product`, and `snapshots` separately. It is
+normal for `product > embeddings` when the same logical state is reached with
+different monitor histories; the storage invariant is
+`snapshots == embeddings`.
 
 The currently compiled deterministic monitor fragment admits a future operator
 whose operands are state/past predicates, with arbitrary boolean and `since`
