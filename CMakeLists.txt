@@ -13,6 +13,7 @@ add_library(dtessl
   src/frontend.cpp
   src/semantics.cpp
   src/runtime.cpp
+  src/capture_semantics.cpp
   src/trace_semantics.cpp
   src/monitor_semantics.cpp
   src/language_service.cpp
@@ -27,6 +28,7 @@ add_library(dtessl
 # compiling duplicate implementation copies:
 #   semantics        stable typed relations and Property dispositions
 #   runtime          procedure/replay orchestration
+#   capture_semantics occurrence/causal/temporal capture selection
 #   trace_semantics  finite trace interpretation
 #   monitor_semantics incremental temporal automata
 #   solver           EmbeddingExpand x ClaimMonitor exploration
@@ -34,6 +36,7 @@ add_library(dtessl
 set_source_files_properties(
   src/semantics.cpp
   src/runtime.cpp
+  src/capture_semantics.cpp
   src/trace_semantics.cpp
   src/monitor_semantics.cpp
   src/solver.cpp
@@ -194,7 +197,7 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/composite_trace.dtessl
                    Happy)
   set_tests_properties(dtessl.composite_trace_replayable PROPERTIES
-                       PASS_REGULAR_EXPRESSION "replayable=yes procedures=1")
+                       PASS_REGULAR_EXPRESSION "replayable=yes occurrence-artifact-rounds=1 procedure-views=1")
   add_test(NAME dtessl.composite_procedures
            COMMAND $<TARGET_FILE:dtessl_cli>
                    procedures
@@ -233,7 +236,7 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/procedure_replay.dtessl
                    Interleaved)
   set_tests_properties(dtessl.procedure_replay_trace PROPERTIES
-                       PASS_REGULAR_EXPRESSION "replayable=yes procedures=2")
+                       PASS_REGULAR_EXPRESSION "replayable=yes occurrence-artifact-rounds=2 procedure-views=2")
   add_test(NAME dtessl.procedure_replay_claim
            COMMAND $<TARGET_FILE:dtessl_cli>
                    claims
@@ -332,4 +335,17 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/recursive_embedding.dtessl)
   set_tests_properties(dtessl.recursive_relation_features PROPERTIES
                        PASS_REGULAR_EXPRESSION "recursive-state-schema.*relation-expression")
+  add_test(NAME dtessl.occurrence_capture_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/occurrence_capture.dtessl)
+  set_tests_properties(dtessl.occurrence_capture_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.occurrence_capture_trace
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   trace
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/occurrence_capture.dtessl
+                   StartUntilDone)
+  set_tests_properties(dtessl.occurrence_capture_trace PROPERTIES
+                       PASS_REGULAR_EXPRESSION "closed rounds=3 replayable=yes occurrence-artifact-rounds=3 procedure-views=1;interval anchor=Flow/r1:0 round=1 witnessed=Flow/r3:0 round=3")
 endif()

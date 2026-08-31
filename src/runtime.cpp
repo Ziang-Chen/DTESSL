@@ -5,87 +5,25 @@
 
 namespace {
 
-bool capture_path_matches(const StepResult& selected,
-                          std::string_view seed) {
-  return seed.find('.') == std::string_view::npos
-             ? selected.transition_family == seed
-             : selected.transition == seed;
-}
+#include "capture_semantics.cpp"
 
-bool capture_state_matches(
-    const StepResult& step,
-    const std::set<std::pair<std::string, std::string>>& seeds) {
-  return std::any_of(
-      seeds.begin(), seeds.end(), [&](const auto& seed) {
-        const auto before = step.before_active_states.find(seed.first);
-        const auto after = step.active_states.find(seed.first);
-        return (before != step.before_active_states.end() &&
-                before->second == seed.second) ||
-               (after != step.active_states.end() &&
-                after->second == seed.second);
-      });
-}
-
-bool capture_relation_matches(const TraceSnapshot& trace,
-                              const StepResult& step,
-                              std::string_view procedure) {
-  const bool has_seeds = !trace.captured_states.empty() ||
-      !trace.captured_paths.empty() || !trace.captured_procedures.empty();
-  if (!has_seeds) return true;
-  const bool state = capture_state_matches(step, trace.captured_states);
-  const bool path = std::any_of(
-      trace.captured_paths.begin(), trace.captured_paths.end(),
-      [&](const std::string& seed) {
-        return capture_path_matches(step, seed);
-      });
-  const bool procedure_match = trace.captured_procedures.contains(
-      step.procedure.empty() ? std::string(procedure) : step.procedure);
-  return state || path || procedure_match;
-}
-
-std::set<std::string, std::less<>> capture_procedure_closure(
-    const TraceSnapshot& seeds,
-    const std::vector<ParallelStepResult>& rounds) {
-  std::set<std::string, std::less<>> procedures = seeds.captured_procedures;
-  std::set<std::string, std::less<>> causal_decisions;
+TraceArtifact make_trace_artifact(
+    const std::vector<ParallelStepResult>& rounds,
+    std::uint64_t last_round,
+    std::map<std::string, std::string, std::less<>> procedure_contexts = {}) {
+  TraceArtifact artifact;
+  artifact.procedure_contexts = std::move(procedure_contexts);
   for (const ParallelStepResult& round : rounds) {
+    if (round.round > last_round) break;
+    TraceArtifactRound saved;
+    saved.round = round.round;
     for (const StepResult& step : round.transitions) {
-      if (!capture_relation_matches(seeds, step, step.procedure)) continue;
-      procedures.insert(step.procedure);
-      causal_decisions.insert(step.causal_predecessors.begin(),
-                              step.causal_predecessors.end());
+      saved.inputs.push_back(step.input);
     }
+    saved.expected = round;
+    if (!saved.inputs.empty()) artifact.rounds.push_back(std::move(saved));
   }
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (const ParallelStepResult& round : rounds) {
-      for (const StepResult& step : round.transitions) {
-        if (!causal_decisions.contains(step.id)) continue;
-        changed = procedures.insert(step.procedure).second || changed;
-        const std::size_t before = causal_decisions.size();
-        causal_decisions.insert(step.causal_predecessors.begin(),
-                                step.causal_predecessors.end());
-        changed = causal_decisions.size() != before || changed;
-      }
-    }
-  }
-  return procedures;
-}
-
-bool capture_procedure_selected(
-    const std::set<std::string, std::less<>>& procedures,
-    std::string_view procedure) {
-  return procedures.contains(std::string(procedure));
-}
-
-bool capture_qualified_field_selected(
-    const std::set<std::string, std::less<>>& procedures,
-    std::string_view field) {
-  return std::any_of(procedures.begin(), procedures.end(),
-                     [&](const std::string& procedure) {
-                       return field.starts_with(procedure + ".");
-                     });
+  return artifact;
 }
 
 }  // namespace
@@ -148,6 +86,7 @@ Engine::Engine(Program program,
     }
     snapshot.captured_paths = trace.paths;
     snapshot.captured_procedures = trace.captured_procedures;
+    snapshot.temporal_rule = trace.temporal_rule;
     if (trace.capture_mode == TraceCaptureMode::Projected) {
       snapshot.causal_gaps.push_back(
           "projected capture omits decisions outside selected @ contexts");
@@ -215,6 +154,45 @@ ParallelStepResult Engine::step_transitions_at(
     }
     const Transition& transition = program.transitions[indexed->second];
     inputs.emplace_back(Event{transition.event, input.fields}, input.transition);
+  }
+  return step_inputs_at(inputs, round_id);
+}
+
+ParallelStepResult Engine::step_occurrences_at(
+    const std::vector<OccurrenceInput>& occurrences,
+    std::uint64_t round_id) {
+  if (occurrences.empty()) throw Error("a replay round needs at least one occurrence");
+  const Program::Impl& program = *program_.implementation();
+  std::vector<std::pair<Event, std::string>> inputs;
+  inputs.reserve(occurrences.size());
+  for (const OccurrenceInput& occurrence : occurrences) {
+    if (!occurrence.target_procedure.empty() &&
+        occurrence.target_procedure != procedure_name_) {
+      throw Error("occurrence targets another procedure instance");
+    }
+    if (!occurrence.target_context.empty() &&
+        occurrence.target_context != initial_context_) {
+      throw Error("occurrence target context does not match the Engine entry");
+    }
+    if (occurrence.kind == OccurrenceInputKind::Event) {
+      if (occurrence.event.empty() || occurrence.symbol != occurrence.event) {
+        throw Error("stored Event occurrence has inconsistent identity");
+      }
+      inputs.emplace_back(Event{occurrence.event, occurrence.fields},
+                          std::string{});
+      continue;
+    }
+    const auto indexed = program.transition_index.find(occurrence.symbol);
+    if (indexed == program.transition_index.end()) {
+      throw Error("stored occurrence references unknown transition '" +
+                  occurrence.symbol + "'");
+    }
+    const Transition& transition = program.transitions[indexed->second];
+    if (transition.event != occurrence.event) {
+      throw Error("stored Transition occurrence has inconsistent Event identity");
+    }
+    inputs.emplace_back(Event{occurrence.event, occurrence.fields},
+                        occurrence.symbol);
   }
   return step_inputs_at(inputs, round_id);
 }
@@ -391,6 +369,13 @@ ParallelStepResult Engine::step_inputs_at(
       decision.input.fields = event.fields;
       decision.input.target_procedure = procedure_name_;
       decision.input.target_context = initial_context_;
+      for (const StateBinding& binding : *candidate.from) {
+        const auto writers = last_state_writers_.find(binding.context);
+        if (writers != last_state_writers_.end()) {
+          decision.causal_predecessors.insert(writers->second.begin(),
+                                              writers->second.end());
+        }
+      }
       for (const std::string& field : *candidate.reads) {
         const auto writers = last_writers_.find(field);
         if (writers != last_writers_.end()) {
@@ -633,6 +618,18 @@ ParallelStepResult Engine::step_inputs_at(
       last_writers_[field].insert(decision.id);
     }
   }
+  for (const Prepared& decision : prepared) {
+    for (const auto& [context, state] : decision.targets) {
+      static_cast<void>(state);
+      last_state_writers_[context].clear();
+    }
+  }
+  for (std::size_t index = 0; index < prepared.size(); ++index) {
+    for (const auto& [context, state] : prepared[index].targets) {
+      static_cast<void>(state);
+      last_state_writers_[context].insert(result.transitions[index].id);
+    }
+  }
 
   round_ = round_id;
   active_states_ = std::move(next_active);
@@ -652,7 +649,7 @@ ParallelStepResult Engine::step_inputs_at(
                          });
     };
     ParallelStepResult captured = result;
-    if (trace.mode == TraceCaptureMode::Projected) {
+    if (trace.mode == TraceCaptureMode::Projected && !trace.temporal_rule) {
       captured.transitions.erase(
           std::remove_if(captured.transitions.begin(), captured.transitions.end(),
                          [&](const StepResult& step_result) {
@@ -878,7 +875,13 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
     result.procedure_states.emplace(procedure, engine->values());
     result.procedure_contexts.emplace(procedure, engine->initial_context());
   }
-  if (!result.rounds.empty()) result.final_state = result.rounds.back().state;
+  if (!result.rounds.empty()) {
+    result.final_state = result.rounds.back().state;
+    result.trace_artifact = make_trace_artifact(
+        result.rounds, result.rounds.back().round, result.procedure_contexts);
+  }
+  result.replayable = result.trace_artifact.has_value() &&
+      !result.trace_artifact->rounds.empty();
 
   const auto declaration = std::find_if(
       impl_->program.implementation()->traces.begin(),
@@ -895,48 +898,45 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
   result.captured_states.clear();
   result.captured_paths = declaration->paths;
   result.captured_procedures = declaration->captured_procedures;
+  result.temporal_rule = declaration->temporal_rule;
+  result.trace_artifact.reset();
+  result.replayable = false;
   for (const StateBinding& binding : declaration->capture) {
     result.captured_contexts.insert(binding.context);
     result.captured_states.emplace(binding.context, binding.state);
   }
   const TraceSnapshot capture_seeds = result;
-  std::set<std::string, std::less<>> closure =
-      capture_procedure_closure(capture_seeds, result.rounds);
-  if (closure.empty() && capture_seeds.captured_states.empty() &&
-      capture_seeds.captured_paths.empty() &&
-      capture_seeds.captured_procedures.empty()) {
+  const CaptureSelection selection = select_capture_occurrences(
+      capture_seeds, result.rounds,
+      declaration->capture_mode == TraceCaptureMode::Closed, true);
+  result.temporal_intervals = selection.intervals;
+  result.captured_procedures = selection.procedures;
+  if (declaration->capture_mode == TraceCaptureMode::Closed &&
+      !selection.rounds.empty()) {
+    std::map<std::string, std::string, std::less<>> artifact_contexts;
     for (const auto& [procedure, engine] : impl_->engines) {
-      static_cast<void>(engine);
-      closure.insert(procedure);
+      artifact_contexts.emplace(procedure, engine->initial_context());
     }
+    result.trace_artifact = make_trace_artifact(
+        result.rounds, *selection.rounds.rbegin(), std::move(artifact_contexts));
   }
-  result.captured_procedures = closure;
 
   for (auto round = result.rounds.begin(); round != result.rounds.end();) {
     round->transitions.erase(
         std::remove_if(
             round->transitions.begin(), round->transitions.end(),
             [&](const StepResult& step) {
-              if (declaration->capture_mode == TraceCaptureMode::Projected) {
-                return !capture_relation_matches(capture_seeds, step,
-                                                 step.procedure);
-              }
-              return !capture_procedure_selected(closure, step.procedure);
+              return !selection.occurrences.contains(step.id);
             }),
         round->transitions.end());
-    if (declaration->capture_mode == TraceCaptureMode::Projected &&
-        round->transitions.empty()) {
-      round = result.rounds.erase(round);
-      continue;
-    }
-    if (declaration->capture_mode == TraceCaptureMode::Closed &&
-        closure.empty()) {
+    if (round->transitions.empty()) {
       round = result.rounds.erase(round);
       continue;
     }
     if (impl_->engines.size() > 1U) {
       for (auto field = round->state.begin(); field != round->state.end();) {
-        if (!capture_qualified_field_selected(closure, field->first)) {
+        if (!capture_qualified_field_selected(selection.procedures,
+                                              field->first)) {
           field = round->state.erase(field);
         } else {
           ++field;
@@ -966,9 +966,30 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
     }
     ++round;
   }
+  if (result.rounds.empty()) {
+    result.final_state.clear();
+  } else {
+    result.final_state = result.rounds.back().state;
+  }
+  if (!selection.rounds.empty()) {
+    const std::uint64_t last_round = *selection.rounds.rbegin();
+    for (const std::string& procedure : selection.procedures) {
+      const auto history = result.procedure_history.find(procedure);
+      if (history == result.procedure_history.end()) continue;
+      const auto frame = std::find_if(
+          history->second.begin(), history->second.end(),
+          [&](const ProcedureTraceFrame& item) {
+            return item.round == last_round;
+          });
+      if (frame != history->second.end()) {
+        result.procedure_states.insert_or_assign(procedure, frame->state);
+      }
+    }
+  }
   if (impl_->engines.size() > 1U) {
     for (auto field = result.final_state.begin(); field != result.final_state.end();) {
-      if (!capture_qualified_field_selected(closure, field->first)) {
+      if (!capture_qualified_field_selected(selection.procedures,
+                                            field->first)) {
         field = result.final_state.erase(field);
       } else {
         ++field;
@@ -977,7 +998,7 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
   }
   for (auto state = result.procedure_states.begin();
        state != result.procedure_states.end();) {
-    if (!capture_procedure_selected(closure, state->first)) {
+    if (!capture_procedure_selected(selection.procedures, state->first)) {
       state = result.procedure_states.erase(state);
     } else {
       ++state;
@@ -985,7 +1006,7 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
   }
   for (auto context = result.procedure_contexts.begin();
        context != result.procedure_contexts.end();) {
-    if (!capture_procedure_selected(closure, context->first)) {
+    if (!capture_procedure_selected(selection.procedures, context->first)) {
       context = result.procedure_contexts.erase(context);
     } else {
       ++context;
@@ -993,28 +1014,47 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
   }
   for (auto history = result.procedure_history.begin();
        history != result.procedure_history.end();) {
-    if (!capture_procedure_selected(closure, history->first)) {
+    if (!capture_procedure_selected(selection.procedures, history->first)) {
       history = result.procedure_history.erase(history);
     } else {
+      history->second.erase(
+          std::remove_if(history->second.begin(), history->second.end(),
+                         [&](const ProcedureTraceFrame& frame) {
+                           return !selection.rounds.contains(frame.round);
+                         }),
+          history->second.end());
       ++history;
     }
   }
   for (auto artifact = result.procedure_artifacts.begin();
        artifact != result.procedure_artifacts.end();) {
-    if (!capture_procedure_selected(closure, artifact->first)) {
+    if (!capture_procedure_selected(selection.procedures, artifact->first)) {
       artifact = result.procedure_artifacts.erase(artifact);
     } else {
+      const std::uint64_t last_round = selection.rounds.empty()
+          ? 0U
+          : *selection.rounds.rbegin();
+      artifact->second.injections.erase(
+          std::remove_if(
+              artifact->second.injections.begin(),
+              artifact->second.injections.end(),
+              [&](const ProcedureInjection& injection) {
+                return injection.round > last_round;
+              }),
+          artifact->second.injections.end());
       ++artifact;
     }
   }
   if (declaration->capture_mode == TraceCaptureMode::Projected) {
     result.replayable = false;
+    result.trace_artifact.reset();
     result.procedure_history.clear();
     result.procedure_artifacts.clear();
     result.causal_gaps.push_back(
         "projected capture omits decisions outside the capture relation");
   } else {
-    result.replayable = !result.procedure_artifacts.empty();
+    result.replayable = result.trace_artifact.has_value() &&
+                        !result.trace_artifact->rounds.empty();
   }
   return result;
 }
@@ -1108,6 +1148,121 @@ TraceSnapshot replay_procedures(
   const TraceSnapshot first = execute();
   const TraceSnapshot second = execute();
   if (first != second) throw Error("procedure replay diverged");
+  return first;
+}
+
+TraceSnapshot replay_trace_artifact(
+    const Program& program, const TraceArtifact& artifact) {
+  if (program.empty()) throw Error("cannot replay a trace artifact without a Program");
+  if (artifact.rounds.empty()) throw Error("trace artifact has no rounds");
+  const auto execute = [&]() {
+    bool has_free = false;
+    bool has_procedure = !artifact.procedure_contexts.empty();
+    std::set<std::string, std::less<>> procedures;
+    for (const auto& [procedure, context] : artifact.procedure_contexts) {
+      const auto declaration =
+          program.implementation()->procedures.find(procedure);
+      if (declaration == program.implementation()->procedures.end()) {
+        throw Error("trace artifact targets unknown procedure '" + procedure + "'");
+      }
+      if (declaration->second.initial_context != context) {
+        throw Error("trace artifact procedure context does not match declaration");
+      }
+      procedures.insert(procedure);
+    }
+    std::uint64_t previous_round = 0U;
+    for (const TraceArtifactRound& round : artifact.rounds) {
+      if (round.round == 0U || round.round <= previous_round ||
+          round.inputs.empty()) {
+        throw Error("trace artifact RoundId sequence is invalid");
+      }
+      previous_round = round.round;
+      if (round.expected.round != round.round ||
+          round.inputs.size() != round.expected.transitions.size()) {
+        throw Error("trace artifact input/decision cardinality differs");
+      }
+      for (std::size_t index = 0; index < round.inputs.size(); ++index) {
+        if (round.expected.transitions[index].input != round.inputs[index]) {
+          throw Error("trace artifact input disagrees with expected decision");
+        }
+      }
+      for (const OccurrenceInput& input : round.inputs) {
+        if (input.target_procedure.empty()) {
+          has_free = true;
+        } else {
+          has_procedure = true;
+          procedures.insert(input.target_procedure);
+          const auto declaration =
+              program.implementation()->procedures.find(input.target_procedure);
+          if (declaration == program.implementation()->procedures.end()) {
+            throw Error("trace artifact targets unknown procedure '" +
+                        input.target_procedure + "'");
+          }
+          if (declaration->second.initial_context != input.target_context) {
+            throw Error("trace artifact procedure context does not match declaration");
+          }
+          const auto artifact_context =
+              artifact.procedure_contexts.find(input.target_procedure);
+          if (artifact_context != artifact.procedure_contexts.end() &&
+              artifact_context->second != input.target_context) {
+            throw Error("trace artifact input disagrees with procedure context table");
+          }
+          if (input.kind != OccurrenceInputKind::Transition) {
+            throw Error("procedure trace artifact requires exact TransitionId inputs");
+          }
+        }
+      }
+    }
+    if (has_free && has_procedure) {
+      throw Error("trace artifact cannot mix a free Engine and procedure instances");
+    }
+
+    const auto verify_round = [](const ParallelStepResult& actual,
+                                 const TraceArtifactRound& expected) {
+      if (actual != expected.expected) {
+        throw Error("trace artifact replay derived a different logical result at RoundId " +
+                    std::to_string(expected.round));
+      }
+    };
+
+    if (has_free) {
+      Engine engine(program);
+      TraceSnapshot result;
+      result.name = "trace-artifact-replay";
+      result.mode = TraceCaptureMode::Closed;
+      result.closed = true;
+      result.replayable = true;
+      result.trace_artifact = artifact;
+      for (const TraceArtifactRound& round : artifact.rounds) {
+        ParallelStepResult actual = engine.step_occurrences_at(
+            round.inputs, round.round);
+        verify_round(actual, round);
+        result.rounds.push_back(std::move(actual));
+      }
+      result.final_state = engine.values();
+      return result;
+    }
+
+    RuntimeContext runtime(program);
+    for (const std::string& procedure : procedures) runtime.start(procedure);
+    for (const TraceArtifactRound& round : artifact.rounds) {
+      std::vector<std::pair<std::string, TransitionInput>> inputs;
+      for (const OccurrenceInput& occurrence : round.inputs) {
+        inputs.emplace_back(
+            occurrence.target_procedure,
+            TransitionInput{occurrence.symbol, occurrence.fields});
+      }
+      const ParallelStepResult actual = runtime.inject_at(inputs, round.round);
+      verify_round(actual, round);
+    }
+    TraceSnapshot result = runtime.snapshot("trace-artifact-replay");
+    result.trace_artifact = artifact;
+    result.replayable = true;
+    return result;
+  };
+  const TraceSnapshot first = execute();
+  const TraceSnapshot second = execute();
+  if (first != second) throw Error("trace artifact replay diverged");
   return first;
 }
 
@@ -1279,10 +1434,6 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
     execution.snapshot.rounds = execution.logical.rounds;
     execution.snapshot.final_state = execution.logical.final_state;
     for (const auto& [procedure, engine] : engines) {
-      if (found->has_capture && !found->captured_procedures.empty() &&
-          !found->captured_procedures.contains(procedure)) {
-        continue;
-      }
       execution.snapshot.procedure_states.emplace(procedure, engine->values());
       execution.snapshot.procedure_contexts.emplace(procedure, engine->initial_context());
     }
@@ -1293,42 +1444,26 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
     }
     execution.snapshot.captured_paths = found->paths;
     execution.snapshot.captured_procedures = found->captured_procedures;
+    execution.snapshot.temporal_rule = found->temporal_rule;
     const TraceSnapshot capture_seeds = execution.snapshot;
-    std::set<std::string, std::less<>> closure_procedures =
-        found->captured_procedures;
-    std::set<std::string, std::less<>> causal_decisions;
-    for (const ParallelStepResult& round : execution.logical.rounds) {
-      for (const StepResult& step : round.transitions) {
-        if (!capture_relation_matches(execution.snapshot, step,
-                                      step.procedure)) {
-          continue;
-        }
-        closure_procedures.insert(step.procedure);
-        causal_decisions.insert(step.causal_predecessors.begin(),
-                                step.causal_predecessors.end());
-      }
+    const CaptureSelection selection = select_capture_occurrences(
+        capture_seeds, execution.logical.rounds,
+        !found->has_capture || found->capture_mode == TraceCaptureMode::Closed,
+        true);
+    execution.snapshot.temporal_intervals = selection.intervals;
+    execution.snapshot.captured_procedures = selection.procedures;
+    if ((!found->has_capture ||
+         found->capture_mode == TraceCaptureMode::Closed) &&
+        !selection.rounds.empty()) {
+      execution.snapshot.trace_artifact = make_trace_artifact(
+          execution.logical.rounds, *selection.rounds.rbegin(),
+          execution.snapshot.procedure_contexts);
     }
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (const ParallelStepResult& round : execution.logical.rounds) {
-        for (const StepResult& step : round.transitions) {
-          if (!causal_decisions.contains(step.id)) continue;
-          changed = closure_procedures.insert(step.procedure).second || changed;
-          const std::size_t before = causal_decisions.size();
-          causal_decisions.insert(step.causal_predecessors.begin(),
-                                  step.causal_predecessors.end());
-          changed = causal_decisions.size() != before || changed;
-        }
-      }
-    }
-    if (closure_procedures.empty() && found->capture.empty() &&
-        found->paths.empty() && found->captured_procedures.empty()) {
-      closure_procedures = referenced_procedures;
-    }
-    execution.snapshot.captured_procedures = closure_procedures;
     if (!found->has_capture || found->capture_mode == TraceCaptureMode::Closed) {
-      for (const std::string& procedure : closure_procedures) {
+      const std::uint64_t last_round = selection.rounds.empty()
+          ? 0U
+          : *selection.rounds.rbegin();
+      for (const std::string& procedure : selection.procedures) {
         const auto declaration = program.implementation()->procedures.find(procedure);
         if (declaration == program.implementation()->procedures.end()) continue;
         ProcedureArtifact artifact;
@@ -1338,7 +1473,8 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
           artifact.initial_states.emplace(binding.context, binding.state);
         }
         for (std::size_t round_index = 0; round_index < found->events.rounds.size();
-             ++round_index) {
+            ++round_index) {
+          if (round_index + 1U > last_round) break;
           const auto& procedures = found->replay_procedures.at(round_index);
           for (std::size_t index = 0; index < procedures.size(); ++index) {
             if (procedures[index] == procedure) {
@@ -1359,12 +1495,19 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         execution.snapshot.procedure_artifacts.emplace(procedure, std::move(artifact));
       }
       execution.snapshot.replayable =
-          !execution.snapshot.procedure_artifacts.empty();
+          execution.snapshot.trace_artifact.has_value() &&
+          !execution.snapshot.trace_artifact->rounds.empty();
       for (auto history = execution.snapshot.procedure_history.begin();
            history != execution.snapshot.procedure_history.end();) {
-        if (!closure_procedures.contains(history->first)) {
+        if (!selection.procedures.contains(history->first)) {
           history = execution.snapshot.procedure_history.erase(history);
         } else {
+          history->second.erase(
+              std::remove_if(history->second.begin(), history->second.end(),
+                             [&](const ProcedureTraceFrame& frame) {
+                               return !selection.rounds.contains(frame.round);
+                             }),
+              history->second.end());
           ++history;
         }
       }
@@ -1412,37 +1555,21 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
       };
       if (found->capture_mode == TraceCaptureMode::Projected) {
         execution.snapshot.replayable = false;
+        execution.snapshot.trace_artifact.reset();
         execution.snapshot.procedure_artifacts.clear();
-        execution.snapshot.procedure_history.clear();
         execution.snapshot.causal_gaps.push_back(
             "projected capture omits decisions outside selected procedures, paths, or contexts");
       }
       for (auto round = execution.snapshot.rounds.begin();
            round != execution.snapshot.rounds.end();) {
-        if (found->capture_mode == TraceCaptureMode::Projected) {
-          round->transitions.erase(
-              std::remove_if(
-                  round->transitions.begin(), round->transitions.end(),
-                  [&](const StepResult& step) {
-                    return !capture_relation_matches(capture_seeds, step,
-                                                     step.procedure);
-                  }),
-              round->transitions.end());
-          if (round->transitions.empty()) {
-            round = execution.snapshot.rounds.erase(round);
-            continue;
-          }
-        } else {
-          round->transitions.erase(
-              std::remove_if(
-                  round->transitions.begin(), round->transitions.end(),
-                  [&](const StepResult& step) {
-                    return !procedure_selected(step);
-                  }),
-              round->transitions.end());
-        }
-        if (found->capture_mode == TraceCaptureMode::Closed &&
-            execution.snapshot.captured_procedures.empty()) {
+        round->transitions.erase(
+            std::remove_if(
+                round->transitions.begin(), round->transitions.end(),
+                [&](const StepResult& step) {
+                  return !selection.occurrences.contains(step.id);
+                }),
+            round->transitions.end());
+        if (round->transitions.empty()) {
           round = execution.snapshot.rounds.erase(round);
           continue;
         }
@@ -1489,6 +1616,28 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         }
         ++round;
       }
+      if (execution.snapshot.rounds.empty()) {
+        execution.snapshot.final_state.clear();
+      } else {
+        execution.snapshot.final_state =
+            execution.snapshot.rounds.back().state;
+      }
+      if (!selection.rounds.empty()) {
+        const std::uint64_t last_round = *selection.rounds.rbegin();
+        for (const std::string& procedure : selection.procedures) {
+          const auto history = execution.snapshot.procedure_history.find(procedure);
+          if (history == execution.snapshot.procedure_history.end()) continue;
+          const auto frame = std::find_if(
+              history->second.begin(), history->second.end(),
+              [&](const ProcedureTraceFrame& item) {
+                return item.round == last_round;
+              });
+          if (frame != history->second.end()) {
+            execution.snapshot.procedure_states.insert_or_assign(
+                procedure, frame->state);
+          }
+        }
+      }
       for (auto item = execution.snapshot.final_state.begin();
            item != execution.snapshot.final_state.end();) {
         const bool selected = found->capture_mode == TraceCaptureMode::Closed
@@ -1526,6 +1675,9 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         } else {
           ++context;
         }
+      }
+      if (found->capture_mode == TraceCaptureMode::Projected) {
+        execution.snapshot.procedure_history.clear();
       }
     }
     return execution;
@@ -1735,6 +1887,31 @@ TraceSnapshot Engine::captured_trace(std::string_view name, bool close) const {
     throw Error("unknown dynamic trace '" + std::string(name) + "'");
   }
   TraceSnapshot result = found->second;
+  const CaptureSelection selection = select_capture_occurrences(
+      result, result.rounds, result.mode == TraceCaptureMode::Closed, close);
+  result.temporal_intervals = selection.intervals;
+  result.captured_procedures = selection.procedures;
+  if (result.mode == TraceCaptureMode::Closed && !selection.rounds.empty()) {
+    result.trace_artifact = make_trace_artifact(
+        result.rounds, *selection.rounds.rbegin());
+    result.replayable = close && !result.trace_artifact->rounds.empty();
+  }
+  for (auto round = result.rounds.begin(); round != result.rounds.end();) {
+    round->transitions.erase(
+        std::remove_if(
+            round->transitions.begin(), round->transitions.end(),
+            [&](const StepResult& step) {
+              return !selection.occurrences.contains(step.id);
+            }),
+        round->transitions.end());
+    if (round->transitions.empty()) {
+      round = result.rounds.erase(round);
+    } else {
+      ++round;
+    }
+  }
+  if (!result.rounds.empty()) result.final_state = result.rounds.back().state;
+  else result.final_state.clear();
   if (close) result.closed = true;
   return result;
 }

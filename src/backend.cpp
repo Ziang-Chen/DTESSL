@@ -209,6 +209,12 @@ FeatureSet required_features(const Program& program) {
     result.insert(LanguageFeature::CompositeStateSet);
   }
   if (!implementation.traces.empty()) result.insert(LanguageFeature::TypedTrace);
+  if (std::any_of(implementation.traces.begin(), implementation.traces.end(),
+                  [](const TraceDeclaration& trace) {
+                    return trace.temporal_rule.has_value();
+                  })) {
+    result.insert(LanguageFeature::TemporalLogic);
+  }
   if (!implementation.claims.empty()) result.insert(LanguageFeature::TraceClaims);
   for (const ClaimDeclaration& claim : implementation.claims) {
     collect_temporal_features(claim.property, result);
@@ -328,4 +334,3 @@ std::string_view projection_name(Projection projection) noexcept {
   }
   return "unknown";
 }
-

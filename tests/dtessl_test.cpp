@@ -2053,6 +2053,14 @@ trace Procedure:
 trace Missing:
   capture closed:
     state()
+
+trace EnterOnly:
+  capture closed:
+    transition(Enter)
+
+trace LeaveOnly:
+  capture closed:
+    transition(Leave)
 )DTESSL";
   const dtessl::Program capture_program =
       dtessl::parse(distributed_capture_extensions);
@@ -2100,7 +2108,7 @@ trace Missing:
   require(audit_capture.mode == dtessl::TraceCaptureMode::Closed &&
               audit_capture.rounds.size() == 2U && audit_capture.replayable &&
               audit_capture.procedure_artifacts.at("Work").injections.size() == 2U,
-          "closed state seed did not expand to the actual procedure closure");
+          "closed state seed did not retain its selected occurrence evidence");
   const dtessl::TraceSnapshot procedure_capture =
       capture_runtime.snapshot("Procedure/sessionC");
   require(procedure_capture.mode == dtessl::TraceCaptureMode::Closed &&
@@ -2117,5 +2125,150 @@ trace Missing:
               missing_capture.procedure_artifacts.empty() &&
               !missing_capture.replayable,
           "a closed capture with no relation match leaked unrelated procedures");
+  const dtessl::TraceSnapshot enter_only_capture =
+      capture_runtime.snapshot("EnterOnly");
+  require(enter_only_capture.rounds.size() == 1U &&
+              enter_only_capture.rounds.front().round == 1U &&
+              enter_only_capture.rounds.front().transitions.front().transition ==
+                  "Enter.go" &&
+              enter_only_capture.final_state.at("value").as_int() == 1 &&
+              enter_only_capture.procedure_artifacts.at("Work").injections.size() == 1U &&
+              enter_only_capture.procedure_history.at("Work").size() == 1U &&
+              enter_only_capture.trace_artifact.has_value() &&
+              enter_only_capture.replayable &&
+              dtessl::replay_trace_artifact(
+                  capture_program, *enter_only_capture.trace_artifact).rounds ==
+                  enter_only_capture.rounds,
+          "closed transition capture incorrectly expanded to a whole procedure");
+  const dtessl::TraceSnapshot leave_only_capture =
+      capture_runtime.snapshot("LeaveOnly");
+  require(leave_only_capture.rounds.size() == 2U &&
+              leave_only_capture.rounds.front().transitions.front().transition ==
+                  "Enter.go" &&
+              leave_only_capture.rounds.back().transitions.front().transition ==
+                  "Leave.go" &&
+              leave_only_capture.trace_artifact.has_value() &&
+              leave_only_capture.trace_artifact->rounds.size() == 2U,
+          "closed capture did not follow the selected occurrence's predecessor IDs");
+
+  constexpr std::string_view free_temporal_capture = R"DTESSL(
+state Idle @ flow initial:
+  value: int = 0
+
+state Waiting @ flow:
+  value: int = 0
+
+state Done @ flow:
+  value: int = 0
+
+transition Start():
+  case go (Idle @ flow) -> (Waiting @ flow):
+    set:
+      value = 1 @ flow
+
+transition Progress():
+  case stay (Waiting @ flow) -> (Waiting @ flow):
+    set:
+      value = before.value + 1 @ flow
+
+transition Finish():
+  case done (Waiting @ flow) -> (Done @ flow):
+    set:
+      value = before.value + 1 @ flow
+
+transition After():
+  case stay (Done @ flow) -> (Done @ flow):
+    set:
+      value = before.value + 1 @ flow
+
+trace FreeTemporal:
+  capture closed:
+    transition(Start)
+    eventually state(Done @ flow)
+
+trace FreeTemporalPath:
+  capture closed:
+    transition(Start)
+    eventually transition(Finish.done)
+)DTESSL";
+  const dtessl::Program free_temporal_program =
+      dtessl::parse(free_temporal_capture);
+  require(dtessl::required_features(free_temporal_program).contains(
+              dtessl::LanguageFeature::TemporalLogic),
+          "temporal capture did not negotiate its semantic feature");
+  dtessl::Engine free_temporal_engine(free_temporal_program);
+  static_cast<void>(free_temporal_engine.step_transition({"Start", {}}));
+  static_cast<void>(free_temporal_engine.step_transition({"Progress", {}}));
+  const dtessl::TraceSnapshot open_temporal =
+      free_temporal_engine.captured_trace("FreeTemporal", false);
+  require(open_temporal.rounds.size() == 2U &&
+              open_temporal.temporal_intervals.size() == 1U &&
+              open_temporal.temporal_intervals.front().status ==
+                  dtessl::CaptureIntervalStatus::Pending,
+          "open eventually capture did not retain its pending suffix");
+  const dtessl::TraceSnapshot unresolved_temporal =
+      free_temporal_engine.captured_trace("FreeTemporal", true);
+  require(unresolved_temporal.temporal_intervals.front().status ==
+              dtessl::CaptureIntervalStatus::Unresolved,
+          "closing an unwitnessed eventually interval did not mark the gap");
+  static_cast<void>(free_temporal_engine.step_transition({"Finish", {}}));
+  static_cast<void>(free_temporal_engine.step_transition({"After", {}}));
+  const dtessl::TraceSnapshot witnessed_temporal =
+      free_temporal_engine.captured_trace("FreeTemporal", true);
+  require(witnessed_temporal.rounds.size() == 3U &&
+              witnessed_temporal.rounds.back().round == 3U &&
+              witnessed_temporal.rounds.back().transitions.front().transition ==
+                  "Finish.done" &&
+              witnessed_temporal.final_state.at("value").as_int() == 3 &&
+              witnessed_temporal.captured_procedures.empty() &&
+              witnessed_temporal.temporal_intervals.front().status ==
+                  dtessl::CaptureIntervalStatus::Witnessed &&
+              witnessed_temporal.temporal_intervals.front().witness_round == 3U &&
+              dtessl::captured_round_at(witnessed_temporal, 3U).round == 3U &&
+              witnessed_temporal.trace_artifact.has_value() &&
+              witnessed_temporal.replayable &&
+              dtessl::replay_trace_artifact(
+                  free_temporal_program,
+                  *witnessed_temporal.trace_artifact).rounds ==
+                  witnessed_temporal.rounds,
+          "free transition eventually closure did not stop at its witness round");
+  const dtessl::TraceSnapshot path_witnessed_temporal =
+      free_temporal_engine.captured_trace("FreeTemporalPath", true);
+  require(path_witnessed_temporal.rounds == witnessed_temporal.rounds &&
+              path_witnessed_temporal.temporal_intervals.size() == 1U &&
+              path_witnessed_temporal.temporal_intervals.front().status ==
+                  dtessl::CaptureIntervalStatus::Witnessed &&
+              path_witnessed_temporal.temporal_intervals.front().witness_occurrence ==
+                  witnessed_temporal.rounds.back().transitions.front().id,
+          "eventually transition target did not use the occurrence identity");
+  dtessl::TraceArtifact tampered_artifact =
+      *witnessed_temporal.trace_artifact;
+  tampered_artifact.rounds.front().expected.transitions.front().transition =
+      "Start.tampered";
+  bool tampered_decision_rejected = false;
+  try {
+    static_cast<void>(dtessl::replay_trace_artifact(
+        free_temporal_program, tampered_artifact));
+  } catch (const dtessl::Error&) {
+    tampered_decision_rejected = true;
+  }
+  require(tampered_decision_rejected,
+          "trace artifact replay did not compare the complete logical result");
+
+  bool seedless_temporal_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state Idle initial:
+  value: int = 0
+
+trace Invalid:
+  capture closed:
+    eventually state(Idle)
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    seedless_temporal_rejected = true;
+  }
+  require(seedless_temporal_rejected,
+          "eventually capture without an anchor seed was accepted");
   return 0;
 }

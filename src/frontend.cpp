@@ -660,6 +660,7 @@ struct TraceDeclaration {
   std::vector<StateBinding> capture;
   std::set<std::string, std::less<>> paths;
   std::set<std::string, std::less<>> captured_procedures;
+  std::optional<CaptureTemporalRule> temporal_rule;
   EventTrace events;
   std::vector<std::vector<std::string>> replay_paths;
   std::vector<std::vector<std::string>> replay_procedures;
@@ -2941,6 +2942,31 @@ TraceDeclaration Parser::trace(const std::vector<Transition>& transitions) {
     indent();
     while (!at(TokenKind::Dedent)) {
       const Token binding_start = peek();
+      if (match("eventually")) {
+        if (result.temporal_rule) {
+          fail(binding_start, "capture declares more than one temporal rule");
+        }
+        CaptureTemporalRule rule;
+        if (match("state")) {
+          rule.target_kind = CaptureTemporalTargetKind::State;
+          expect("(");
+          rule.target = identifier();
+          expect("@");
+          rule.context = identifier();
+          expect(")");
+        } else if (match("transition")) {
+          rule.target_kind = CaptureTemporalTargetKind::Transition;
+          expect("(");
+          rule.target = identifier();
+          if (match(".")) rule.target += "." + identifier();
+          expect(")");
+        } else {
+          fail(peek(), "eventually capture requires state(...) or transition(...)");
+        }
+        result.temporal_rule = std::move(rule);
+        newline();
+        continue;
+      }
       if (match("state")) {
         expect("(");
         if (!match(")")) {
@@ -5358,6 +5384,33 @@ void verify_program(Program::Impl& program) {
       if (!program.procedures.contains(procedure)) {
         throw Error("capture filter references unknown procedure '" + procedure + "'",
                     trace.line, trace.column);
+      }
+    }
+    if (trace.temporal_rule) {
+      if (trace.capture.empty() && trace.paths.empty() &&
+          trace.captured_procedures.empty()) {
+        throw Error("eventually capture requires a state, transition, or procedure seed",
+                    trace.line, trace.column);
+      }
+      if (trace.temporal_rule->target_kind ==
+          CaptureTemporalTargetKind::State) {
+        const State& target = find_state(program, trace.temporal_rule->target);
+        if (target.context != trace.temporal_rule->context) {
+          throw Error("eventually target '" + trace.temporal_rule->target +
+                          "' belongs to @" + target.context,
+                      trace.line, trace.column);
+        }
+      } else {
+        const std::string& target = trace.temporal_rule->target;
+        const bool base_transition = std::any_of(
+            program.transitions.begin(), program.transitions.end(),
+            [&](const Transition& transition) {
+              return transition.name == target;
+            });
+        if (!base_transition && !qualified_paths.contains(target)) {
+          throw Error("eventually captures unknown transition path '" + target + "'",
+                      trace.line, trace.column);
+        }
       }
     }
     for (const auto& round : trace.replay_procedures) {

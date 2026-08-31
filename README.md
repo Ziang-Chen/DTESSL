@@ -229,7 +229,9 @@ replay-occurrence = "inject" Name
                     [ "->" qualified-name ] ;
 capture-filter = "state" "(" [ state-binding { "," state-binding } ] ")" NEWLINE
                | "transition" "(" [ qualified-name { "," qualified-name } ] ")" NEWLINE
-               | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE ;
+               | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE
+               | "eventually" "state" "(" state-binding ")" NEWLINE
+               | "eventually" "transition" "(" qualified-name ")" NEWLINE ;
 claim       = "Claim" Name "@" [ "trace" | "state" | "procedure" ] Name
                 [ "@" "(" Name { "," Name } ")" ] ":" INDENT
                 ( temporal-expression NEWLINE
@@ -349,10 +351,12 @@ transition family，再按活动状态签名定位候选 case，最后计算 `wh
 可选的 `-> Transition.caseName` 是搜索 replay 断言。它只验证派生结果，绝不强制状态
 跳转。例如 `inject Dispatch(task) @ Run -> Dispatch.ready` 注入 `Dispatch` occurrence，
 并检查后端搜索出了 `Dispatch.ready`。动态
-`capture closed/projected` 的 canonical AST 是 `CaptureFilter{states, transitions, procedures}`。
-捕获 procedure 会为每个全局 RoundId 保留不可变帧，包括该 procedure 本 round 空闲时的帧；
-公共 API 可按 `(trace, procedure, RoundId)` 精确访问。capture 只观察 DTESSL RuntimeContext
-的原生 typed step，不读取外部日志。
+`capture closed/projected` 的 canonical AST 由 state/transition/procedure seed relation 与可选的
+temporal rule 组成。三种 seed 是并集；它们只标记实际 occurrence，procedure 只是 occurrence
+上的可选分组标签，游离 state/transition 完全合法。闭合捕获按 `OccurrenceId` 展开显式因果前驱；
+`eventually state(...)` 或 `eventually transition(...)` 再为每个 seed 打开时间区间，保留到首个
+见证 occurrence 为止。开放流显示 `pending`，闭合但无见证显示 `unresolved`。capture 只观察
+DTESSL 原生 typed step，不读取外部日志。
 `Claim` 对闭合 trace 返回 `satisfied/violated`；开放 trace 在没有反例或见证时返回
 `pending`。有 causal gap 的 projected trace 不得给出肯定的 `satisfied`。
 
@@ -366,10 +370,12 @@ causal frontier 均由语言 RuntimeContext 持续保存；
 typed expression 封装；只能读取
 参数，不能观察 `before`/`round`，不能修改状态或生成 ActionPlan。
 
-`capture closed` 对 filter 命中的 procedure 做保守的完整闭包：保留其声明初态、全部 typed
-injection、所有 RoundId（包括空闲帧）和派生 decision，输出 `ProcedureArtifact` 并标记
-`replayable=yes`。这比裁剪单条因果边更宽，但不会漏依赖。`capture projected` 只供观察，始终
-`replayable=no`，也不会生成可冒充完整重放输入的 artifact。
+`capture closed` 输出通用 `TraceArtifact`：可见 trace 仍只含 occurrence/时间闭包，但 artifact
+保存从初始状态到最后一个被选 RoundId 的 typed input 前缀及完整预期逻辑结果，因此能够确定性
+重建并逐轮核对 path、Embedding、因果边与 ActionPlan，且
+适用于有或没有 procedure 的模型。`ProcedureArtifact` 只是带 procedure 标签 occurrence 的兼容
+投影，不再是闭包所有者或重放权威。`capture projected` 只供观察，始终 `replayable=no`，也不会
+生成可冒充完整重放输入的 artifact。
 
 每个 accepted decision 在所属 RoundId 内直接保存不可变 `OccurrenceInput`：区分开放
 Event dispatch 与精确 TransitionId injection，保留请求 symbol、规范化 event、全部 typed
@@ -394,8 +400,10 @@ procedure Session @ system [capture=Audit/default]:
 `Trace/Session` 实例。若只有分散标注而没有显式 trace，生成的实例默认是
 `capture projected`，不能冒充可重放证据；只有显式 `capture closed` 模板才赋予闭包行为。
 state seed 同时匹配进入和离开该 state 的 decision，transition family seed 匹配它的命名
-case。不同 seed 是并集；命中后的行为是 `mark -> causal/procedure closure -> emit trace`，
-不改变 relation matcher 的真假语义，也不执行状态转移。
+case。不同 seed 是并集；命中后的行为是
+`mark occurrence -> causal predecessors -> optional temporal interval -> emit trace`。procedure
+只参与 seed 匹配和结果分组，不会把同 procedure 的无关 occurrence 自动卷入；此过程不改变
+relation matcher 的真假语义，也不执行状态转移。
 
 REPL 直接暴露同一套 RuntimeContext，而不是另造执行器：
 

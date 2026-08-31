@@ -426,7 +426,27 @@ void print_runtime_snapshot(const dtessl::TraceSnapshot& snapshot,
             << " closed replayable=" << (snapshot.replayable ? "yes" : "no")
             << " rounds=" << snapshot.rounds.size()
             << " decisions=" << decisions
-            << " procedures=" << snapshot.procedure_artifacts.size() << '\n';
+            << " occurrence-artifact-rounds="
+            << (snapshot.trace_artifact ? snapshot.trace_artifact->rounds.size() : 0U)
+            << " procedure-views=" << snapshot.procedure_artifacts.size() << '\n';
+  const auto interval_status = [](dtessl::CaptureIntervalStatus status) {
+    switch (status) {
+      case dtessl::CaptureIntervalStatus::Pending: return "pending";
+      case dtessl::CaptureIntervalStatus::Witnessed: return "witnessed";
+      case dtessl::CaptureIntervalStatus::Unresolved: return "unresolved";
+    }
+    return "invalid";
+  };
+  for (const dtessl::CaptureInterval& interval : snapshot.temporal_intervals) {
+    std::cout << "  interval " << interval.anchor_occurrence
+              << " @ round " << interval.anchor_round
+              << " status=" << interval_status(interval.status);
+    if (!interval.witness_occurrence.empty()) {
+      std::cout << " witness=" << interval.witness_occurrence
+                << " @ round " << interval.witness_round;
+    }
+    std::cout << '\n';
+  }
   for (const auto& [name, artifact] : snapshot.procedure_artifacts) {
     std::uint64_t revision = 0;
     const auto history = snapshot.procedure_history.find(name);
@@ -534,7 +554,7 @@ void repl_help() {
       << "  :quit                    exit\n"
       << "\ncore v0.4.0 syntax:\n"
       << "  procedure/inject          persistent automaton + typed transition input\n"
-      << "  replay/capture closed     transition replay + complete procedure closure\n"
+      << "  replay/capture closed     typed occurrence replay + causal/temporal closure\n"
       << "  name T / T(atom)         nominal logical names\n"
       << "  relation T / (A,B)       finite relation schemas\n"
       << "  subject ~ R1,(R2|R3)     recursive relation satisfaction\n"
@@ -939,7 +959,22 @@ int main(int argc, char** argv) {
       const dtessl::TraceSnapshot trace = dtessl::run_named_trace(program, argv[3]);
       std::cout << "trace " << trace.name << " closed rounds=" << trace.rounds.size()
                 << " replayable=" << (trace.replayable ? "yes" : "no")
-                << " procedures=" << trace.procedure_artifacts.size() << '\n';
+                << " occurrence-artifact-rounds="
+                << (trace.trace_artifact ? trace.trace_artifact->rounds.size() : 0U)
+                << " procedure-views=" << trace.procedure_artifacts.size() << '\n';
+      for (const dtessl::CaptureInterval& interval : trace.temporal_intervals) {
+        std::cout << "interval anchor=" << interval.anchor_occurrence
+                  << " round=" << interval.anchor_round;
+        if (interval.status == dtessl::CaptureIntervalStatus::Witnessed) {
+          std::cout << " witnessed=" << interval.witness_occurrence
+                    << " round=" << interval.witness_round;
+        } else if (interval.status == dtessl::CaptureIntervalStatus::Pending) {
+          std::cout << " pending";
+        } else {
+          std::cout << " unresolved";
+        }
+        std::cout << '\n';
+      }
       for (const dtessl::ParallelStepResult& round : trace.rounds) {
         for (const dtessl::StepResult& step : round.transitions) {
           std::cout << dtessl::result_text(step);

@@ -36,11 +36,11 @@ foreach(expected
     "Procedure round committed"
     "SessionA.value"
     "SessionB.value"
-    "runtime live-runtime closed replayable=yes rounds=2 decisions=3 procedures=2"
-    "capture InterleavedRuntime closed replayable=yes rounds=2 decisions=3 procedures=2"
+    "runtime live-runtime closed replayable=yes rounds=2 decisions=3 occurrence-artifact-rounds=2 procedure-views=2"
+    "capture InterleavedRuntime closed replayable=yes rounds=2 decisions=3 occurrence-artifact-rounds=2 procedure-views=2"
     "procedure replay ok"
-    "replay procedure-replay closed replayable=yes rounds=2 decisions=3 procedures=2"
-    "trace Interleaved closed replayable=yes rounds=2 decisions=3 procedures=2"
+    "replay procedure-replay closed replayable=yes rounds=2 decisions=3 occurrence-artifact-rounds=2 procedure-views=2"
+    "trace Interleaved closed replayable=yes rounds=2 decisions=3 occurrence-artifact-rounds=2 procedure-views=2"
     "Persisted satisfied")
   string(FIND "${combined}" "${expected}" found)
   if(found EQUAL -1)

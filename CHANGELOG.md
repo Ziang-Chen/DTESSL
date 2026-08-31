@@ -5,6 +5,23 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 
 ## v0.4.0
 
+- **Breaking correction:** capture closure is occurrence-owned, not
+  procedure-owned. State, transition and procedure filters are seed relations;
+  closed capture expands explicit causal predecessors by `OccurrenceId`, while
+  procedure remains an optional label/grouping projection.
+- Added temporal capture intervals with `eventually state(...)` and
+  `eventually transition(...)`. Open intervals are pending, closed intervals
+  without a witness are unresolved, and witnessed intervals retain the exact
+  RoundId span from anchor through first witness.
+- Added backend-neutral `TraceArtifact` replay for both free Engine traces and
+  isolated RuntimeContext procedures. The artifact carries the complete typed
+  input prefix needed to reproduce a selected occurrence interval;
+  `ProcedureArtifact` is now only a compatibility projection.
+- Added explicit active-state-axis producer edges to the occurrence DAG.
+  Transition topology now preserves Embedding continuity even when a later
+  edge reads no value field; field writer edges remain an additional source of
+  causality.
+
 - Attached a complete immutable `OccurrenceInput` to every accepted decision
   at its causal RoundId: admission kind, requested symbol, normalized Event,
   typed fields and target procedure/context.
@@ -22,7 +39,7 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   and state/path/procedure seeds use OR semantics through one typed capture
   relation matcher.
 - Closed capture now expands matched runtime occurrences to their actual
-  causal/procedure closure; distributed-only traces remain projected and
+  occurrence/causal closure; distributed-only traces remain projected and
   non-replayable unless an explicit closed trace template supplies that mode.
 - Unified transition guards, state invariants, transition ensures and named
   Claims under one typed Property truth/disposition core. Their formulas and
@@ -175,9 +192,9 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 - Added public persistent `RuntimeContext`, complete initial-state
   `ProcedureArtifact`, deterministic artifact replay and derived-path search
   expectations.
-- Closed capture now treats state/path/procedure filters as seeds and retains a
-  conservative whole-procedure causal/data closure. Projected capture is
-  explicitly non-replayable and emits no procedure artifact.
+- Closed capture originally treated state/path/procedure filters as seeds and
+  retained a conservative whole-procedure closure. That v0.3 behavior is
+  explicitly superseded by the occurrence-owned v0.4 correction above.
 - Added procedure-aware capture filters and immutable per-RoundId procedure
   frames, including idle rounds, with exact public lookup by procedure and
   RoundId.

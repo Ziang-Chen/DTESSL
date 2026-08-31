@@ -89,15 +89,19 @@ It must produce an exact `int` or `rational`; the greatest value wins. Equal
 greatest values remain a deterministic ambiguity and reject the round. With no
 optimizer, the original exactly-one-enabled-candidate invariant remains.
 
-The v0.3 native closure is deliberately conservative: a selected state or path
-first identifies its owning procedure instances, then capture retains each
-whole procedure from declared initial state through every typed injection and
-every global RoundId, including idle frames. This is wider than a minimal
-backward slice but cannot omit a causal/data dependency. It emits a public
-`ProcedureArtifact` that `replay_procedures` re-admits and compares twice.
+The v0.4 closure corrects the earlier procedure-owned model. State, transition
+and procedure filters are seed relations over actual occurrences. A closed
+capture recursively retains explicit causal predecessors by `OccurrenceId`;
+procedure is only an optional label and grouping projection, so free-floating
+state/transition occurrences remain first-class. An optional `eventually`
+target retains the temporal interval from every seed anchor through its first
+witness. The replay authority is a generic `TraceArtifact` containing the
+typed input prefix required to rederive that selected interval from initial
+state. `ProcedureArtifact` remains a compatibility view, while
 `capture projected` emits no replay artifact and is explicitly not replayable.
-Checkpoint starts, canonical artifact serialization and program digests extend
-this contract later; they do not weaken the initial-state replay now implemented.
+The causal DAG has two independent edge sources: field writer/read dependency
+and active-state-axis producer/consumer dependency. The latter preserves
+Embedding continuity even for a transition whose assignments are constants.
 
 ### Permanent system boundary (2026-08-28)
 
@@ -511,17 +515,16 @@ DTESSL inputs.
   read from host variables or memory. Host input must cross the typed occurrence
   boundary by value. Live pointers are forbidden; future large-memory input
   requires an immutable opaque reference plus content/range evidence.
-- Capture lowers to `CaptureFilter{states, transitions, procedures}`. Closed
-  capture treats this filter as a seed, identifies matching procedure
-  instances and conservatively retains each complete procedure from initial
-  state through all typed injections and RoundIds. It emits replayable
-  `ProcedureArtifact` values. A captured procedure retains one immutable frame
-  for every global RoundId, including idle frames, and can be queried by
-  `(trace, procedure, RoundId)`.
+- Capture lowers to state/transition/procedure seed relations plus an optional
+  temporal rule. Closed capture selects matching occurrences, recursively
+  retains their explicit causal predecessors by `OccurrenceId`, and emits a
+  generic replayable `TraceArtifact`. Procedure-labelled occurrences may also
+  be projected as `ProcedureArtifact`; that projection does not own closure.
+  Free-floating occurrences require no synthetic procedure.
 - Capture selection is a typed relation match with a distinct disposition, not
   a parallel string-filter subsystem. Its subject is a State Embedding,
   Transition occurrence or Procedure instance. A match marks the occurrence,
-  expands its actual causal/procedure closure and emits it to the trace; a
+  expands its actual occurrence/causal closure and emits it to the trace; a
   miss is ignored. The ordinary Transition disposition commits an Embedding,
   while Claim/Property dispositions report evidence or failure. All three
   reuse the same typed relation and structural matching foundation.
@@ -540,10 +543,15 @@ DTESSL inputs.
 - A trace may put `capture closed/projected:` after `replay:` to declare both a
   replay input and a capture projection; the section order is semantic and
   cannot be reversed.
+- A capture may add exactly one `eventually state(S @ context)` or
+  `eventually transition(T.case)` target after at least one seed. Each matched
+  seed occurrence opens an interval. The first same-or-later RoundId target is
+  its witness; an open suffix is `pending`, and closing it without a witness
+  makes the interval `unresolved` rather than silently proving it.
 - `trace T @ root: capture closed:` retains every native Engine round while
   projecting state to the declared `state @ context` axes.
 - `capture projected` retains only decisions touching those axes, records a
-  causal gap, sets `replayable=false` and emits no procedure artifact. It is
+  causal gap, sets `replayable=false` and emits no trace artifact. It is
   useful for inspection, not conclusive global assurance.
 - `Claim C @ trace T`, `Claim C @ state S` and `Claim C @ procedure P`
   distinguish finite evidence, a local declaration check and path exploration.

@@ -8,8 +8,8 @@ Updated: 2026-08-31, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.0` recursive StateSchema/Embedding and
-  recursive relation-expression slice
+- Current target: validate the `v0.4.0` occurrence-owned causal/temporal
+  capture and generic typed replay slice
 - Stop orders: none
 
 ## Current state
@@ -49,12 +49,17 @@ maps those paths to raw vector offsets with `RawKeyMap`, and recursively lowers
 false relation constraints and exact-raw node identity are covered. Standard,
 `-Werror`, and ASan/UBSan builds each pass 42/42 tests.
 
+The occurrence-owned correction removes procedure as a closure boundary,
+adds active-state-axis causality, `eventually` capture intervals and generic
+typed `TraceArtifact` replay for free and procedure-labelled occurrences.
+Standard, `-Werror`, and ASan/UBSan builds each pass 44/44 tests.
+
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
 - Allowed surface: this DTESSL repository's parser, verifier, simulator,
   language service, CLI/REPL, examples, tests and documentation.
-- Non-goals: `main`, tags, ChenVM/chenRT, other repositories or task threads,
+- Non-goals: tags, ChenVM/chenRT, other repositories or task threads,
   LSP transport, ambient authority and runtime nondeterminism.
 - Current exit gate: pass parser/verifier/runtime and CLI trace/claim tests plus
   standard/`-Werror`/ASan+UBSan, then commit, push and leave the worktree clean.
@@ -126,7 +131,7 @@ false relation constraints and exact-raw node identity are covered. Standard,
 | Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
 | Explicit optimized choice | Typed exact after-state score, greatest unique winner, tie rollback and unchanged unannotated ambiguity rule | Runnable `optimized_transition.dtessl`, feature/plan/output evidence and positive/tie/type-error tests; all three suites pass 25/25 | pass |
 | Semantic source boundaries | Volatile parsing remains in `frontend.cpp`; instantaneous, trace and monitor semantics, runtime orchestration, Solver exploration and backend negotiation have explicit files | One public parser and one semantic route remain; standard, warning-clean and sanitizer suites pass | pass |
-| Filter-to-procedure closure | State/transition/procedure relation seeds expand actual runtime causal predecessors and then retain complete matching procedures as replayable artifacts | Closed path/state seed retains whole matching procedure; projected capture emits no artifact | pass |
+| Occurrence/temporal capture closure | State/transition/procedure seeds select actual occurrences; closed capture follows explicit predecessor IDs and optional eventually intervals without requiring procedure ownership | A transition seed excludes a later same-procedure edge; free Engine capture retains anchor-through-witness and generic artifact replay matches | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
@@ -216,11 +221,17 @@ false relation constraints and exact-raw node identity are covered. Standard,
   commands. Capture filters must close automatically into complete replayable
   procedures. Quiescent procedures resume only through typed `when`/`where`
   context injection.
-- 2026-08-28: implemented the correction without removing search replay.
+- 2026-08-28: implemented the then-current procedure-owned interpretation
+  without removing search replay. This capture detail was superseded by the
+  2026-08-31 occurrence-owned correction below.
   `Event(...) @ Procedure` is typed replay input; `Transition.case(...) @
   Procedure` is a derived-path assertion. RuntimeContext owns persistent
-  instances and complete initial-state artifacts; closed filters conservatively
-  retain whole-procedure closure, while projected traces are non-replayable.
+  instances and complete initial-state artifacts; projected traces remain
+  non-replayable.
+- 2026-08-31: corrected capture ownership. State/transition/procedure are seed
+  relations over occurrences; closed closure follows explicit causal edges and
+  optional temporal intervals. Procedure is only a grouping label. Generic
+  `TraceArtifact` replay now covers both free Engine and procedure runtimes.
 - 2026-08-28: `v0.3.1` corrects injection to an extra typed transition
   occurrence addressed by TransitionId. A procedure contains only initial
   context/state, starts DTESSL's own search loop and is quiescent when no

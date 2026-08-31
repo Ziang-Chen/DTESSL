@@ -1,0 +1,41 @@
+state Idle @ flow initial:
+  value: int = 0
+
+state Waiting @ flow:
+  value: int = 0
+
+state Done @ flow:
+  value: int = 0
+
+transition Start():
+  case go (Idle @ flow) -> (Waiting @ flow):
+    set:
+      value = 1 @ flow
+
+transition Progress():
+  case stay (Waiting @ flow) -> (Waiting @ flow):
+    set:
+      value = before.value + 1 @ flow
+
+transition Finish():
+  case done (Waiting @ flow) -> (Done @ flow):
+    set:
+      value = before.value + 1 @ flow
+
+transition After():
+  case stay (Done @ flow) -> (Done @ flow):
+    set:
+      value = before.value + 1 @ flow
+
+procedure Flow @ local:
+  initial (Idle @ flow)
+
+trace StartUntilDone:
+  replay:
+    inject Start() @ Flow
+    inject Progress() @ Flow
+    inject Finish() @ Flow
+    inject After() @ Flow
+  capture closed:
+    transition(Start)
+    eventually state(Done @ flow)

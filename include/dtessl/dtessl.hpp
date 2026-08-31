@@ -289,6 +289,29 @@ struct ParallelStepResult {
   friend bool operator==(const ParallelStepResult&, const ParallelStepResult&) = default;
 };
 
+struct TraceArtifactRound {
+  std::uint64_t round{0};
+  std::vector<OccurrenceInput> inputs;
+  // Immutable expected logical result: selected paths, before/after Embedding,
+  // ActionPlans, causality and aggregate state must all be rederived exactly.
+  ParallelStepResult expected;
+
+  friend bool operator==(const TraceArtifactRound&,
+                         const TraceArtifactRound&) = default;
+};
+
+// Backend-neutral replay prefix. It is valid for a free Engine or for
+// procedure-labelled RuntimeContext occurrences; ProcedureArtifact is only a
+// compatibility projection of the latter.
+struct TraceArtifact {
+  // Every procedure instance present in the replay prefix, including one that
+  // remained idle for all retained rounds.
+  std::map<std::string, std::string, std::less<>> procedure_contexts;
+  std::vector<TraceArtifactRound> rounds;
+
+  friend bool operator==(const TraceArtifact&, const TraceArtifact&) = default;
+};
+
 struct EventBatch {
   std::vector<Event> events;
   friend bool operator==(const EventBatch&, const EventBatch&) = default;
@@ -343,6 +366,38 @@ enum class TraceCaptureMode {
   Projected,
 };
 
+enum class CaptureTemporalTargetKind {
+  State,
+  Transition,
+};
+
+// v0.4 temporal capture starts with the executable `eventually` monitor. The
+// target is a typed state binding or a Transition family/path.
+struct CaptureTemporalRule {
+  CaptureTemporalTargetKind target_kind{CaptureTemporalTargetKind::State};
+  std::string target;
+  std::string context;
+
+  friend bool operator==(const CaptureTemporalRule&,
+                         const CaptureTemporalRule&) = default;
+};
+
+enum class CaptureIntervalStatus {
+  Pending,
+  Witnessed,
+  Unresolved,
+};
+
+struct CaptureInterval {
+  std::string anchor_occurrence;
+  std::uint64_t anchor_round{0};
+  std::string witness_occurrence;
+  std::uint64_t witness_round{0};
+  CaptureIntervalStatus status{CaptureIntervalStatus::Pending};
+
+  friend bool operator==(const CaptureInterval&, const CaptureInterval&) = default;
+};
+
 struct ProcedureTraceFrame {
   // Global trace round. This is a semantic identifier, not a vector offset.
   std::uint64_t round{0};
@@ -370,6 +425,8 @@ struct TraceSnapshot {
   std::set<std::pair<std::string, std::string>> captured_states;
   std::set<std::string, std::less<>> captured_paths;
   std::set<std::string, std::less<>> captured_procedures;
+  std::optional<CaptureTemporalRule> temporal_rule;
+  std::vector<CaptureInterval> temporal_intervals;
   std::vector<ParallelStepResult> rounds;
   std::map<std::string, Value, std::less<>> final_state;
   std::map<std::string,
@@ -377,9 +434,12 @@ struct TraceSnapshot {
   std::map<std::string, std::string, std::less<>> procedure_contexts;
   std::map<std::string, std::vector<ProcedureTraceFrame>, std::less<>>
       procedure_history;
-  // Present only when capture retained complete procedure closure. A projected
-  // view is useful for observation but is never labelled replayable.
+  // Compatibility projection for selected occurrences that carry a procedure
+  // label. Procedure membership never owns capture closure.
   std::map<std::string, ProcedureArtifact, std::less<>> procedure_artifacts;
+  // Replay authority for a closed occurrence capture. It contains the typed
+  // input prefix needed to derive the selected interval from initial state.
+  std::optional<TraceArtifact> trace_artifact;
   bool replayable{false};
   std::vector<std::string> causal_gaps;
 
@@ -472,6 +532,8 @@ class Engine {
       const std::vector<TransitionInput>& transitions);
   [[nodiscard]] ParallelStepResult step_transitions_at(
       const std::vector<TransitionInput>& transitions, std::uint64_t round_id);
+  [[nodiscard]] ParallelStepResult step_occurrences_at(
+      const std::vector<OccurrenceInput>& inputs, std::uint64_t round_id);
 
   [[nodiscard]] std::string current_state() const;
   [[nodiscard]] const std::map<std::string, std::string, std::less<>>&
@@ -496,6 +558,10 @@ class Engine {
   std::vector<std::size_t> active_state_ids_;
   std::map<std::string, std::string, std::less<>> active_states_;
   std::map<std::string, Value, std::less<>> values_;
+  // Last occurrences that produced the active state token on each @context
+  // axis. This records Embedding continuity independently of field reads.
+  std::map<std::string, std::set<std::string, std::less<>>, std::less<>>
+      last_state_writers_;
   std::map<std::string, std::set<std::string, std::less<>>, std::less<>> last_writers_;
   std::map<std::string, TraceSnapshot, std::less<>> captured_traces_;
 };
@@ -537,6 +603,8 @@ class RuntimeContext {
 [[nodiscard]] TraceSnapshot replay_procedures(
     const Program& program, const std::vector<ProcedureArtifact>& artifacts,
     const std::vector<SearchExpectation>& expectations = {});
+[[nodiscard]] TraceSnapshot replay_trace_artifact(
+    const Program& program, const TraceArtifact& artifact);
 [[nodiscard]] std::vector<std::string> declared_traces(const Program& program);
 [[nodiscard]] std::vector<std::string> declared_procedures(const Program& program);
 [[nodiscard]] TraceSnapshot run_named_trace(const Program& program,
