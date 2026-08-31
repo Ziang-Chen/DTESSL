@@ -25,7 +25,7 @@ add_library(dtessl
 # textually included once after the required private types exist. Listing the
 # stability boundaries as header-only keeps them visible to IDEs without
 # compiling duplicate implementation copies:
-#   semantics        stable instantaneous typed relations
+#   semantics        stable typed relations and Property dispositions
 #   runtime          procedure/replay orchestration
 #   trace_semantics  finite trace interpretation
 #   monitor_semantics incremental temporal automata

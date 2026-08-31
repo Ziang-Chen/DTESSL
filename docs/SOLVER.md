@@ -15,7 +15,7 @@ The implementation follows the same stability boundary:
 | File | Ownership | Expected change rate |
 | --- | --- | --- |
 | `frontend.cpp` | source AST, lexer, parser, typing/lowering orchestration | high |
-| `semantics.cpp` | typed instantaneous relation verification/evaluation | low |
+| `semantics.cpp` | typed relations plus Property truth/failure disposition | low |
 | `runtime.cpp` | Engine, procedure and replay orchestration | medium |
 | `trace_semantics.cpp` | finite trace-position and temporal interpretation | low |
 | `monitor_semantics.cpp` | formula normalization and incremental ClaimMonitor | low |
@@ -35,6 +35,13 @@ call the same verifier and evaluator; EmbeddingExpand and ClaimMonitor do not
 carry private comparison or membership implementations. Canonical ordering
 used to index values and rank an explicit optimization score is an ordering
 primitive, not a second predicate evaluator.
+
+Every boolean or temporal use also enters one Property policy core. It separates
+formula truth (`satisfied/violated/pending`) from operational disposition:
+guards disable candidates, invariants reject successors, transition ensures
+record violations, and Claims request counterexamples. `compile_property_monitor`
+is shared directly by named Claims and transition ensures; an ensure is no
+longer compiled by constructing a synthetic Claim declaration.
 
 ## Names and ownership
 

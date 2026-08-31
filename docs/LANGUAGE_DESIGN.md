@@ -425,6 +425,37 @@ Thus a complex `where` may itself compile to an internal search DAG, while the
 `do` block compiles to an effect DAG. They are different typed graphs and never
 share node kinds accidentally.
 
+### One Property core, distinct failure behavior
+
+`where`, state `invariant`, transition `ensure` and named `Claim` are not four
+predicate languages. Their ordinary atoms share `Expr/RelationMatch`; temporal
+structure shares `TemporalExpr/ClaimMonitor`. Each typed Property is paired
+with a stable semantic `PropertyUse`:
+
+```text
+PropertyUse {
+  scope:    State | Transition | Trace | Procedure
+  trigger:  Candidate | Successor | Occurrence | Target
+  failure:  Disable | Reject | Violation | Counterexample
+}
+```
+
+The evaluator produces only `Satisfied | Violated | Pending`. The declared
+failure behavior then gives the operational disposition:
+
+| Surface use | Trigger | False disposition |
+| --- | --- | --- |
+| transition `where` | candidate search | disable this candidate and continue searching |
+| state `invariant` | initial/successor Embedding | reject the state commit |
+| transition `ensure` | selected occurrence | record an activated obligation violation |
+| named `Claim` | selected state/procedure/trace target | return a counterexample |
+
+`Pending` always defers; it is never silently converted to success. A Solver
+may report a path containing an `ensure` violation as a counterexample to the
+verified model, but that does not change `ensure` into an execution guard.
+Thus the formula infrastructure is shared while the consequences remain
+explicit and auditable.
+
 ## 9. External calls and native replay
 
 `do` may contain only pure local calculations and typed `$` calls. Each call

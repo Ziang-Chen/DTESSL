@@ -102,16 +102,10 @@ void collect_since_slots(const TemporalExprPtr& expression,
   collect_since_slots(expression->right, spec);
 }
 
-std::optional<ClaimMonitorSpec> compile_claim_monitor(
-    const ClaimDeclaration& claim) {
+std::optional<ClaimMonitorSpec> compile_property_monitor(
+    const TemporalExprPtr& source) {
   ClaimMonitorSpec spec;
-  if (claim.count_at_most) {
-    spec.goal = MonitorGoal::CountAtMost;
-    spec.bound = claim.limit;
-    spec.counted_transition = claim.transition;
-    return spec;
-  }
-  const TemporalExprPtr property = lower_trace_relation_matches(claim.property);
+  const TemporalExprPtr property = lower_trace_relation_matches(source);
   if (!property) return std::nullopt;
   spec.normalized_root = property;
   if (property->kind == TemporalExpr::Kind::Always &&
@@ -153,6 +147,23 @@ std::optional<ClaimMonitorSpec> compile_claim_monitor(
   collect_since_slots(spec.left, spec);
   collect_since_slots(spec.right, spec);
   return spec;
+}
+
+ClaimMonitorSpec compile_count_monitor(std::string transition,
+                                       std::uint64_t bound) {
+  ClaimMonitorSpec spec;
+  spec.goal = MonitorGoal::CountAtMost;
+  spec.bound = bound;
+  spec.counted_transition = std::move(transition);
+  return spec;
+}
+
+std::optional<ClaimMonitorSpec> compile_claim_monitor(
+    const ClaimDeclaration& claim) {
+  if (claim.count_at_most) {
+    return compile_count_monitor(claim.transition, claim.limit);
+  }
+  return compile_property_monitor(claim.property);
 }
 
 bool evaluate_past_formula(
@@ -289,4 +300,3 @@ bool terminal_satisfaction(MonitorGoal goal) {
          goal == MonitorGoal::Until || goal == MonitorGoal::Within ||
          goal == MonitorGoal::WeakUntil;
 }
-

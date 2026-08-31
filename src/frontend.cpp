@@ -5977,9 +5977,17 @@ void verify_invariants(const State& state,
                        const std::map<std::string, Value, std::less<>>& values,
                        std::uint64_t round) {
   Environment environment{values, nullptr, {}, round};
-  for (const ExprPtr& invariant : state.invariants) {
-    if (!evaluate(invariant, environment).as_bool()) {
+  for (std::size_t index = 0; index < state.invariants.size(); ++index) {
+    const PropertyDecision decision = evaluate_instant_property(
+        state.invariants[index], environment,
+        PropertyUse{state.name + ".invariant[" + std::to_string(index) + "]",
+                    PropertyScope::State, PropertyTrigger::Successor,
+                    PropertyFailure::Reject});
+    if (decision.disposition == PropertyDisposition::Reject) {
       throw Error("invariant failed in state '" + state.name + "'");
+    }
+    if (decision.disposition != PropertyDisposition::Admit) {
+      throw Error("invalid state invariant Property disposition");
     }
   }
 }

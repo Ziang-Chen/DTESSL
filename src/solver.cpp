@@ -114,6 +114,7 @@ struct EmbeddingExpand {
 
 struct TransitionObligationSpec {
   std::string trigger;
+  PropertyUse use;
   ClaimMonitorSpec monitor;
 };
 
@@ -154,12 +155,19 @@ std::vector<ActiveObligation> advance_obligations(
   return current;
 }
 
-bool obligation_violated(const std::vector<ActiveObligation>& obligations) {
-  return std::any_of(obligations.begin(), obligations.end(),
-                     [](const ActiveObligation& item) {
-                       return item.active &&
-                              item.state.phase == MonitorPhase::Violated;
-                     });
+bool obligation_has_disposition(
+    const std::vector<TransitionObligationSpec>& specs,
+    const std::vector<ActiveObligation>& obligations,
+    PropertyDisposition disposition) {
+  for (std::size_t index = 0; index < obligations.size(); ++index) {
+    if (obligations[index].active &&
+        obligations[index].state.phase == MonitorPhase::Violated &&
+        decide_property(specs[index].use, PropertyTruth::Violated).disposition ==
+            disposition) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool pending_liveness_obligation(
@@ -219,17 +227,28 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
   }
   FunctionScope function_scope(program.functions);
   const ClaimMonitorSpec& monitor = *compiled;
+  const PropertyScope claim_scope =
+      claim->target_kind == ClaimDeclaration::TargetKind::Trace
+          ? PropertyScope::Trace
+          : (claim->target_kind == ClaimDeclaration::TargetKind::State
+                 ? PropertyScope::State
+                 : PropertyScope::Procedure);
+  const PropertyUse claim_use{claim->name, claim_scope,
+                              PropertyTrigger::Target,
+                              PropertyFailure::Counterexample};
   std::vector<TransitionObligationSpec> obligation_specs;
   const auto add_obligation = [&](std::string trigger,
                                   const TemporalExprPtr& property) {
     if (!property) return true;
-    ClaimDeclaration synthetic;
-    synthetic.property = property;
     const std::optional<ClaimMonitorSpec> compiled_obligation =
-        compile_claim_monitor(synthetic);
+        compile_property_monitor(property);
     if (!compiled_obligation) return false;
-    obligation_specs.push_back(
-        TransitionObligationSpec{std::move(trigger), *compiled_obligation});
+    const std::string property_name = trigger + ".ensure";
+    obligation_specs.push_back(TransitionObligationSpec{
+        trigger,
+        PropertyUse{property_name, PropertyScope::Transition,
+                    PropertyTrigger::Occurrence, PropertyFailure::Violation},
+        *compiled_obligation});
     return true;
   };
   for (const Transition& transition : program.transitions) {
@@ -321,6 +340,11 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
   };
 
   if (nodes.front().monitor.phase == MonitorPhase::Violated) {
+    const PropertyDecision decision =
+        decide_property(claim_use, PropertyTruth::Violated);
+    if (decision.disposition != PropertyDisposition::Counterexample) {
+      throw Error("invalid Claim Property disposition");
+    }
     result.status = ClaimSolveStatus::Counterexample;
     result.counterexample = counterexample(0U);
     result.detail = "initial Embedding is rejected by ClaimMonitor";
@@ -433,12 +457,20 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
                                     std::move(successor_obligations), cursor,
                                     step.transition, nodes[cursor].depth + 1U});
         product_edges.emplace_back();
-        if (nodes.back().monitor.phase == MonitorPhase::Violated ||
-            obligation_violated(nodes.back().obligations)) {
+        const bool claim_counterexample =
+            nodes.back().monitor.phase == MonitorPhase::Violated &&
+            decide_property(claim_use, PropertyTruth::Violated).disposition ==
+                PropertyDisposition::Counterexample;
+        const bool ensure_violation = obligation_has_disposition(
+            obligation_specs, nodes.back().obligations,
+            PropertyDisposition::RecordViolation);
+        if (claim_counterexample || ensure_violation) {
           result.status = ClaimSolveStatus::Counterexample;
           result.counterexample = counterexample(successor_index);
           result.max_depth_reached = nodes.back().depth;
-          result.detail = "reachable Product state is rejected by ClaimMonitor";
+          result.detail = claim_counterexample
+                              ? "reachable Product state is a Claim counterexample"
+                              : "reachable Product state violates transition ensure";
           update_counts();
           return result;
         }

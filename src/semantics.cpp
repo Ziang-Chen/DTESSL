@@ -6,6 +6,74 @@
 bool equal_values(const Value& left, const Value& right);
 int compare_values(const Value& left, const Value& right);
 
+// A Property says what must hold. PropertyUse says where/when it is observed
+// and, critically, what a false or unresolved result means. Surface
+// invariant/where/ensure/Claim declarations all lower to this stable policy
+// model without losing their distinct operational behavior.
+enum class PropertyScope { State, Transition, Trace, Procedure };
+enum class PropertyTrigger { Candidate, Successor, Occurrence, Target };
+enum class PropertyFailure { Disable, Reject, Violation, Counterexample };
+enum class PropertyTruth { Satisfied, Violated, Pending };
+enum class PropertyDisposition {
+  Admit,
+  Disable,
+  Reject,
+  RecordViolation,
+  Counterexample,
+  Defer,
+};
+
+struct PropertyUse {
+  std::string name;
+  PropertyScope scope{PropertyScope::State};
+  PropertyTrigger trigger{PropertyTrigger::Target};
+  PropertyFailure failure{PropertyFailure::Counterexample};
+};
+
+struct PropertyDecision {
+  PropertyTruth truth{PropertyTruth::Pending};
+  PropertyDisposition disposition{PropertyDisposition::Defer};
+};
+
+PropertyDecision decide_property(const PropertyUse& use,
+                                 PropertyTruth truth) noexcept {
+  if (truth == PropertyTruth::Satisfied) {
+    return {truth, PropertyDisposition::Admit};
+  }
+  if (truth == PropertyTruth::Pending) {
+    return {truth, PropertyDisposition::Defer};
+  }
+  switch (use.failure) {
+    case PropertyFailure::Disable:
+      return {truth, PropertyDisposition::Disable};
+    case PropertyFailure::Reject:
+      return {truth, PropertyDisposition::Reject};
+    case PropertyFailure::Violation:
+      return {truth, PropertyDisposition::RecordViolation};
+    case PropertyFailure::Counterexample:
+      return {truth, PropertyDisposition::Counterexample};
+  }
+  return {truth, PropertyDisposition::Defer};
+}
+
+PropertyTruth property_truth(bool value) noexcept {
+  return value ? PropertyTruth::Satisfied : PropertyTruth::Violated;
+}
+
+struct Environment;
+Value evaluate(const ExprPtr& expression, Environment& environment);
+
+PropertyDecision evaluate_instant_property(const ExprPtr& expression,
+                                            Environment& environment,
+                                            const PropertyUse& use) {
+  if (!expression) throw Error("missing expression for Property '" + use.name + "'");
+  const Value value = evaluate(expression, environment);
+  if (value.kind() != Value::Kind::Bool) {
+    throw Error("Property '" + use.name + "' did not evaluate to bool");
+  }
+  return decide_property(use, property_truth(value.as_bool()));
+}
+
 DataType verify_relation_match(Expr& expression, const DataType& left,
                                const DataType& right) {
   if (expression.text == "in" || expression.text == "~") {

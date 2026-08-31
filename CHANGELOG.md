@@ -5,6 +5,10 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 
 ## v0.4.0
 
+- Unified transition guards, state invariants, transition ensures and named
+  Claims under one typed Property truth/disposition core. Their formulas and
+  monitor compiler are shared while false remains explicitly mapped to
+  disable, reject, violation or counterexample behavior.
 - Split volatile frontend parsing from stable instantaneous semantics, finite
   trace semantics, incremental monitor semantics, Solver exploration and
   backend negotiation without creating duplicate semantic pipelines.

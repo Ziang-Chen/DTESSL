@@ -110,6 +110,7 @@ false relation constraints and exact-raw node identity are covered. Standard,
 | Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Temporal Claim AST | always/eventually/until/within/since plus derived never/before/weak_until share typed predicate leaves | Finite trace and procedure examples exercise all primitives | pass |
+| Unified Property disposition | `where`, invariant, ensure and Claim share typed evaluation/monitor compilation; false maps explicitly to disable/reject/violation/counterexample | Existing guard selection, invariant rollback, ensure violation and Claim counterexample suites pass | pass |
 | ClaimMonitor Product | Embedding and monitor state have separate keys; deadlock/lasso/finite counterexamples are reconstructed | Positive and negative procedure claims plus transition obligation cycle tests pass | pass |
 | Product snapshot ownership | Product nodes reference one Engine snapshot per unique base Embedding; monitor histories do not copy Engine | `StartedSinceDone` reaches more Product nodes than Embeddings while `snapshots == embeddings` | pass |
 | Finite-prefix claims | logical Round 0, temporal evaluation, count plus three statuses | Closed temporal trace CLI and projection-gap tests pass | pass |

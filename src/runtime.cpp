@@ -266,10 +266,18 @@ ParallelStepResult Engine::step_inputs_at(
       for (const RouteId route_index : candidate_routes) {
         const Route route = route_at(route_index);
         Environment environment{values_, &event, {}, round_id - 1U};
-        if (evaluate(*route.condition, environment).as_bool()) {
+        const std::string path = transition.name +
+            (route.case_name->empty() ? "" : "." + *route.case_name);
+        const PropertyDecision decision = evaluate_instant_property(
+            *route.condition, environment,
+            PropertyUse{path + ".where", PropertyScope::Transition,
+                        PropertyTrigger::Candidate, PropertyFailure::Disable});
+        if (decision.disposition == PropertyDisposition::Admit) {
           enabled.push_back(Enabled{&transition, route.case_name, route.from, route.to,
                                     route.condition, route.action,
                                     route.reads, route.writes});
+        } else if (decision.disposition != PropertyDisposition::Disable) {
+          throw Error("invalid transition guard Property disposition");
         }
       }
     }
@@ -1228,6 +1236,37 @@ namespace {
 
 #include "trace_semantics.cpp"
 
+PropertyScope property_scope(const ClaimDeclaration& claim) {
+  switch (claim.target_kind) {
+    case ClaimDeclaration::TargetKind::Trace: return PropertyScope::Trace;
+    case ClaimDeclaration::TargetKind::State: return PropertyScope::State;
+    case ClaimDeclaration::TargetKind::Procedure: return PropertyScope::Procedure;
+  }
+  return PropertyScope::Trace;
+}
+
+PropertyTruth property_truth(ClaimStatus status) noexcept {
+  switch (status) {
+    case ClaimStatus::Satisfied: return PropertyTruth::Satisfied;
+    case ClaimStatus::Violated: return PropertyTruth::Violated;
+    case ClaimStatus::Pending: return PropertyTruth::Pending;
+  }
+  return PropertyTruth::Pending;
+}
+
+ClaimStatus claim_status(const PropertyDecision& decision) {
+  switch (decision.disposition) {
+    case PropertyDisposition::Admit: return ClaimStatus::Satisfied;
+    case PropertyDisposition::RecordViolation:
+    case PropertyDisposition::Counterexample: return ClaimStatus::Violated;
+    case PropertyDisposition::Defer: return ClaimStatus::Pending;
+    case PropertyDisposition::Disable:
+    case PropertyDisposition::Reject:
+      throw Error("Property disposition cannot be projected as ClaimStatus");
+  }
+  throw Error("invalid Property disposition");
+}
+
 std::vector<ClaimEvaluation> evaluate_trace_claims(
     const Program::Impl& program, const TraceSnapshot& trace) {
   FunctionScope function_scope(program.functions);
@@ -1314,6 +1353,10 @@ std::vector<ClaimEvaluation> evaluate_trace_claims(
                               : "temporal property has a finite counterexample";
       }
     }
+    result.status = claim_status(decide_property(
+        PropertyUse{claim.name, property_scope(claim), PropertyTrigger::Target,
+                    PropertyFailure::Counterexample},
+        property_truth(result.status)));
     if (!trace.causal_gaps.empty() && result.status == ClaimStatus::Satisfied) {
       result.status = ClaimStatus::Pending;
       result.detail = "projected trace has causal gaps; satisfaction is not conclusive";
@@ -1353,6 +1396,10 @@ std::vector<ClaimEvaluation> evaluate_trace_claims(
                           ? "all selected transition occurrences satisfy ensure"
                           : "selected transition occurrence violates ensure";
     }
+    result.status = claim_status(decide_property(
+        PropertyUse{result.name, PropertyScope::Transition,
+                    PropertyTrigger::Occurrence, PropertyFailure::Violation},
+        property_truth(result.status)));
     if (!trace.causal_gaps.empty() && result.status == ClaimStatus::Satisfied) {
       result.status = ClaimStatus::Pending;
       result.detail = "projected trace has causal gaps; ensure is not conclusive";
