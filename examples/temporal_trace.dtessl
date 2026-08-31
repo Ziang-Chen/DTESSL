@@ -45,5 +45,8 @@ Claim FinishesWithinTwo @ trace History:
 Claim StartedSinceStart @ trace History:
   eventually(since(started, started))
 
+Claim OrderedStart @ trace History:
+  eventually((not started, started) ~ happens_before)
+
 Claim NoFailure @ trace History:
   never(done and not started)

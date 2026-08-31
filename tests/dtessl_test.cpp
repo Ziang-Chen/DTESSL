@@ -282,7 +282,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.3.5", "compiled version must be v0.3.5");
+  require(dtessl::version == "0.4.0", "compiled version must be v0.4.0");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -455,6 +455,10 @@ int main() {
   roundtrip(worker_name);
   require(dtessl::value_text(worker_name) == "WorkerId(a)",
           "logical name was rendered as string text");
+  const dtessl::Value rendered_relation(dtessl::ValueRelation{
+      1U, {dtessl::ValueTuple{{worker_name}}}});
+  require(dtessl::value_text(rendered_relation) == "relation{WorkerId(a)}",
+          "canonical relation renderer retained the legacy prefix tilde form");
 
   const dtessl::Program core_logic = dtessl::parse(core_logic_source);
   const dtessl::FeatureSet core_features = dtessl::required_features(core_logic);
@@ -1148,6 +1152,9 @@ Claim NonNegative @ Happy:
 
 Claim OneDispatch @ Happy:
   count Dispatch.ready <= 1
+
+Claim OrderedStart @ Happy:
+  eventually((not process.started, process.started) ~ happens_before)
 )DTESSL";
   const dtessl::Program composite_program = dtessl::parse(composite_trace_source);
   const dtessl::TraceSnapshot static_trace =
@@ -1162,7 +1169,7 @@ Claim OneDispatch @ Happy:
               static_trace.final_state.at("process.started").as_bool(),
           "static typed trace did not execute the composite state rewrite");
   const auto claim_results = dtessl::evaluate_named_trace(composite_program, "Happy");
-  require(claim_results.size() == 3U &&
+  require(claim_results.size() == 4U &&
               std::all_of(claim_results.begin(), claim_results.end(),
                           [](const dtessl::ClaimEvaluation& claim) {
                             return claim.status == dtessl::ClaimStatus::Satisfied;
@@ -1173,7 +1180,7 @@ Claim OneDispatch @ Happy:
   require(procedure_engine.initial_context() == "system" &&
               procedure_engine.current_states().at("scheduler") == "Idle" &&
               procedure_engine.current_states().at("process") == "Retrying",
-          "procedure did not supply only its declared Engine entry configuration");
+          "procedure did not supply only its declared Engine entry embedding");
   const dtessl::StepResult procedure_step =
       procedure_engine.step_transition(dtessl::TransitionInput{"Dispatch", {}});
   require(procedure_step.transition == "Dispatch.ready" &&
@@ -1633,19 +1640,164 @@ procedure broken idle & inject go;
   require(empty_compact_transition_rejected,
           "compact injection resolved an undefined transition name");
 
-  const dtessl::Configuration configuration{
+  const dtessl::Embedding embedding{
       {{"scheduler", "Ready"}},
       {{"scheduler.credits", dtessl::Value(std::int64_t{2})}}};
-  const auto encoded_configuration = dtessl::encode_configuration(configuration);
-  require(dtessl::decode_configuration(encoded_configuration) == configuration,
-          "canonical Configuration codec did not round-trip");
-  dtessl::ConfigurationStore configuration_store;
-  const auto configuration_root = configuration_store.insert(configuration);
-  const auto configuration_duplicate = configuration_store.insert(configuration);
-  require(configuration_root.inserted && !configuration_duplicate.inserted &&
-              configuration_root.index == configuration_duplicate.index &&
-              configuration_store.path_to(configuration_root.index).size() == 1U,
-          "ConfigurationStore did not deduplicate an exact Configuration");
+  const auto encoded_embedding = dtessl::encode_embedding(embedding);
+  require(dtessl::decode_embedding(encoded_embedding) == embedding,
+          "canonical Embedding codec did not round-trip");
+  dtessl::EmbeddingStore embedding_store;
+  const auto embedding_root = embedding_store.insert(embedding);
+  const auto embedding_duplicate = embedding_store.insert(embedding);
+  require(embedding_root.inserted && !embedding_duplicate.inserted &&
+              embedding_root.index == embedding_duplicate.index &&
+              embedding_store.path_to(embedding_root.index).size() == 1U,
+          "EmbeddingStore did not deduplicate an exact Embedding");
+
+  constexpr std::string_view recursive_embedding_source = R"DTESSL(
+name WorkerId
+
+state Scheduler @ session initial:
+  Phase(Idle | Running(Stage(Reserving | Committing), attempts: int = 0, permitted: relation WorkerId = {WorkerId(a)}, invariant(WorkerId(a) ~ permitted)))
+  Health(Healthy | Degraded)
+  credits: int = 2
+  workers: relation WorkerId = {WorkerId(a), WorkerId(b)}
+  primary: relation WorkerId = {WorkerId(a)}
+  fallback: relation WorkerId = {WorkerId(b)}
+  invariant:
+    WorkerId(a) ~ workers, (primary | fallback)
+
+transition Start():
+  case reserve (Scheduler(Phase.Idle, Health.Healthy) @ session) -> (Scheduler(Phase.Running.Stage.Reserving) @ session):
+    set @ session:
+      credits = before.session.credits - 1
+
+transition Commit():
+  case commit (Scheduler(Phase.Running.Stage.Reserving) @ session) -> (Scheduler(Phase.Running.Stage.Committing) @ session):
+    where:
+      (WorkerId(a), WorkerId(b)) ~ before.session.links, (before.session.links | before.session.backup)
+      and ((WorkerId(a), WorkerId(b)), WorkerId(a)) ~ before.session.nested,
+          (before.session.nested | before.session.nested_backup)
+)DTESSL";
+  // Add binary relations separately so the recursive relation-expression also
+  // checks tuple subjects and nested AND/OR.
+  std::string recursive_source(recursive_embedding_source);
+  const std::string relation_fields =
+      "  links: relation (WorkerId, WorkerId) = {(WorkerId(a), WorkerId(b))}\n"
+      "  backup: relation (WorkerId, WorkerId) = {}\n"
+      "  nested: relation (tuple<WorkerId, WorkerId>, WorkerId) = "
+      "{((WorkerId(a), WorkerId(b)), WorkerId(a))}\n"
+      "  nested_backup: relation (tuple<WorkerId, WorkerId>, WorkerId) = {}\n";
+  recursive_source.insert(recursive_source.find("  invariant:"), relation_fields);
+  const dtessl::Program recursive_program = dtessl::parse(recursive_source);
+  const dtessl::FeatureSet recursive_features =
+      dtessl::required_features(recursive_program);
+  require(recursive_features.contains(dtessl::LanguageFeature::RecursiveStateSchema) &&
+              recursive_features.contains(dtessl::LanguageFeature::RelationExpression),
+          "recursive state/relation features were not preserved in the typed AST");
+  const dtessl::Solver recursive_solver(recursive_program);
+  const dtessl::RawKeyMap& raw_keys = recursive_solver.raw_key_map();
+  require(raw_keys.offset_of(dtessl::RawSlotKind::Control,
+                             "session::Scheduler.Phase") &&
+              raw_keys.offset_of(dtessl::RawSlotKind::Control,
+                                 "session::Scheduler.Phase.Running.Stage") &&
+              raw_keys.offset_of(dtessl::RawSlotKind::Value,
+                                 "session.credits"),
+          "RawKeyMap did not map recursive semantic paths to raw vector offsets");
+  dtessl::Engine recursive_engine(recursive_program);
+  static_cast<void>(recursive_engine.step_transition({"Start", {}}));
+  require(recursive_engine.current_states().at("session::Scheduler.Phase") ==
+              "Scheduler.Phase.Running" &&
+              recursive_engine.current_states().at(
+                  "session::Scheduler.Phase.Running.Stage") ==
+                  "Scheduler.Phase.Running.Stage.Reserving",
+          "recursive structural transition did not rewrite the nested embedding");
+  static_cast<void>(recursive_engine.step_transition({"Commit", {}}));
+  require(recursive_engine.current_states().at(
+              "session::Scheduler.Phase.Running.Stage") ==
+              "Scheduler.Phase.Running.Stage.Committing",
+          "recursive relation guard or descendant rewrite failed");
+
+  constexpr std::string_view compact_recursive_source = R"DTESSL(
+state Switch @ local = Mode(Off | On(Level(Low | High), stable: bool = true, invariant(stable))), Health(Good | Failed), changes: int = 0;
+
+transition TurnOn():
+  case (Switch(Mode.Off, Health.Good) @ local) -> (Switch(Mode.On.Level.Low) @ local):
+    set @ local:
+      changes = before.local.changes + 1
+)DTESSL";
+  const dtessl::Program compact_recursive_program =
+      dtessl::parse(compact_recursive_source);
+  dtessl::Engine compact_recursive_engine(compact_recursive_program);
+  const dtessl::StepResult compact_recursive_step =
+      compact_recursive_engine.step_transition({"TurnOn", {}});
+  require(compact_recursive_step.state.at("local.changes").as_int() == 1,
+          "compact recursive state did not lower through the formal runtime");
+
+  constexpr std::string_view duplicate_recursive_state = R"DTESSL(
+state Invalid initial:
+  Phase(Idle | Idle)
+)DTESSL";
+  bool duplicate_recursive_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(duplicate_recursive_state));
+  } catch (const dtessl::Error&) {
+    duplicate_recursive_rejected = true;
+  }
+  require(duplicate_recursive_rejected,
+          "recursive schema verification accepted duplicate alternatives");
+
+  constexpr std::string_view false_recursive_relation = R"DTESSL(
+name Item
+state Invalid initial:
+  present: relation Item = {Item(a)}
+  absent: relation Item = {}
+  invariant:
+    Item(a) ~ present, absent
+)DTESSL";
+  bool recursive_relation_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(false_recursive_relation));
+  } catch (const dtessl::Error&) {
+    recursive_relation_rejected = true;
+  }
+  require(recursive_relation_rejected,
+          "recursive relation conjunction did not reject a false invariant");
+
+  std::string excessive_relation_depth =
+      "name Item\nstate Deep initial:\n  members: relation Item = {Item(a)}\n"
+      "  invariant:\n    Item(a) ~ ";
+  excessive_relation_depth.append(70U, '(');
+  excessive_relation_depth += "members";
+  excessive_relation_depth.append(70U, ')');
+  excessive_relation_depth += "\n";
+  bool recursive_depth_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(excessive_relation_depth));
+  } catch (const dtessl::Error&) {
+    recursive_depth_rejected = true;
+  }
+  require(recursive_depth_rejected,
+          "recursive relation parser accepted an expression beyond its depth limit");
+
+  constexpr std::string_view ancestor_guard_source = R"DTESSL(
+state Hierarchy initial:
+  Phase(Idle | Running(Stage(A | B)))
+
+transition Sneak():
+  case (Hierarchy.Phase.Running.Stage.A) -> (Hierarchy.Phase.Running.Stage.B):
+    where:
+      true
+)DTESSL";
+  dtessl::Engine ancestor_guard(dtessl::parse(ancestor_guard_source));
+  bool inactive_descendant_rejected = false;
+  try {
+    static_cast<void>(ancestor_guard.step_transition({"Sneak", {}}));
+  } catch (const dtessl::Error&) {
+    inactive_descendant_rejected = true;
+  }
+  require(inactive_descendant_rejected,
+          "recursive matching ignored an inactive ancestor state");
 
   constexpr std::string_view round_dependent_claim = R"DTESSL(
 state Idle initial:
@@ -1667,7 +1819,7 @@ Claim Later @ Model:
   const auto round_result =
       dtessl::Solver(dtessl::parse(round_dependent_claim)).verify_claim("Later");
   require(round_result.status == dtessl::ClaimSolveStatus::Inconclusive,
-          "Solver treated an unmodeled logical round as Configuration state");
+          "Solver treated an unmodeled logical round as Embedding state");
 
   constexpr std::string_view temporal_procedure = R"DTESSL(
 state Idle @ scheduler initial:
@@ -1716,7 +1868,13 @@ Claim NeverNegative @ procedure Work:
   never(scheduler.credits < 0)
 
 Claim StartBeforeDone @ procedure Work:
+  (not process.started, scheduler.done) ~ happens_before
+
+Claim LegacyBefore @ procedure Work:
   before(not process.started, scheduler.done)
+
+Claim NestedTraceRelation @ procedure Work:
+  eventually((not process.started, scheduler.done) ~ happens_before)
 
 Claim WaitWeakly @ procedure Work:
   weak_until(not process.started, process.started)
@@ -1739,7 +1897,8 @@ Claim RunningDone @ state Running @ (scheduler):
   const dtessl::Program temporal_program = dtessl::parse(temporal_procedure);
   for (const std::string_view claim :
        {"Safe", "Starts", "HoldsUntilStart", "StartsPromptly",
-        "StartedSinceDone", "NeverNegative", "StartBeforeDone", "WaitWeakly"}) {
+        "StartedSinceDone", "NeverNegative", "StartBeforeDone", "LegacyBefore",
+        "WaitWeakly"}) {
     const dtessl::ClaimSolveResult solved =
         dtessl::Solver(temporal_program).verify_claim(claim);
     require(solved.status == dtessl::ClaimSolveStatus::Verified &&
@@ -1751,6 +1910,10 @@ Claim RunningDone @ state Running @ (scheduler):
       dtessl::Solver(temporal_program).verify_claim("RunningDone");
   require(state_claim.status == dtessl::ClaimSolveStatus::Verified,
           "typed @ state Claim did not evaluate its selected context");
+  const dtessl::ClaimSolveResult nested_trace_relation =
+      dtessl::Solver(temporal_program).verify_claim("NestedTraceRelation");
+  require(nested_trace_relation.status == dtessl::ClaimSolveStatus::Inconclusive,
+          "unsupported future-under-future trace relation was proved optimistically");
   for (const std::string_view claim :
        {"ImpossibleWithinOne", "ImpossibleUntil", "InvalidHistory",
         "SimultaneousIsNotBefore"}) {

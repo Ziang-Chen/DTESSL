@@ -10,8 +10,8 @@
 namespace dtessl {
 namespace {
 
-constexpr std::array<std::uint8_t, 8> configuration_magic{
-    'D', 'T', 'C', 'O', 'N', 'F', 'G', 1U};
+constexpr std::array<std::uint8_t, 8> embedding_magic{
+    'D', 'T', 'E', 'M', 'B', 'E', 'D', 1U};
 
 void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
   do {
@@ -23,9 +23,9 @@ void append_varuint(std::vector<std::uint8_t>& output, std::size_t value) {
 }
 
 void append_string(std::vector<std::uint8_t>& output, std::string_view value,
-                   const ConfigurationCodecLimits& limits) {
+                   const EmbeddingCodecLimits& limits) {
   if (value.size() > limits.max_name_bytes) {
-    throw Error("configuration name exceeds byte limit");
+    throw Error("embedding name exceeds byte limit");
   }
   append_varuint(output, value.size());
   output.insert(output.end(), value.begin(), value.end());
@@ -33,15 +33,15 @@ void append_string(std::vector<std::uint8_t>& output, std::string_view value,
 
 class Decoder {
  public:
-  Decoder(std::span<const std::uint8_t> bytes, ConfigurationCodecLimits limits)
+  Decoder(std::span<const std::uint8_t> bytes, EmbeddingCodecLimits limits)
       : bytes_(bytes), limits_(limits) {
     if (bytes.size() > limits.max_bytes) {
-      throw Error("configuration exceeds byte limit");
+      throw Error("embedding exceeds byte limit");
     }
   }
 
   std::uint8_t byte() {
-    if (cursor_ == bytes_.size()) throw Error("truncated configuration");
+    if (cursor_ == bytes_.size()) throw Error("truncated embedding");
     return bytes_[cursor_++];
   }
 
@@ -54,13 +54,13 @@ class Decoder {
       if (shift >= std::numeric_limits<std::size_t>::digits ||
           static_cast<std::size_t>(last & 0x7fU) >
               (std::numeric_limits<std::size_t>::max() >> shift)) {
-        throw Error("configuration length overflow");
+        throw Error("embedding length overflow");
       }
       value |= static_cast<std::size_t>(last & 0x7fU) << shift;
       shift += 7U;
     } while ((last & 0x80U) != 0U);
     if (shift > 7U && (last & 0x7fU) == 0U) {
-      throw Error("non-minimal configuration length");
+      throw Error("non-minimal embedding length");
     }
     return value;
   }
@@ -68,7 +68,7 @@ class Decoder {
   std::string string() {
     const std::size_t size = varuint();
     if (size > limits_.max_name_bytes || size > remaining()) {
-      throw Error("invalid configuration string length");
+      throw Error("invalid embedding string length");
     }
     const char* begin = reinterpret_cast<const char*>(bytes_.data() + cursor_);
     cursor_ += size;
@@ -77,7 +77,7 @@ class Decoder {
 
   std::span<const std::uint8_t> blob() {
     const std::size_t size = varuint();
-    if (size > remaining()) throw Error("truncated configuration value");
+    if (size > remaining()) throw Error("truncated embedding value");
     const auto result = bytes_.subspan(cursor_, size);
     cursor_ += size;
     return result;
@@ -86,14 +86,14 @@ class Decoder {
   std::size_t count() {
     const std::size_t value = varuint();
     if (value > limits_.max_entries) {
-      throw Error("configuration exceeds entry limit");
+      throw Error("embedding exceeds entry limit");
     }
     return value;
   }
 
   void finish() const {
     if (cursor_ != bytes_.size()) {
-      throw Error("trailing bytes after configuration");
+      throw Error("trailing bytes after embedding");
     }
   }
 
@@ -103,7 +103,7 @@ class Decoder {
 
  private:
   std::span<const std::uint8_t> bytes_;
-  ConfigurationCodecLimits limits_;
+  EmbeddingCodecLimits limits_;
   std::size_t cursor_{0};
 };
 
@@ -163,107 +163,122 @@ std::string sha256(std::span<const std::uint8_t> input) {
 
 }  // namespace
 
-std::vector<std::uint8_t> encode_configuration(
-    const Configuration& configuration, ConfigurationCodecLimits limits) {
-  if (configuration.active_locations.size() > limits.max_entries ||
-      configuration.values.size() > limits.max_entries) {
-    throw Error("configuration exceeds entry limit");
+std::vector<std::uint8_t> encode_embedding(
+    const Embedding& embedding, EmbeddingCodecLimits limits) {
+  if (embedding.control_slots.size() > limits.max_entries ||
+      embedding.values.size() > limits.max_entries) {
+    throw Error("embedding exceeds entry limit");
   }
-  std::vector<std::uint8_t> output(configuration_magic.begin(),
-                                   configuration_magic.end());
-  append_varuint(output, configuration.active_locations.size());
-  for (const auto& [context, active] : configuration.active_locations) {
+  std::vector<std::uint8_t> output(embedding_magic.begin(),
+                                   embedding_magic.end());
+  append_varuint(output, embedding.control_slots.size());
+  for (const auto& [context, active] : embedding.control_slots) {
     append_string(output, context, limits);
     append_string(output, active, limits);
   }
-  append_varuint(output, configuration.values.size());
-  for (const auto& [name, value] : configuration.values) {
+  append_varuint(output, embedding.values.size());
+  for (const auto& [name, value] : embedding.values) {
     append_string(output, name, limits);
     const std::vector<std::uint8_t> encoded = encode_value(value, limits.value_limits);
     append_varuint(output, encoded.size());
     output.insert(output.end(), encoded.begin(), encoded.end());
   }
   if (output.size() > limits.max_bytes) {
-    throw Error("configuration exceeds byte limit");
+    throw Error("embedding exceeds byte limit");
   }
   return output;
 }
 
-Configuration decode_configuration(std::span<const std::uint8_t> bytes,
-                                   ConfigurationCodecLimits limits) {
+Embedding decode_embedding(std::span<const std::uint8_t> bytes,
+                           EmbeddingCodecLimits limits) {
   Decoder decoder(bytes, limits);
-  for (const std::uint8_t expected : configuration_magic) {
+  for (const std::uint8_t expected : embedding_magic) {
     if (decoder.byte() != expected) {
-      throw Error("invalid configuration magic or version");
+      throw Error("invalid embedding magic or version");
     }
   }
-  Configuration configuration;
+  Embedding embedding;
   std::string previous;
   const std::size_t active_count = decoder.count();
   for (std::size_t index = 0; index < active_count; ++index) {
     std::string context = decoder.string();
     if (index != 0U && context <= previous) {
-      throw Error("configuration contexts are not strictly sorted");
+      throw Error("embedding contexts are not strictly sorted");
     }
     previous = context;
-    configuration.active_locations.emplace(std::move(context), decoder.string());
+    embedding.control_slots.emplace(std::move(context), decoder.string());
   }
   previous.clear();
   const std::size_t value_count = decoder.count();
   for (std::size_t index = 0; index < value_count; ++index) {
     std::string name = decoder.string();
     if (index != 0U && name <= previous) {
-      throw Error("configuration values are not strictly sorted");
+      throw Error("embedding values are not strictly sorted");
     }
     previous = name;
-    configuration.values.emplace(
+    embedding.values.emplace(
         std::move(name), decode_value(decoder.blob(), limits.value_limits));
   }
   decoder.finish();
-  return configuration;
+  return embedding;
 }
 
-std::string configuration_digest(const Configuration& configuration,
-                                 ConfigurationCodecLimits limits) {
-  return sha256(encode_configuration(configuration, limits));
+std::string embedding_digest(const Embedding& embedding,
+                             EmbeddingCodecLimits limits) {
+  return sha256(encode_embedding(embedding, limits));
 }
 
-ConfigurationStore::InsertResult ConfigurationStore::insert(
-    Configuration configuration, std::optional<std::size_t> witness_parent,
+std::size_t RawKeyMap::add(RawSlotKind kind, std::string semantic_path) {
+  const auto key = std::pair{kind, semantic_path};
+  if (const auto found = offsets_.find(key); found != offsets_.end()) {
+    return found->second;
+  }
+  const std::size_t offset = slots_.size();
+  offsets_.emplace(std::move(key), offset);
+  slots_.push_back(RawKeySlot{kind, std::move(semantic_path), offset});
+  return offset;
+}
+
+std::optional<std::size_t> RawKeyMap::offset_of(
+    RawSlotKind kind, std::string_view semantic_path) const {
+  const auto found = offsets_.find(std::pair{kind, std::string(semantic_path)});
+  return found == offsets_.end() ? std::nullopt
+                                 : std::optional<std::size_t>(found->second);
+}
+
+EmbeddingStore::InsertResult EmbeddingStore::insert(
+    Embedding embedding, std::optional<std::size_t> witness_parent,
     std::string transition) {
   if (witness_parent && *witness_parent >= nodes_.size()) {
-    throw Error("configuration witness parent is out of range");
+    throw Error("embedding witness parent is out of range");
   }
-  const std::string digest = configuration_digest(configuration);
-  const auto existing = index_.find(digest);
-  if (existing != index_.end()) {
-    if (!(nodes_[existing->second].configuration == configuration)) {
-      throw Error("configuration digest collision");
-    }
+  std::vector<std::uint8_t> raw_key = encode_embedding(embedding);
+  if (const auto existing = raw_content_index_.find(raw_key);
+      existing != raw_content_index_.end()) {
     return {existing->second, false};
   }
+  const std::string digest = sha256(raw_key);
   const std::size_t index = nodes_.size();
   const std::size_t depth =
       witness_parent ? nodes_[*witness_parent].depth + 1U : 0U;
-  nodes_.push_back(ConfigurationRecord{digest, std::move(configuration),
-                                       witness_parent, std::move(transition),
-                                       depth});
-  index_.emplace(digest, index);
+  nodes_.push_back(EmbeddingRecord{digest, raw_key, std::move(embedding),
+                                   witness_parent, std::move(transition), depth});
+  raw_content_index_.emplace(std::move(raw_key), index);
   return {index, true};
 }
 
-const ConfigurationRecord& ConfigurationStore::at(std::size_t index) const {
+const EmbeddingRecord& EmbeddingStore::at(std::size_t index) const {
   return nodes_.at(index);
 }
 
-std::optional<std::size_t> ConfigurationStore::find(
-    std::string_view digest) const {
-  const auto found = index_.find(digest);
-  return found == index_.end() ? std::nullopt
-                              : std::optional<std::size_t>(found->second);
+std::optional<std::size_t> EmbeddingStore::find(const Embedding& embedding) const {
+  const auto found = raw_content_index_.find(encode_embedding(embedding));
+  return found == raw_content_index_.end()
+             ? std::nullopt
+             : std::optional<std::size_t>(found->second);
 }
 
-std::vector<std::size_t> ConfigurationStore::path_to(
+std::vector<std::size_t> EmbeddingStore::path_to(
     std::size_t index) const {
   std::vector<std::size_t> path;
   for (;;) {

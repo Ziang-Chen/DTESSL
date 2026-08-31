@@ -6,14 +6,19 @@ and not a source of runtime nondeterminism.
 
 DTESSL `v0.2.3` adds the compact `~` surface and direct unary-record binding.
 The bounds and deterministic search semantics in this profile are unchanged.
+DTESSL `v0.4.0` supersedes only that surface: canonical source writes
+`relation T` / `relation (A,B)` and reserves infix `~` for recursive
+`subject ~ relation-expression`. Prefix `~T` and `~{...}` remain migration
+input; the finite relation algebra and budgets below are unchanged.
 
 ## Values and bounds
 
 - `tuple<T...>` is a positive-arity structural product.
 - `relation<T...>` is a finite set of tuples with exactly the declared arity
   and column types.
-- `~T` is a direct unary relation whose binder is `T`; `~(A,B,...)` is the
-  compact tuple-relation spelling, and `~{...}` is its literal form.
+- `relation T` is a direct unary relation whose binder is `T`;
+  `relation (A,B,...)` is the tuple-relation spelling, and `relation{...}` is
+  the canonical rendered literal form. Prefix `~T`/`~{...}` is migration input.
 - Rows use the canonical total value order and contain no duplicates.
 - Arity is at most 64, a materialized relation contains at most 4096 distinct
   rows, and one relation/search plan performs at most 1,000,000 inspected work
@@ -57,7 +62,7 @@ Sets bind their element type. Relations bind one `tuple<T...>` row, addressed
 as `row.0`, `row.1`, and so on. Enumeration is canonical. On an empty domain,
 `E` is false and `A` is true.
 
-The new direct unary form `~T` instead binds `T` itself. A `~Worker` relation
+The direct unary form `relation Worker` binds `Worker` itself. Such a relation
 therefore exposes `worker.id`, while legacy `relation<Worker>` continues to
 expose `row.0` during v0 migration. This compatibility distinction prevents an
 existing program from silently changing meaning.

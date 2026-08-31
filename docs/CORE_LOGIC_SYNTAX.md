@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: implemented on the `v0.2.3` integration branch.
+Status: `v0.4.0` recursive relation-expression surface.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -25,14 +25,29 @@ arrive through typed state/event values rather than string conversion.
 
 ## Relations
 
-The compact relation forms are:
+The core relation form is:
 
 ```dtessl
-~T              // direct unary relation over T
-~(A, B)         // relation over tuple<A, B>
-~{...}          // finite relation literal
-item ~ relation // typed relation membership
+subject ~ relation-expression
 ```
+
+The subject may recursively contain logical names, typed values, embedding
+value projections, tuples, records and variants. The right side recursively
+composes named/valued relations with `,` as AND and `|` as OR:
+
+```dtessl
+(stateA, stateB) ~ Equal, (SameEpoch | Migratable)
+```
+
+This means `Equal(subject) and (SameEpoch(subject) or Migratable(subject))`.
+`~` never starts an implicit search; an unbound subject is legal only under an
+explicit `E`, `A`, `select`, or finite transition-parameter generator.
+
+Within a transition, this is the relational half of a small matching DSL. A
+case is normalized to `StructuralPattern and RelationMatch`: the recursive
+state pattern checks which control locations are active, while `~` checks typed
+values projected from that embedding. Control-state names are deliberately not
+coerced into strings or ordinary relation rows.
 
 A direct unary relation binds its element rather than a one-field tuple. This
 makes records the normal row schema:
@@ -42,7 +57,7 @@ record Worker:
   id: WorkerId
   capacity: int
 
-workers: ~Worker = ~{
+workers: relation Worker = {
   Worker{id: WorkerId(a), capacity: 2},
   Worker{id: WorkerId(b), capacity: 1}
 }
@@ -58,10 +73,11 @@ where worker.capacity >= minimum
 by lex(worker.capacity, worker.id)
 ```
 
-`~` is not approximate equality or bitwise negation. It has only the relation
-meaning. The legacy `relation<T...>`, `relation{...}` and `in` spellings remain
-accepted during the v0 migration; legacy unary relations continue to bind a
-one-field tuple so existing `.0` programs do not silently change meaning.
+`~` is not a type constructor, approximate equality or bitwise negation. The
+prefix `~T`/`~{...}` forms remain accepted only for v0 source migration.
+`relation T`, `relation (A,B)` and context-typed `{...}` are the canonical
+declaration/literal forms. Legacy `relation<T...>` unary rows retain tuple
+binding so existing `.0` programs do not silently change meaning.
 
 ## Optional values
 

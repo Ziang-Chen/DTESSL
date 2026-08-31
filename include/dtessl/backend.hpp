@@ -45,6 +45,8 @@ enum class LanguageFeature {
   TemporalLogic,
   ProcedureLambda,
   TransitionObligation,
+  RecursiveStateSchema,
+  RelationExpression,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

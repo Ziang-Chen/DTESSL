@@ -59,7 +59,7 @@ are source facts; the indented DTESSL rules are project inferences.
 
   DTESSL inference: the language AST contains temporal formulas, while the
   Solver owns their monitor automata and the on-demand
-  `StateExpand × ClaimMonitor` graph. Product state is not added to source
+  `EmbeddingExpand × ClaimMonitor` graph. Product state is not added to source
   `state` declarations.
 
 - C. Courcoubetis, M. Vardi, P. Wolper and M. Yannakakis, “Memory Efficient

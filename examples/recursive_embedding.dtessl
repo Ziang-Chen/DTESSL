@@ -1,0 +1,29 @@
+name WorkerId
+
+state Scheduler @ session initial:
+  Phase(Idle | Running(Stage(Reserving | Committing), attempts: int = 0, permitted: relation WorkerId = {WorkerId(a)}, invariant(WorkerId(a) ~ permitted)))
+  Health(Healthy | Degraded)
+  credits: int = 2
+  workers: relation WorkerId = {WorkerId(a), WorkerId(b)}
+  local: relation WorkerId = {WorkerId(a)}
+  fallback: relation WorkerId = {WorkerId(b)}
+  accepted: bool = false
+  invariant:
+    credits >= 0
+    and WorkerId(a) ~ workers, (local | fallback)
+
+transition Start():
+  case reserve (Scheduler(Phase.Idle, Health.Healthy) @ session) -> (Scheduler(Phase.Running.Stage.Reserving) @ session):
+    set @ session:
+      credits = before.session.credits - 1
+
+transition Commit():
+  case commit (Scheduler(Phase.Running.Stage.Reserving) @ session) -> (Scheduler(Phase.Running.Stage.Committing) @ session):
+    set @ session:
+      accepted = true
+
+procedure Scheduling @ session:
+  initial (Scheduler @ session)
+
+Claim Safe @ procedure Scheduling @ (session):
+  always(session.credits >= 0)

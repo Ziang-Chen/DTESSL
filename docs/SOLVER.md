@@ -6,41 +6,52 @@ and execution, exploration or export backends:
 ```text
 source -> frontend -> typed Program -> Solver -> backend
                                       |
-                                      +-> StateExpand x ClaimMonitor
+                                      +-> EmbeddingExpand x ClaimMonitor
                                                    -> counterexample
 ```
 
+Predicate evaluation has one typed route. Surface equality/order/membership
+operators (`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `~`) lower to the
+`RelationMatch` AST family. Boolean nodes only compose those matches. Runtime
+guards and invariants, finite trace checks, and ClaimMonitor atom evaluation all
+call the same verifier and evaluator; EmbeddingExpand and ClaimMonitor do not
+carry private comparison or membership implementations. Canonical ordering
+used to index values and rank an explicit optimization score is an ordering
+primitive, not a second predicate evaluator.
+
 ## Names and ownership
 
-- A source `state` is a static control-location declaration with typed variable
-  slots, defaults and invariants. It is not a changing search node.
-- A `Configuration` is dynamic: the active location on each `@context` axis plus
+- A source `StateSchema` recursively composes product children, choice
+  alternatives and typed value leaves. It is not a changing search node.
+- An `Embedding` is dynamic: the active location on each `@context` axis plus
   the current typed variable valuation.
-- `StateExpand` is the reachable directed graph formed by expanding enabled
-  transitions from Configurations. Joins, back-edges and cycles are normal.
+- `EmbeddingExpand` is the reachable directed graph formed by expanding enabled
+  transitions from Embeddings. Joins, back-edges and cycles are normal.
 - A `ClaimMonitor` is the finite control state compiled from one typed temporal
   formula. `since` contributes recurrence bits, `within` contributes a bounded
   counter, and liveness operators contribute waiting/satisfied/rejected phases.
-- The explored verification node is `(Configuration, ClaimMonitorState)`.
-  StateExpand remains the base graph; history-sensitive monitor state is not
-  smuggled into the source `state` declaration or Configuration digest.
-- `ConfigurationStore` canonically encodes and content-deduplicates nodes inside
-  one Solver search. Full equality is checked after a digest match.
-- A witness parent stored with a Configuration is only one discovery path used
-  to print a counterexample. It does not turn StateExpand into a tree.
+- The explored verification node is `(Embedding, ClaimMonitorState)`.
+  EmbeddingExpand remains the base graph; history-sensitive monitor state is not
+  smuggled into the source `state` declaration or Embedding digest.
+- `RawKeyMap` maps recursive semantic control/value paths to offsets in the
+  lowered raw embedding vector. It is representation metadata, not identity.
+- `EmbeddingStore` canonically encodes and content-deduplicates nodes by exact
+  raw bytes. Digest is evidence only and cannot merge nodes.
+- A witness parent stored with an Embedding is only one discovery path used
+  to print a counterexample. It does not turn EmbeddingExpand into a tree.
 
 ## Transition expansion
 
 The verified Program owns stable context, state, transition and route IDs.
 Production matching uses dense active-location signatures; the original string
 and map matcher remains available as a semantic parity baseline. For each
-Configuration the Solver:
+Embedding the Solver:
 
 1. finds candidate transition groups by TransitionId;
 2. narrows routes by their source-context signature;
 3. evaluates dynamic `where` predicates and relation searches;
 4. applies the unique route or explicit unique optimum to produce a successor;
-5. inserts the successor Configuration into StateExpand by exact content key.
+5. inserts the successor Embedding into EmbeddingExpand by exact raw content.
 
 The current bounded explorer admits zero-parameter transitions. A parameterized
 transition needs an explicit finite input domain; until that language feature is
@@ -54,8 +65,16 @@ the product. The Solver never silently folds different times into one digest.
 The P0 temporal basis is `always`, `eventually`, `until`, `within` and `since`.
 Ordinary predicate leaves use the same typed expression evaluator, quantifiers,
 relations and pure functions as state invariants and transition `where` guards.
-`never`, `before` and `weak_until` are frontend definitions lowered to that
-basis; the Solver has no separate opcode or search algorithm for them.
+`never` and `weak_until` are frontend definitions lowered to that basis;
+`before(p, q)` is compatibility sugar for `(p, q) ~ happens_before`. The
+Solver has no duplicate search algorithm for these forms.
+
+Trace relations form a distinct typed branch under the common relation model:
+`(first, second) ~ happens_before` produces `TraceRelationMatch`, not an
+instantaneous membership test. The monitor compiler canonically lowers it to
+the temporal core. This keeps trace access out of the instantaneous evaluator
+while preserving one syntax and one solver entrance. Unsupported nested future
+fragments are explicitly `inconclusive`.
 
 ```text
 never(p)          := always(not p)
@@ -78,7 +97,7 @@ not first-class runtime values.
 - `count T <= n` is likewise a monitor counter in the Product key.
 
 Trace claims use finite-trace semantics and include logical Round 0. Procedure
-claims start from the procedure's declared initial Configuration and quantify
+claims start from the procedure's declared initial Embedding and quantify
 over all admitted zero-parameter transition paths. `Claim C @ state S` is a
 local check and cannot discharge an unresolved future obligation.
 

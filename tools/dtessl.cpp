@@ -516,12 +516,13 @@ void repl_help() {
       << "  :reset                   rebuild legacy and procedure runtimes\n"
       << "  :history                 show entered commands\n"
       << "  :quit                    exit\n"
-      << "\ncore v0.3.5 syntax:\n"
+      << "\ncore v0.4.0 syntax:\n"
       << "  procedure/inject          persistent automaton + typed transition input\n"
       << "  replay/capture closed     transition replay + complete procedure closure\n"
       << "  name T / T(atom)         nominal logical names\n"
-      << "  ~T / ~(A,B) / ~{...}     finite relations and literals\n"
-      << "  item ~ relation          membership/binding in E/A/select\n"
+      << "  relation T / (A,B)       finite relation schemas\n"
+      << "  subject ~ R1,(R2|R3)     recursive relation satisfaction\n"
+      << "  (a,b) ~ happens_before   trace-domain relation match\n"
       << "  [T] / [] / [value]       option type, absent and present values\n"
       << "  list[...]                explicit ordered-list literal\n"
       << "\nexample:\n"
@@ -808,7 +809,7 @@ void usage(std::ostream& out) {
       << "  dtessl features <program.dtessl>\n"
       << "  dtessl plans <program.dtessl>\n"
       << "  dtessl bench <program.dtessl> <Transition> [iterations]\n"
-      << "  dtessl verify-claim <program.dtessl> <Claim> [max-depth] [max-configurations]\n"
+      << "  dtessl verify-claim <program.dtessl> <Claim> [max-depth] [max-embeddings]\n"
       << "  dtessl descriptor-check <model.semantic>\n"
       << "  dtessl descriptor-generate <model.semantic>\n"
       << "  dtessl descriptor-source-map <model.semantic>\n"
@@ -826,9 +827,9 @@ void usage(std::ostream& out) {
       << "  dtessl replay <program.dtessl> <Event> [field=value ...]\n"
       << "  dtessl run-batch <program.dtessl> <Event> [...] -- <Event> [...]\n"
       << "  dtessl replay-batch <program.dtessl> <Event> [...] -- <Event> [...]\n\n"
-      << "core v0.3.5: temporal ClaimMonitor product, Solver/StateExpand, compact automata,\n"
+      << "core v0.4.0: recursive StateSchema/Embedding, recursive relations, temporal Product,\n"
       << "indexed search, causal rounds,\n"
-      << "             native trace/Claim, name T, ~ relations, [T], list[...]\n";
+      << "             native trace/Claim, name T, RelationMatch, [T], list[...]\n";
 }
 
 }  // namespace
@@ -1011,7 +1012,7 @@ int main(int argc, char** argv) {
     if (command == "verify-claim") {
       if (argc < 4 || argc > 6) {
         throw dtessl::Error(
-            "usage: dtessl verify-claim <program.dtessl> <Claim> [max-depth] [max-configurations]");
+            "usage: dtessl verify-claim <program.dtessl> <Claim> [max-depth] [max-embeddings]");
       }
       dtessl::SolverLimits limits;
       const auto parse_limit = [&](int argument, std::size_t& target,
@@ -1026,12 +1027,12 @@ int main(int argc, char** argv) {
         }
       };
       parse_limit(4, limits.max_depth, "max-depth");
-      parse_limit(5, limits.max_configurations, "max-configurations");
+      parse_limit(5, limits.max_embeddings, "max-embeddings");
       const dtessl::ClaimSolveResult verified =
           dtessl::Solver(program).verify_claim(argv[3], limits);
       std::cout << dtessl::claim_solve_status_name(verified.status)
                 << " claim=" << verified.claim
-                << " configurations=" << verified.explored_configurations
+                << " embeddings=" << verified.explored_embeddings
                 << " product=" << verified.explored_product_states
                 << " monitors=" << verified.claim_monitor_states
                 << " edges=" << verified.explored_edges
@@ -1039,7 +1040,7 @@ int main(int argc, char** argv) {
                 << verified.detail << '\n';
       for (const dtessl::CounterexampleFrame& frame : verified.counterexample) {
         std::cout << "counterexample depth=" << frame.depth
-                  << " configuration=" << frame.configuration_digest;
+                  << " embedding=" << frame.embedding_digest;
         if (!frame.transition.empty()) std::cout << " via=" << frame.transition;
         std::cout << '\n';
       }

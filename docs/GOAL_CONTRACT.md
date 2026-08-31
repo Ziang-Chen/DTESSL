@@ -65,14 +65,14 @@ The project is complete only when all of the following are evidenced:
   published tag, or if a host integration would grant new authority.
 - A local build alone is candidate evidence, never final validation.
 
-## Current v0.3.5 temporal Solver boundary
+## Current v0.4.0 recursive Embedding boundary
 
 - Work is restricted to the DTESSL repository and the
   `codex/compact-automaton-v0-3-3` branch.
 - The built-in `Solver` is the sole high-performance semantic layer between the
   verified frontend Program and runtime/exploration backends. Static `state`
-  declarations are not search nodes: dynamic `Configuration` nodes and
-  transition edges form the `StateExpand` graph.
+  declarations are not search nodes: dynamic `Embedding` nodes and
+  transition edges form the `EmbeddingExpand` graph.
 - Compact syntax is a source-level AST and direct lowering only. It cannot
   create a second semantic pipeline or bypass typing, deterministic search,
   procedure isolation, causal RoundId, capture or replay checks.
@@ -88,7 +88,7 @@ The project is complete only when all of the following are evidenced:
   steps. Named external work still requires typed TransitionId injection.
 - Claims bind explicitly to a trace, state or procedure. Their five primitive
   temporal operators compile to finite monitor state, and verification explores
-  `StateExpand × ClaimMonitor`; derived temporal names do not add Solver cases.
+  `EmbeddingExpand × ClaimMonitor`; derived temporal names do not add Solver cases.
 - Golden replay consumes a complete procedure artifact: initial/checkpoint
   state plus typed transition-occurrence injections. Transition paths and the
   dynamic DAG are recomputed evidence, not replay commands.

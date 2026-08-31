@@ -1,6 +1,6 @@
 # DTESSL Project QC Control
 
-Updated: 2026-08-28, Asia/Shanghai
+Updated: 2026-08-31, Asia/Shanghai
 
 ## Control metadata
 
@@ -8,8 +8,8 @@ Updated: 2026-08-28, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.3.5` temporal ClaimMonitor Product over the
-  merged Solver/compact-automaton/runtime baseline
+- Current target: validate the `v0.4.0` recursive StateSchema/Embedding and
+  recursive relation-expression slice
 - Stop orders: none
 
 ## Current state
@@ -26,21 +26,28 @@ startup, typed injection, runtime inspection, closed capture and artifact
 replay. Its gates will be rerun against the merged TransitionInput semantics.
 
 The `v0.3.3` compact AST candidate is now implemented on that merged baseline.
-Standard, `-Werror`, and ASan/UBSan configurations each pass 31/31 tests,
+Standard, `-Werror`, and ASan/UBSan builds each pass 31/31 tests,
 including compact check/trace integration, production highlighting and
 same-line rejection.
 
 The `v0.3.4` candidate separates static state declarations from canonical
-dynamic Configurations, gives the reachable transition graph the stable name
-`StateExpand`, adds dense-ID/reference parity benchmarks and searches bounded
+dynamic Embeddings, gives the reachable transition graph the stable name
+`EmbeddingExpand`, adds dense-ID/reference parity benchmarks and searches bounded
 safety/eventuality counterexamples through the independent Solver layer.
-Standard, `-Werror`, and ASan/UBSan configurations each pass 35/35 tests.
+Standard, `-Werror`, and ASan/UBSan builds each pass 35/35 tests.
 
 The `v0.3.5` candidate adds one temporal AST and ClaimMonitor compiler shared by
-finite Trace evaluation, procedure StateExpand Product search and transition
+finite Trace evaluation, procedure EmbeddingExpand Product search and transition
 obligations. It also adds explicit Claim targets, cross-context scopes and
 procedure-local anonymous automaton edges. Standard, `-Werror`, and
-ASan/UBSan configurations each pass 38/38 tests.
+ASan/UBSan builds each pass 38/38 tests.
+
+The `v0.4.0` candidate preserves recursive StateSchema nodes through parsing
+and validation, lowers stable semantic paths into Embedding control/value slots,
+maps those paths to raw vector offsets with `RawKeyMap`, and recursively lowers
+`subject ~ R1, (R2 | R3)`. General and compact examples, ancestor rejection,
+false relation constraints and exact-raw node identity are covered. Standard,
+`-Werror`, and ASan/UBSan builds each pass 42/42 tests.
 
 ## Current goal contract
 
@@ -77,12 +84,16 @@ ASan/UBSan configurations each pass 38/38 tests.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.3.5` | Built CLI reports `v0.3.5` | pass |
-| Solver semantic seam | Public Solver owns Configuration expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
-| StateExpand graph | Canonical Configuration codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Configuration digests | pass |
+| Version identity | CMake/generated header target `0.4.0` | Built CLI reports `v0.4.0` | pass |
+| Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
+| EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
-| Compact relation binding | `~T`, `~(A,B)`, `~{}` and `~` parser/type/evaluator tests; legacy unary tuple behavior retained | Scheduler searches `worker.capacity` without `.0` | pass |
+| Recursive relation expression | Tuple/name/value subjects plus nested comma-AND/pipe-OR parser/type/evaluator tests; false conjunction rejects initial embedding | `(a,b) ~ R1,(R2\|R3)` runs in the recursive scheduler fixture | pass |
+| Unified RelationMatch path | Equality/order/membership and recursive `~` lower to one typed AST/evaluator; runtime and ClaimMonitor atoms call it without private predicate evaluation | Existing comparison corpus plus nested tuple relation and canonical-render tests pass | pass |
+| Trace relation syntax | `(a,b) ~ happens_before` has a distinct trace-domain AST case; compatibility `before(a,b)` shares it; finite nesting executes and unsupported Solver nesting is inconclusive | Procedure Product verifies strict ordering; closed trace satisfies nested `eventually(RelationMatch)` | pass |
+| Recursive StateSchema | General/compact recursive declaration, duplicate/path/depth checks, local typed fields/invariants and structural transition matching | Nested scheduler and switch examples execute and Claim search reaches three Embeddings | pass |
+| RawKeyMap lowering | Stable control/value semantic paths map to raw embedding-vector offsets; exact raw content owns graph identity | Solver API exposes Phase/Stage/value offsets and digest remains evidence-only | pass |
 | Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
 | Explicit list literals | `list[...]` parse and canonical rendering | Scheduler fixture contains typed logical-name list | pass |
 | Full relation/search design | Profile plus implementation and adversarial tests | Standard, `-Werror` and ASan/UBSan suites pass 17/17; installed graph replay/plans pass | pass |
@@ -99,13 +110,13 @@ ASan/UBSan configurations each pass 38/38 tests.
 | Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Temporal Claim AST | always/eventually/until/within/since plus derived never/before/weak_until share typed predicate leaves | Finite trace and procedure examples exercise all primitives | pass |
-| ClaimMonitor Product | Configuration and monitor state have separate keys; deadlock/lasso/finite counterexamples are reconstructed | Positive and negative procedure claims plus transition obligation cycle tests pass | pass |
+| ClaimMonitor Product | Embedding and monitor state have separate keys; deadlock/lasso/finite counterexamples are reconstructed | Positive and negative procedure claims plus transition obligation cycle tests pass | pass |
 | Finite-prefix claims | logical Round 0, temporal evaluation, count plus three statuses | Closed temporal trace CLI and projection-gap tests pass | pass |
 | Pure helper functions | Typed parameter/result checking, state/round isolation and recursion rejection | Composite guard calls a verified helper | pass |
 | Procedure entry boundary | Parser accepts initial context/state plus anonymous local automaton edges; ordered steps/admission scripts remain forbidden | Solver expands local edges only for the owning procedure | pass |
 | Procedure RuntimeContext | Two procedure instances retain isolated typed state across an interleaved replay; same-layer decisions share RoundId and same-procedure dependencies retain qualified predecessor IDs | Idle frames plus REPL multi-injection/runtime inspection remain visible | pass |
 | Capture filter | Typed state/transition/procedure selector sets validate references and procedure capture emits immutable per-RoundId frames | Composite example captures one procedure and dual-procedure test retains both histories | pass |
-| Golden procedure replay | Replay consumes declared initial configuration plus typed transition-occurrence history; cases are recomputed | Public API and REPL replay report matching rounds, decisions and procedure histories | pass |
+| Golden procedure replay | Replay consumes declared initial embedding plus typed transition-occurrence history; cases are recomputed | Public API and REPL replay report matching rounds, decisions and procedure histories | pass |
 | Search replay | A named transition path may be asserted only as derived evidence, never forced | `Transition.case(...) @ Procedure` and explicit `SearchExpectation` both re-enter ordinary search | pass |
 | Transition occurrence injection | Exact TransitionId plus typed fields are appended to a started procedure; no direct state mutation or case selection | Same Event family is ambiguous through legacy dispatch but exact TransitionId injection selects only its own family | pass |
 | Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
@@ -187,7 +198,7 @@ ASan/UBSan configurations each pass 38/38 tests.
   repeated path-local `case (source-set)->(target-set):`, adds exact/set/wildcard
   topology matching, atomic orthogonal state commit, native trace scopes and
   three-valued finite-prefix claims.
-- 2026-08-28: fixed procedure as an entry configuration only: initial context
+- 2026-08-28: fixed procedure as an entry embedding only: initial context
   plus initial state combination. It is neither a trace nor a transition
   container; only explicit Engine startup applies it.
 - 2026-08-28: replay occurrences now explicitly bind

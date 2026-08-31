@@ -333,6 +333,7 @@ struct Expr {
     Name,
     Unary,
     Binary,
+    RelationMatch,
     Exists,
     Count,
     SetInsert,
@@ -359,6 +360,7 @@ struct Expr {
   std::size_t line{0};
   std::size_t column{0};
   bool direct_relation_binding{false};
+  bool relation_expression{false};
 };
 
 ExprPtr make_literal(Value value, std::size_t line = 0, std::size_t column = 0) {
@@ -400,6 +402,17 @@ ExprPtr make_binary(std::string op, ExprPtr left, ExprPtr right) {
   return expr;
 }
 
+ExprPtr make_relation_match(std::string relation, ExprPtr left, ExprPtr right) {
+  auto expr = std::make_shared<Expr>();
+  expr->kind = Expr::Kind::RelationMatch;
+  expr->text = std::move(relation);
+  expr->left = std::move(left);
+  expr->right = std::move(right);
+  expr->line = expr->left ? expr->left->line : 0;
+  expr->column = expr->left ? expr->left->column : 0;
+  return expr;
+}
+
 struct Field {
   enum class Merge { Reject, Equal, Union };
   std::string name;
@@ -422,10 +435,43 @@ struct State {
   ContextId context_id{invalid_dense_id};
   StateId state_id{invalid_dense_id};
   bool initial{false};
+  // Active semantic ancestors for a recursively declared control state.
+  // They are expanded into transition patterns during verification.
+  std::vector<std::string> ancestors;
   std::vector<Field> fields;
   std::vector<ExprPtr> invariants;
   std::size_t line{0};
   std::size_t column{0};
+};
+
+// Recursive semantic state schema.  Product children coexist, Choice children
+// select exactly one Control alternative, and Value leaves carry typed state.
+// Runtime dense state/context IDs are a lowering of this tree, not its meaning.
+struct StateSchemaNode {
+  enum class Kind { Product, Choice, Control, Value };
+  Kind kind{Kind::Product};
+  std::string name;
+  std::string canonical_path;
+  std::vector<StateSchemaNode> children;
+  std::optional<Field> value;
+  std::vector<ExprPtr> invariants;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct StateSchema {
+  std::string name;
+  std::string context;
+  bool initial{false};
+  StateSchemaNode root;
+  std::vector<ExprPtr> invariants;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+struct ParsedStateDeclaration {
+  StateSchema schema;
+  std::vector<State> lowered_states;
 };
 
 struct Parameter {
@@ -521,8 +567,20 @@ struct Transition {
 // Atom is evaluated by the same expression engine used by state invariants and
 // transition guards; only the temporal structure is owned by ClaimMonitor.
 struct TemporalExpr {
-  enum class Kind { Atom, Not, And, Or, Always, Eventually, Until, Within, Since };
+  enum class Kind {
+    Atom,
+    TraceRelationMatch,
+    Not,
+    And,
+    Or,
+    Always,
+    Eventually,
+    Until,
+    Within,
+    Since
+  };
   Kind kind{Kind::Atom};
+  std::string relation;
   ExprPtr atom;
   std::shared_ptr<TemporalExpr> left;
   std::shared_ptr<TemporalExpr> right;
@@ -561,6 +619,16 @@ TemporalExprPtr make_temporal_binary(TemporalExpr::Kind kind,
   result->column = left ? left->column : 0;
   result->left = std::move(left);
   result->right = std::move(right);
+  return result;
+}
+
+TemporalExprPtr make_trace_relation_match(std::string relation,
+                                          TemporalExprPtr subject_left,
+                                          TemporalExprPtr subject_right) {
+  auto result = make_temporal_binary(TemporalExpr::Kind::TraceRelationMatch,
+                                     std::move(subject_left),
+                                     std::move(subject_right));
+  result->relation = std::move(relation);
   return result;
 }
 
@@ -666,6 +734,28 @@ class FlatParser {
   }
 
  private:
+  class RecursionGuard {
+   public:
+    RecursionGuard(std::size_t& depth, const Token& token,
+                   std::string_view construct)
+        : depth_(depth) {
+      constexpr std::size_t recursion_depth_limit = 64U;
+      if (depth_ >= recursion_depth_limit) {
+        throw Error(std::string(construct) + " exceeds recursion depth limit",
+                    token.line, token.column);
+      }
+      ++depth_;
+    }
+
+    ~RecursionGuard() { --depth_; }
+
+    RecursionGuard(const RecursionGuard&) = delete;
+    RecursionGuard& operator=(const RecursionGuard&) = delete;
+
+   private:
+    std::size_t& depth_;
+  };
+
   const Token& peek() const {
     static const Token end{TokenKind::End, "<end>", 0, 0};
     return cursor_ < tokens_.size() ? tokens_[cursor_] : end;
@@ -729,6 +819,7 @@ class FlatParser {
   }
 
   DataType parse_type() {
+    const RecursionGuard guard(type_depth_, peek(), "type");
     if (match("bool")) return bool_type();
     if (match("int")) return int_type();
     if (match("rational")) return rational_type();
@@ -776,8 +867,7 @@ class FlatParser {
       return DataType(constructor == "map" ? DataType::Kind::Map : DataType::Kind::Result,
                       std::move(first), std::move(second));
     }
-    if (match("tuple") || match("relation")) {
-      const std::string constructor = tokens_[cursor_ - 1].text;
+    if (match("tuple")) {
       expect("<");
       std::vector<DataType> elements;
       do {
@@ -787,9 +877,27 @@ class FlatParser {
         }
       } while (match(","));
       expect(">");
-      return DataType(constructor == "tuple" ? DataType::Kind::Tuple
-                                               : DataType::Kind::Relation,
-                      std::move(elements));
+      return DataType(DataType::Kind::Tuple, std::move(elements));
+    }
+    if (match("relation")) {
+      std::vector<DataType> elements;
+      bool direct = true;
+      if (match("<")) {
+        direct = false;  // v0 tuple-row compatibility form
+        do elements.push_back(parse_type()); while (match(","));
+        expect(">");
+      } else if (match("(")) {
+        do elements.push_back(parse_type()); while (match(","));
+        expect(")");
+      } else {
+        elements.push_back(parse_type());
+      }
+      if (elements.empty() || elements.size() > relation_arity_limit) {
+        fail(peek(), "relation type exceeds arity limit");
+      }
+      DataType relation(DataType::Kind::Relation, std::move(elements));
+      relation.direct_relation_row = direct && relation.elements.size() == 1U;
+      return relation;
     }
     Token name = identifier();
     if (!types_.contains(name.text)) fail(name, "unknown nominal type '" + name.text + "'");
@@ -797,6 +905,7 @@ class FlatParser {
   }
 
   ExprPtr parse_implication() {
+    const RecursionGuard guard(expression_depth_, peek(), "expression");
     auto left = parse_or();
     if (match("->")) {
       return make_binary("->", std::move(left), parse_implication());
@@ -823,10 +932,55 @@ class FlatParser {
   ExprPtr parse_compare() {
     auto left = parse_add();
     static const std::unordered_set<std::string> operators{
-        "=", "==", "!=", "<", "<=", ">", ">=", "in", "~"};
+        "=", "==", "!=", "<", "<=", ">", ">=", "in"};
     if (!at_end() && operators.contains(peek().text)) {
       const std::string op = take().text;
-      return make_binary(op, std::move(left), parse_add());
+      return make_relation_match(op, std::move(left), parse_add());
+    }
+    if (match("~")) {
+      // `subject ~ R1, (R2 | R3)` recursively lowers to
+      // subject~R1 and (subject~R2 or subject~R3).  The subject AST is shared
+      // immutably; relation expressions never bind or search implicitly.
+      const ExprPtr subject = left;
+      std::size_t relation_depth = 0U;
+      std::size_t relation_nodes = 0U;
+      std::function<ExprPtr()> relation_or;
+      std::function<ExprPtr()> relation_and;
+      std::function<ExprPtr()> relation_atom;
+      relation_atom = [&]() {
+        constexpr std::size_t relation_depth_limit = 64U;
+        constexpr std::size_t relation_node_limit = 4096U;
+        if (++relation_nodes > relation_node_limit) {
+          fail(peek(), "relation expression exceeds node limit");
+        }
+        if (match("(")) {
+          if (++relation_depth > relation_depth_limit) {
+            fail(peek(), "relation expression exceeds recursion depth limit");
+          }
+          ExprPtr nested = relation_or();
+          expect(")");
+          --relation_depth;
+          return nested;
+        }
+        return make_relation_match("~", subject, parse_add());
+      };
+      relation_and = [&]() {
+        ExprPtr result = relation_atom();
+        while (match(",")) {
+          result = make_binary("and", std::move(result), relation_atom());
+        }
+        return result;
+      };
+      relation_or = [&]() {
+        ExprPtr result = relation_and();
+        while (match("|")) {
+          result = make_binary("or", std::move(result), relation_and());
+        }
+        return result;
+      };
+      ExprPtr result = relation_or();
+      result->relation_expression = true;
+      return result;
     }
     return left;
   }
@@ -861,9 +1015,20 @@ class FlatParser {
 
   ExprPtr parse_primary() {
     if (match("(")) {
-      auto result = parse_implication();
+      auto first = parse_implication();
+      if (match(",")) {
+        auto tuple = std::make_shared<Expr>();
+        tuple->kind = Expr::Kind::Construct;
+        tuple->text = "tuple";
+        tuple->line = first->line;
+        tuple->column = first->column;
+        tuple->children.push_back(std::move(first));
+        do tuple->children.push_back(parse_implication()); while (match(","));
+        expect(")");
+        return tuple;
+      }
       expect(")");
-      return result;
+      return first;
     }
     if (peek().text == "exists" || peek().text == "E" || peek().text == "all" ||
         peek().text == "A") {
@@ -1135,6 +1300,8 @@ class FlatParser {
   std::vector<Token> tokens_;
   const TypeRegistry& types_;
   std::size_t cursor_{0};
+  std::size_t expression_depth_{0};
+  std::size_t type_depth_{0};
 };
 
 // Compact functional temporal syntax, for example
@@ -1194,6 +1361,37 @@ class TemporalParser {
 
   TemporalExprPtr segment(std::size_t begin, std::size_t end) {
     if (begin >= end) throw Error("empty temporal expression");
+    std::size_t delimiter_depth = 0U;
+    std::size_t relation_operator = end;
+    for (std::size_t index = begin; index < end; ++index) {
+      if (tokens_[index].text == "(" || tokens_[index].text == "[" ||
+          tokens_[index].text == "{") {
+        ++delimiter_depth;
+      } else if (tokens_[index].text == ")" || tokens_[index].text == "]" ||
+                 tokens_[index].text == "}") {
+        if (delimiter_depth == 0U) fail(tokens_[index], "unmatched temporal delimiter");
+        --delimiter_depth;
+      } else if (tokens_[index].text == "~" && delimiter_depth == 0U) {
+        relation_operator = index;
+        break;
+      }
+    }
+    if (relation_operator != end && relation_operator + 2U == end &&
+        tokens_[relation_operator + 1U].text == "happens_before") {
+      if (relation_operator <= begin + 2U || tokens_[begin].text != "(" ||
+          tokens_[relation_operator - 1U].text != ")") {
+        fail(tokens_[relation_operator],
+             "happens_before subject must be a pair '(first, second)'");
+      }
+      const auto subjects = arguments(begin + 1U, relation_operator - 1U);
+      if (subjects.size() != 2U) {
+        fail(tokens_[relation_operator], "happens_before needs two temporal subjects");
+      }
+      return make_trace_relation_match(
+          "happens_before",
+          segment(subjects[0].first, subjects[0].second),
+          segment(subjects[1].first, subjects[1].second));
+    }
     const std::string& name = tokens_[begin].text;
     static const std::unordered_set<std::string_view> temporal_calls{
         "always", "eventually", "until", "within", "since", "never",
@@ -1240,18 +1438,10 @@ class TemporalParser {
       }
       if (name == "before") {
         if (args.size() != 2U) fail(tokens_[begin], "before needs two arguments");
-        // Strict before(first, second): first must occur at a position where
-        // second is still false, and second may not occur earlier.
-        TemporalExprPtr first = segment(args[0].first, args[0].second);
-        TemporalExprPtr second = segment(args[1].first, args[1].second);
-        return make_temporal_binary(
-            TemporalExpr::Kind::Until,
-            make_temporal_unary(TemporalExpr::Kind::Not,
-                                second),
-            make_temporal_binary(
-                TemporalExpr::Kind::And, std::move(first),
-                make_temporal_unary(TemporalExpr::Kind::Not,
-                                    std::move(second))));
+        return make_trace_relation_match(
+            "happens_before",
+            segment(args[0].first, args[0].second),
+            segment(args[1].first, args[1].second));
       }
       // weak_until(p, q) is a library-level definition: (p until q) or
       // always(p).  The Solver sees only core operators.
@@ -1323,7 +1513,7 @@ class Parser {
   TypeDefinition type_definition();
   FunctionDeclaration function_declaration();
   ActionPortDeclaration action_port_declaration();
-  State state();
+  ParsedStateDeclaration state();
   Transition transition();
   TraceDeclaration trace(const std::vector<Transition>& transitions);
   ClaimDeclaration claim();
@@ -1368,6 +1558,7 @@ struct Program::Impl {
   FunctionRegistry functions;
   std::vector<ActionPortDeclaration> action_ports;
   std::vector<State> states;
+  std::vector<StateSchema> state_schemas;
   std::vector<Transition> transitions;
   std::vector<TraceDeclaration> traces;
   std::vector<ClaimDeclaration> claims;
@@ -1376,6 +1567,7 @@ struct Program::Impl {
   std::vector<std::string> context_names;
   std::map<std::string, StateId, std::less<>> state_index;
   std::vector<std::size_t> state_positions_by_id;
+  RawKeyMap raw_key_map;
   std::map<std::string, TransitionId, std::less<>> transition_index;
   std::map<std::string, std::vector<TransitionId>, std::less<>> event_index;
   std::map<std::string, std::vector<RouteStateIndexBucket>, std::less<>>
@@ -1467,8 +1659,7 @@ DataType Parser::type() {
     expect(">");
     return DataType(DataType::Kind::Result, std::move(item), std::move(error));
   }
-  if (match("tuple") || match("relation")) {
-    const std::string constructor = tokens_[cursor_ - 1].text;
+  if (match("tuple")) {
     expect("<");
     std::vector<DataType> elements;
     do {
@@ -1478,9 +1669,27 @@ DataType Parser::type() {
       }
     } while (match(","));
     expect(">");
-    return DataType(constructor == "tuple" ? DataType::Kind::Tuple
-                                             : DataType::Kind::Relation,
-                    std::move(elements));
+    return DataType(DataType::Kind::Tuple, std::move(elements));
+  }
+  if (match("relation")) {
+    std::vector<DataType> elements;
+    bool direct = true;
+    if (match("<")) {
+      direct = false;  // v0 tuple-row compatibility form
+      do elements.push_back(type()); while (match(","));
+      expect(">");
+    } else if (match("(")) {
+      do elements.push_back(type()); while (match(","));
+      expect(")");
+    } else {
+      elements.push_back(type());
+    }
+    if (elements.empty() || elements.size() > relation_arity_limit) {
+      fail(peek(), "relation type exceeds arity limit");
+    }
+    DataType relation(DataType::Kind::Relation, std::move(elements));
+    relation.direct_relation_row = direct && relation.elements.size() == 1U;
+    return relation;
   }
   if (at(TokenKind::Identifier)) {
     const Token name = take();
@@ -1710,7 +1919,9 @@ Value Parser::initial_value(DataType expected_type) {
     return Value(std::move(tuple));
   }
   if (expected_type.kind == DataType::Kind::Relation) {
-    if (!match("~")) expect("relation");
+    if (!at("{")) {
+      if (!match("~")) expect("relation");
+    }
     expect("{");
     ValueRelation relation{expected_type.elements.size(), {}};
     const DataType row_type(DataType::Kind::Tuple, expected_type.elements);
@@ -1892,24 +2103,25 @@ std::shared_ptr<ActionExpr> Parser::block_action() {
   return parser.action();
 }
 
-State Parser::state() {
+ParsedStateDeclaration Parser::state() {
   const Token start = peek();
   expect("state");
-  State result;
-  result.line = start.line;
-  result.column = start.column;
-  result.name = identifier();
-  if (match("@")) result.context = identifier();
-  result.initial = match("initial");
-  expect(":");
-  newline();
-  indent();
-  while (!at(TokenKind::Dedent)) {
-    if (match("invariant")) {
-      expect(":");
-      result.invariants.push_back(block_expression());
-      continue;
-    }
+  ParsedStateDeclaration result;
+  StateSchema& schema = result.schema;
+  schema.line = start.line;
+  schema.column = start.column;
+  schema.name = identifier();
+  if (match("@")) schema.context = identifier();
+  schema.initial = match("initial");
+  schema.root.kind = StateSchemaNode::Kind::Product;
+  schema.root.name = schema.name;
+  schema.root.canonical_path = schema.name;
+  schema.root.line = start.line;
+  schema.root.column = start.column;
+
+  const auto field_node = [&]() {
+    StateSchemaNode node;
+    node.kind = StateSchemaNode::Kind::Value;
     Field field{"", bool_type(), Value(false), Field::Merge::Reject};
     const Token field_start = peek();
     field.name = identifier();
@@ -1927,10 +2139,192 @@ State Parser::state() {
         fail(tokens_[cursor_ - 1], "union merge needs a set type");
       }
     }
+    node.name = field.name;
+    node.value = std::move(field);
+    node.line = field_start.line;
+    node.column = field_start.column;
+    return node;
+  };
+
+  const auto inline_invariant = [&]() {
+    const Token invariant_start = peek();
+    expect("invariant");
+    expect("(");
+    std::vector<Token> expression_tokens;
+    std::size_t depth = 0U;
+    while (!(at(")") && depth == 0U)) {
+      if (at(TokenKind::End) || at(TokenKind::Newline)) {
+        fail(invariant_start, "unterminated recursive invariant");
+      }
+      Token token = take();
+      if (token.text == "(" || token.text == "[" || token.text == "{") ++depth;
+      else if (token.text == ")" || token.text == "]" || token.text == "}") --depth;
+      expression_tokens.push_back(std::move(token));
+    }
+    expect(")");
+    if (expression_tokens.empty()) fail(invariant_start, "recursive invariant is empty");
+    FlatParser parser(std::move(expression_tokens), types_);
+    ExprPtr result = parser.expression();
+    parser.expect_end();
+    return result;
+  };
+
+  std::function<StateSchemaNode()> choice_group;
+  std::function<StateSchemaNode()> control;
+  control = [&]() {
+    const Token node_start = peek();
+    StateSchemaNode node;
+    node.kind = StateSchemaNode::Kind::Control;
+    node.name = identifier();
+    node.line = node_start.line;
+    node.column = node_start.column;
+    if (match("(")) {
+      if (match(")")) fail(node_start, "nested control state cannot be empty");
+      do {
+        if (at("invariant")) node.invariants.push_back(inline_invariant());
+        else if (peek(1).text == ":") node.children.push_back(field_node());
+        else node.children.push_back(choice_group());
+      } while (match(","));
+      expect(")");
+    }
+    return node;
+  };
+  choice_group = [&]() {
+    const Token group_start = peek();
+    StateSchemaNode group;
+    group.kind = StateSchemaNode::Kind::Choice;
+    group.name = identifier();
+    group.line = group_start.line;
+    group.column = group_start.column;
+    expect("(");
+    group.children.push_back(control());
+    while (match("|")) group.children.push_back(control());
+    expect(")");
+    if (group.children.size() < 2U) {
+      fail(group_start, "nested state choice needs at least two alternatives");
+    }
+    return group;
+  };
+
+  const bool compact = match("=");
+  if (compact) {
+    schema.initial = true;
+    if (at(";")) fail(peek(), "compact recursive state cannot be empty");
+    do {
+      if (at("invariant")) schema.invariants.push_back(inline_invariant());
+      else if (peek(1).text == ":") schema.root.children.push_back(field_node());
+      else schema.root.children.push_back(choice_group());
+    } while (match(","));
+    expect(";");
     newline();
-    result.fields.push_back(std::move(field));
+  } else {
+    expect(":");
+    newline();
+    indent();
+    while (!at(TokenKind::Dedent)) {
+      if (match("invariant")) {
+        expect(":");
+        schema.invariants.push_back(block_expression());
+        continue;
+      }
+      if (peek(1).text == ":") schema.root.children.push_back(field_node());
+      else schema.root.children.push_back(choice_group());
+      static_cast<void>(match(","));
+      newline();
+    }
+    dedent();
   }
-  dedent();
+
+  constexpr std::size_t schema_depth_limit = 64U;
+  constexpr std::size_t schema_node_limit = 4096U;
+  std::size_t node_count = 1U;
+  std::set<std::string, std::less<>> canonical_paths;
+  canonical_paths.insert(schema.name);
+  std::function<void(StateSchemaNode&, std::string_view, std::size_t)> validate =
+      [&](StateSchemaNode& node, std::string_view parent, std::size_t depth) {
+        if (depth > schema_depth_limit) {
+          throw Error("recursive state schema exceeds depth limit", node.line, node.column);
+        }
+        if (++node_count > schema_node_limit) {
+          throw Error("recursive state schema exceeds node limit", node.line, node.column);
+        }
+        node.canonical_path = std::string(parent) + "." + node.name;
+        if (!canonical_paths.insert(node.canonical_path).second) {
+          throw Error("recursive state path is duplicated: '" + node.canonical_path + "'",
+                      node.line, node.column);
+        }
+        std::set<std::string, std::less<>> sibling_names;
+        for (StateSchemaNode& child : node.children) {
+          if (!sibling_names.insert(child.name).second) {
+            throw Error("recursive state repeats child '" + child.name + "'",
+                        child.line, child.column);
+          }
+          validate(child, node.canonical_path, depth + 1U);
+        }
+        if (node.kind == StateSchemaNode::Kind::Choice) {
+          if (node.children.size() < 2U ||
+              std::any_of(node.children.begin(), node.children.end(),
+                          [](const StateSchemaNode& child) {
+                            return child.kind != StateSchemaNode::Kind::Control;
+                          })) {
+            throw Error("recursive choice must contain control alternatives",
+                        node.line, node.column);
+          }
+        }
+        if (node.kind == StateSchemaNode::Kind::Value && !node.children.empty()) {
+          throw Error("typed state value cannot contain child states", node.line, node.column);
+        }
+      };
+  std::set<std::string, std::less<>> root_names;
+  for (StateSchemaNode& child : schema.root.children) {
+    if (!root_names.insert(child.name).second) {
+      throw Error("state schema repeats root child '" + child.name + "'",
+                  child.line, child.column);
+    }
+    validate(child, schema.name, 1U);
+  }
+
+  State root;
+  root.name = schema.name;
+  root.context = schema.context;
+  root.initial = schema.initial;
+  root.invariants = schema.invariants;
+  root.line = schema.line;
+  root.column = schema.column;
+  for (const StateSchemaNode& child : schema.root.children) {
+    if (child.kind == StateSchemaNode::Kind::Value) root.fields.push_back(*child.value);
+  }
+  result.lowered_states.push_back(std::move(root));
+
+  std::function<void(const StateSchemaNode&, std::vector<std::string>)> lower =
+      [&](const StateSchemaNode& node, std::vector<std::string> ancestors) {
+    if (node.kind == StateSchemaNode::Kind::Choice) {
+      const std::string context = schema.context + "::" + node.canonical_path;
+      for (std::size_t index = 0; index < node.children.size(); ++index) {
+        const StateSchemaNode& alternative = node.children[index];
+        State state;
+        state.name = alternative.canonical_path;
+        state.context = context;
+        state.initial = index == 0U;
+        state.ancestors = ancestors;
+        state.line = alternative.line;
+        state.column = alternative.column;
+        state.invariants = alternative.invariants;
+        for (const StateSchemaNode& child : alternative.children) {
+          if (child.kind == StateSchemaNode::Kind::Value) state.fields.push_back(*child.value);
+        }
+        result.lowered_states.push_back(std::move(state));
+        auto child_ancestors = ancestors;
+        child_ancestors.push_back(alternative.canonical_path);
+        for (const StateSchemaNode& child : alternative.children) {
+          lower(child, child_ancestors);
+        }
+      }
+      return;
+    }
+    for (const StateSchemaNode& child : node.children) lower(child, ancestors);
+  };
+  for (const StateSchemaNode& child : schema.root.children) lower(child, {});
   return result;
 }
 
@@ -2002,13 +2396,46 @@ Transition Parser::transition() {
   expect(":");
   newline();
   indent();
+  const auto qualified_identifier = [&]() {
+    std::string result = identifier();
+    while (match(".")) result += "." + identifier();
+    return result;
+  };
   const auto binding = [&]() {
     StateBinding result;
     const Token start_token = peek();
     result.line = start_token.line;
     result.column = start_token.column;
-    result.state = identifier();
+    result.state = qualified_identifier();
     if (match("@")) result.context = identifier();
+    return result;
+  };
+  const auto structural_bindings = [&]() {
+    const Token root_start = peek();
+    const std::string root = qualified_identifier();
+    std::vector<StateBinding> result;
+    result.push_back(StateBinding{root, {}, root_start.line, root_start.column});
+    if (match("(")) {
+      std::function<void(std::string_view)> nested = [&](std::string_view parent) {
+        const Token item_start = peek();
+        std::string relative = identifier();
+        while (match(".")) relative += "." + identifier();
+        const std::string full = root + "." +
+            (parent.empty() ? relative : std::string(parent) + "." + relative);
+        result.push_back(StateBinding{full, {}, item_start.line, item_start.column});
+        if (match("(")) {
+          do nested(parent.empty() ? relative
+                                   : std::string(parent) + "." + relative);
+          while (match(","));
+          expect(")");
+        }
+      };
+      if (!match(")")) {
+        do nested(""); while (match(","));
+        expect(")");
+      }
+    }
+    if (match("@")) result.front().context = identifier();
     return result;
   };
   const auto assignments = [&]() {
@@ -2061,23 +2488,30 @@ Transition Parser::transition() {
     if (!match(")")) {
       do {
         const Token pattern_start = peek();
-        std::vector<std::string> choices;
+        std::vector<std::vector<StateBinding>> choices;
         if (match("{")) {
-          do choices.push_back(identifier()); while (match(","));
+          do {
+            const std::string choice = qualified_identifier();
+            choices.push_back({StateBinding{choice, {}, pattern_start.line,
+                                            pattern_start.column}});
+          } while (match(","));
           expect("}");
         } else if (match("_")) {
-          choices.push_back("_");
+          choices.push_back({StateBinding{"_", {}, pattern_start.line,
+                                          pattern_start.column}});
         } else {
-          choices.push_back(identifier());
+          choices.push_back(structural_bindings());
         }
         std::string context;
         if (match("@")) context = identifier();
+        if (!context.empty()) {
+          for (auto& choice : choices) choice.front().context = context;
+        }
         std::vector<std::vector<StateBinding>> next;
         for (const auto& expansion : expansions) {
-          for (const std::string& choice : choices) {
+          for (const auto& choice : choices) {
             auto item = expansion;
-            item.push_back(
-                StateBinding{choice, context, pattern_start.line, pattern_start.column});
+            item.insert(item.end(), choice.begin(), choice.end());
             next.push_back(std::move(item));
           }
         }
@@ -2095,7 +2529,9 @@ Transition Parser::transition() {
         if (at("{") || at("_")) {
           fail(peek(), "transition targets must be exact states");
         }
-        targets.push_back(TransitionTarget{binding(), {}});
+        for (StateBinding& item : structural_bindings()) {
+          targets.push_back(TransitionTarget{std::move(item), {}});
+        }
       } while (match(","));
       expect(")");
     }
@@ -3171,7 +3607,12 @@ std::shared_ptr<Program::Impl> Parser::program() {
       if (peek(2).text == "," || peek(2).text == ";") {
         compact_states.push_back(compact_state());
       } else {
-        result->states.push_back(state());
+        ParsedStateDeclaration declaration = state();
+        result->state_schemas.push_back(std::move(declaration.schema));
+        result->states.insert(
+            result->states.end(),
+            std::make_move_iterator(declaration.lowered_states.begin()),
+            std::make_move_iterator(declaration.lowered_states.end()));
       }
     } else if (at("trans")) {
       compact_transitions.push_back(compact_transition());
@@ -3515,19 +3956,6 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         }
         return bool_type();
       }
-      if (expr->text == "in" || expr->text == "~") {
-        const bool set_member = right.kind == DataType::Kind::Set && left == *right.first;
-        const bool relation_row = right.kind == DataType::Kind::Relation &&
-            (right.direct_relation_row
-                 ? left == right.elements.front()
-                 : left == DataType(DataType::Kind::Tuple, right.elements));
-        expr->direct_relation_binding = right.kind == DataType::Kind::Relation &&
-                                        right.direct_relation_row;
-        if (!set_member && !relation_row) {
-          throw Error("membership item type does not match finite domain row type");
-        }
-        return bool_type();
-      }
       if (expr->text == "+" || expr->text == "-" || expr->text == "*" ||
           expr->text == "/") {
         const bool left_numeric = left.kind == DataType::Kind::Int ||
@@ -3540,6 +3968,24 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         if (expr->text != "/" && left.kind == DataType::Kind::Int &&
             right.kind == DataType::Kind::Int) return int_type();
         return rational_type();
+      }
+      throw Error("unknown binary operator '" + expr->text + "'");
+    }
+    case Expr::Kind::RelationMatch: {
+      const DataType left = infer_type(expr->left, state, event, locals, types);
+      const DataType right = infer_type(expr->right, state, event, std::move(locals), types);
+      if (expr->text == "in" || expr->text == "~") {
+        const bool set_member = right.kind == DataType::Kind::Set && left == *right.first;
+        const bool relation_row = right.kind == DataType::Kind::Relation &&
+            (right.direct_relation_row
+                 ? left == right.elements.front()
+                 : left == DataType(DataType::Kind::Tuple, right.elements));
+        expr->direct_relation_binding = right.kind == DataType::Kind::Relation &&
+                                        right.direct_relation_row;
+        if (!set_member && !relation_row) {
+          throw Error("membership item type does not match finite domain row type");
+        }
+        return bool_type();
       }
       const bool mixed_numeric =
           (left.kind == DataType::Kind::Int || left.kind == DataType::Kind::Rational) &&
@@ -4064,7 +4510,8 @@ void verify_temporal_expression(const TemporalExprPtr& expression,
                 expression->column);
   }
   verify_temporal_expression(expression->left, state, types);
-  if (expression->kind == TemporalExpr::Kind::And ||
+  if (expression->kind == TemporalExpr::Kind::TraceRelationMatch ||
+      expression->kind == TemporalExpr::Kind::And ||
       expression->kind == TemporalExpr::Kind::Or ||
       expression->kind == TemporalExpr::Kind::Until ||
       expression->kind == TemporalExpr::Kind::Since) {
@@ -4073,6 +4520,11 @@ void verify_temporal_expression(const TemporalExprPtr& expression,
                   expression->line, expression->column);
     }
     verify_temporal_expression(expression->right, state, types);
+  }
+  if (expression->kind == TemporalExpr::Kind::TraceRelationMatch &&
+      expression->relation != "happens_before") {
+    throw Error("unknown trace relation '" + expression->relation + "'",
+                expression->line, expression->column);
   }
 }
 
@@ -4247,6 +4699,19 @@ void verify_program(Program::Impl& program) {
     state.state_id = program.state_index.at(state.name);
     program.state_positions_by_id[state.state_id] = position;
   }
+  program.raw_key_map = RawKeyMap{};
+  for (const std::string& context : program.context_names) {
+    static_cast<void>(program.raw_key_map.add(RawSlotKind::Control, context));
+  }
+  std::set<std::string, std::less<>> raw_value_paths;
+  for (const State& state : program.states) {
+    for (const Field& field : state.fields) {
+      raw_value_paths.insert(state_key(state.context, field.name));
+    }
+  }
+  for (const std::string& path : raw_value_paths) {
+    static_cast<void>(program.raw_key_map.add(RawSlotKind::Value, path));
+  }
   for (auto& [name, procedure] : program.procedures) {
     static_cast<void>(name);
     std::set<std::string, std::less<>> contexts;
@@ -4300,8 +4765,52 @@ void verify_program(Program::Impl& program) {
     }
     std::vector<TransitionAlternative> expanded_routes;
     for (const TransitionAlternative& raw : raw_routes) {
+      TransitionAlternative recursive = raw;
+      const auto expand_source_ancestors = [&](std::vector<StateBinding>& bindings) {
+        std::vector<StateBinding> expanded;
+        for (const StateBinding& binding : bindings) {
+          if (binding.state != "_") {
+            const State& state = find_state(program, binding.state);
+            for (const std::string& ancestor : state.ancestors) {
+              if (std::none_of(bindings.begin(), bindings.end(),
+                               [&](const StateBinding& item) {
+                                 return item.state == ancestor;
+                               }) &&
+                  std::none_of(expanded.begin(), expanded.end(),
+                               [&](const StateBinding& item) {
+                                 return item.state == ancestor;
+                               })) {
+                expanded.push_back(StateBinding{ancestor, {}, binding.line, binding.column});
+              }
+            }
+          }
+          expanded.push_back(binding);
+        }
+        bindings = std::move(expanded);
+      };
+      expand_source_ancestors(recursive.from);
+      std::vector<TransitionTarget> recursive_targets;
+      for (const TransitionTarget& target : recursive.to) {
+        const State& state = find_state(program, target.binding.state);
+        for (const std::string& ancestor : state.ancestors) {
+          if (std::none_of(recursive.to.begin(), recursive.to.end(),
+                           [&](const TransitionTarget& item) {
+                             return item.binding.state == ancestor;
+                           }) &&
+              std::none_of(recursive_targets.begin(), recursive_targets.end(),
+                           [&](const TransitionTarget& item) {
+                             return item.binding.state == ancestor;
+                           })) {
+            recursive_targets.push_back(TransitionTarget{
+                StateBinding{ancestor, {}, target.binding.line,
+                             target.binding.column}, {}});
+          }
+        }
+        recursive_targets.push_back(target);
+      }
+      recursive.to = std::move(recursive_targets);
       std::vector<std::vector<StateBinding>> sources(1);
-      for (const StateBinding& binding : raw.from) {
+      for (const StateBinding& binding : recursive.from) {
         std::vector<StateBinding> choices;
         if (binding.state != "_") {
           choices.push_back(binding);
@@ -4328,9 +4837,10 @@ void verify_program(Program::Impl& program) {
         sources = std::move(next);
       }
       for (auto& source : sources) {
-        expanded_routes.push_back(TransitionAlternative{raw.name, std::move(source), raw.to,
-                                                        raw.condition, raw.action,
-                                                        raw.obligation, {}, {}});
+        expanded_routes.push_back(TransitionAlternative{
+            recursive.name, std::move(source), recursive.to,
+            recursive.condition, recursive.action,
+            recursive.obligation, {}, {}});
       }
     }
     transition.from = std::move(expanded_routes.front().from);
@@ -5123,6 +5633,29 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       }
       const Value left = evaluate(expr->left, environment);
       const Value right = evaluate(expr->right, environment);
+      if (expr->text == "+" || expr->text == "-" || expr->text == "*" ||
+          expr->text == "/") {
+        if (expr->text != "/" && left.kind() == Value::Kind::Int &&
+            right.kind() == Value::Kind::Int) {
+          if (expr->text == "+") return Value(left.as_exact_int() + right.as_exact_int());
+          if (expr->text == "-") return Value(left.as_exact_int() - right.as_exact_int());
+          return Value(left.as_exact_int() * right.as_exact_int());
+        }
+        const Rational lhs = as_exact_rational(left);
+        const Rational rhs = as_exact_rational(right);
+        if (expr->text == "+") return Value(lhs + rhs);
+        if (expr->text == "-") return Value(lhs - rhs);
+        if (expr->text == "*") return Value(lhs * rhs);
+        return Value(lhs / rhs);
+      }
+      throw Error("unknown binary operator '" + expr->text + "'");
+    }
+    case Expr::Kind::RelationMatch: {
+      // This is the single executable path for typed relation predicates.
+      // Runtime guards, invariants, functions and ClaimMonitor leaves all call
+      // evaluate(), so none may implement equality/order/membership separately.
+      const Value left = evaluate(expr->left, environment);
+      const Value right = evaluate(expr->right, environment);
       if (expr->text == "=" || expr->text == "==") return Value(equal_values(left, right));
       if (expr->text == "!=") return Value(!equal_values(left, right));
       if (expr->text == "in" || expr->text == "~") {
@@ -5150,27 +5683,12 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
                                           return canonical_compare(a, b) < 0;
                                         }));
       }
-      if (expr->text == "+" || expr->text == "-" || expr->text == "*" ||
-          expr->text == "/") {
-        if (expr->text != "/" && left.kind() == Value::Kind::Int &&
-            right.kind() == Value::Kind::Int) {
-          if (expr->text == "+") return Value(left.as_exact_int() + right.as_exact_int());
-          if (expr->text == "-") return Value(left.as_exact_int() - right.as_exact_int());
-          return Value(left.as_exact_int() * right.as_exact_int());
-        }
-        const Rational lhs = as_exact_rational(left);
-        const Rational rhs = as_exact_rational(right);
-        if (expr->text == "+") return Value(lhs + rhs);
-        if (expr->text == "-") return Value(lhs - rhs);
-        if (expr->text == "*") return Value(lhs * rhs);
-        return Value(lhs / rhs);
-      }
       const int order = compare_values(left, right);
       if (expr->text == "<") return Value(order < 0);
       if (expr->text == "<=") return Value(order <= 0);
       if (expr->text == ">") return Value(order > 0);
       if (expr->text == ">=") return Value(order >= 0);
-      throw Error("unknown binary operator '" + expr->text + "'");
+      throw Error("unknown relation match '" + expr->text + "'");
     }
     case Expr::Kind::Exists:
     case Expr::Kind::ForAll: {
@@ -5938,7 +6456,7 @@ std::string value_text(const Value& value) {
       return result + ")";
     }
     case Value::Kind::Relation: {
-      std::string result = "~{";
+      std::string result = "relation{";
       for (std::size_t index = 0; index < value.as_relation().rows.size(); ++index) {
         if (index != 0) result += ", ";
         const ValueTuple& row = value.as_relation().rows[index];
@@ -6019,6 +6537,9 @@ namespace {
 
 void collect_features(const ExprPtr& expr, FeatureSet& features) {
   if (!expr) return;
+  if (expr->relation_expression) {
+    features.insert(LanguageFeature::RelationExpression);
+  }
   switch (expr->kind) {
     case Expr::Kind::Exists: features.insert(LanguageFeature::ExistentialSearch); break;
     case Expr::Kind::ForAll: features.insert(LanguageFeature::UniversalSearch); break;
@@ -6056,6 +6577,7 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
     case Expr::Kind::Name:
     case Expr::Kind::Unary:
     case Expr::Kind::Binary:
+    case Expr::Kind::RelationMatch:
     case Expr::Kind::Count: break;
   }
   collect_features(expr->left, features);
@@ -6140,6 +6662,17 @@ FeatureSet required_features(const Program& program) {
   if (program.empty()) throw Error("cannot inspect features of an empty program");
   FeatureSet result{LanguageFeature::TypedState, LanguageFeature::ParallelEventBag};
   const Program::Impl& implementation = *program.implementation();
+  if (std::any_of(implementation.state_schemas.begin(),
+                  implementation.state_schemas.end(),
+                  [](const StateSchema& schema) {
+                    return std::any_of(
+                        schema.root.children.begin(), schema.root.children.end(),
+                        [](const StateSchemaNode& node) {
+                          return node.kind == StateSchemaNode::Kind::Choice;
+                        });
+                  })) {
+    result.insert(LanguageFeature::RecursiveStateSchema);
+  }
   if (!implementation.action_ports.empty()) result.insert(LanguageFeature::TypedActionPorts);
   if (!implementation.types.empty()) result.insert(LanguageFeature::NominalTypes);
   for (const auto& [name, definition] : implementation.types) {
@@ -6310,6 +6843,8 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::TemporalLogic: return "temporal-logic";
     case LanguageFeature::ProcedureLambda: return "procedure-lambda";
     case LanguageFeature::TransitionObligation: return "transition-obligation";
+    case LanguageFeature::RecursiveStateSchema: return "recursive-state-schema";
+    case LanguageFeature::RelationExpression: return "relation-expression";
   }
   return "unknown";
 }

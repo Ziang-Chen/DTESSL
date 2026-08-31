@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.3.5)
+set(DTESSL_VERSION 0.4.0)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -14,7 +14,7 @@ add_library(dtessl
   src/runtime.cpp
   src/language_service.cpp
   src/semantic_descriptor.cpp
-  src/configuration.cpp
+  src/embedding.cpp
   src/solver.cpp
   src/value_codec.cpp)
 # runtime.cpp and solver.cpp are included once by frontend.cpp while the typed
@@ -89,7 +89,7 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/relations.dtessl
                    Run minimum=1)
   set_tests_properties(dtessl.cli_relation_replay PROPERTIES
-                       PASS_REGULAR_EXPRESSION "paths = ~")
+                       PASS_REGULAR_EXPRESSION "paths = relation")
   add_test(NAME dtessl.cli_core_logic
            COMMAND $<TARGET_FILE:dtessl_cli>
                    replay
@@ -255,7 +255,7 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/claims/safety_verified.dtessl
                    NoFailure)
   set_tests_properties(dtessl.solver_safety_verified PROPERTIES
-                       PASS_REGULAR_EXPRESSION "verified claim=NoFailure configurations=2")
+                       PASS_REGULAR_EXPRESSION "verified claim=NoFailure embeddings=2")
   add_test(NAME dtessl.solver_eventually_counterexample
            COMMAND $<TARGET_FILE:dtessl_cli>
                    verify-claim
@@ -269,7 +269,7 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/claims/eventually_verified.dtessl
                    Completes)
   set_tests_properties(dtessl.solver_eventually_verified PROPERTIES
-                       PASS_REGULAR_EXPRESSION "verified claim=Completes configurations=2")
+                       PASS_REGULAR_EXPRESSION "verified claim=Completes embeddings=2")
   add_test(NAME dtessl.temporal_trace_claims
            COMMAND $<TARGET_FILE:dtessl_cli>
                    claims
@@ -290,4 +290,29 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/temporal_procedure.dtessl)
   set_tests_properties(dtessl.temporal_features PROPERTIES
                        PASS_REGULAR_EXPRESSION "transition-obligation")
+  add_test(NAME dtessl.recursive_embedding_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/recursive_embedding.dtessl)
+  set_tests_properties(dtessl.recursive_embedding_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.recursive_embedding_compact
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/recursive_embedding_compact.dtessl)
+  set_tests_properties(dtessl.recursive_embedding_compact PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.recursive_embedding_claim
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/recursive_embedding.dtessl
+                   Safe)
+  set_tests_properties(dtessl.recursive_embedding_claim PROPERTIES
+                       PASS_REGULAR_EXPRESSION "verified claim=Safe embeddings=3")
+  add_test(NAME dtessl.recursive_relation_features
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   features
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/recursive_embedding.dtessl)
+  set_tests_properties(dtessl.recursive_relation_features PROPERTIES
+                       PASS_REGULAR_EXPRESSION "recursive-state-schema.*relation-expression")
 endif()

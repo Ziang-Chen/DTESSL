@@ -44,7 +44,7 @@ Claim NeverNegative @ procedure Work:
   never(scheduler.credits < 0)
 
 Claim StartBeforeDone @ procedure Work:
-  before(not process.started, scheduler.done)
+  (not process.started, scheduler.done) ~ happens_before
 
 Claim WaitWeakly @ procedure Work:
   weak_until(not process.started, process.started)

@@ -1,4 +1,4 @@
-# DTESSL v0.3.5
+# DTESSL v0.4.0
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -26,12 +26,16 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 一个程序的闭环由六类定义组成：
 
 - `record / variant / enum / newtype` 定义代数与名义领域类型；
-- `state` 定义一个有类型的状态空间、初值、上下文和不变量；
+- `state` 以 `,`（合取）、`|`（选择）和 `A(B)`（嵌套）递归定义有类型状态空间；
 - `transition` 的 `case (source-set) -> (target-set)` 定义原子状态集重写；
 - `procedure` 定义持久自动机实例的初态/上下文，并可内联定义匿名局部 transition；
 - `trace` 定义原生静态事件序列或按 `@context` 捕获的动态执行投影；
 - `Claim` 可绑定 `trace/state/procedure`，并以 `always/eventually/until/within/since`
-  判定有限 trace 或 StateExpand 路径。
+  判定有限 trace 或 EmbeddingExpand 路径。
+
+语义上，`StateSchema` 是递归静态结构，`Embedding` 是它在一个时刻的具体嵌入，
+`EmbeddingExpand` 是以 Embedding 为节点的可达图。执行 lowering 使用 `RawKeyMap`
+把控制/值语义路径映射到原始 embedding 向量偏移；digest 只作证据，不作节点身份。
 
 执行器以一组可并行事件为一个离散 `round`。同一 round 的 transition 都读取同一个
 before snapshot；写集不冲突时原子合并，冲突而没有显式 merge relation 时拒绝整组事件。
@@ -49,6 +53,49 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 文件系统、网络和进程权限。
 
 ## 最小语法
+
+一般递归 state：
+
+```dtessl
+state Scheduler @ session initial:
+  Phase(Idle | Running(Stage(Reserving | Committing), attempts: int = 0,
+                         invariant(attempts >= 0)))
+  Health(Healthy | Degraded)
+  credits: int = 2
+  workers: relation WorkerId = {WorkerId(a), WorkerId(b)}
+  invariant:
+    credits >= 0
+    and WorkerId(a) ~ workers
+```
+
+同一 AST 的紧凑写法：
+
+```dtessl
+state Switch @ local = Mode(Off | On(Level(Low | High))), Health(Good | Failed), changes: int = 0;
+```
+
+`,` 是结构合取，`|` 是结构选择，`A(B)` 是递归包含。transition 可按同一结构匹配：
+
+```dtessl
+case (Switch(Mode.Off, Health.Good) @ local)
+  -> (Switch(Mode.On.Level.Low) @ local):
+```
+
+关系满足只有一个核心形式：`subject ~ relation-expression`：
+
+```dtessl
+(stateA, stateB) ~ Equal, (SameEpoch | Migratable)
+```
+
+它递归降为 `Equal(subject) and (SameEpoch(subject) or Migratable(subject))`；
+普通 `~` 不引入隐式搜索，只有 `E/A/select` 和显式有限参数域会搜索。
+左侧同样是递归的 typed value pattern，可包含 tuple、record、variant 和
+embedding 字段投影。放在 transition 中时，完整匹配规范化为
+`StructuralPattern and RelationMatch`：`case` 匹配激活的复合控制状态，`~`
+匹配其中的值关系；控制状态名不会被偷换成 string 或普通 relation row。
+`= / != / < / <= / > / >= / in / ~` 在 typed AST 中全都属于
+`RelationMatch`；runtime guard、invariant、trace 与 ClaimMonitor 共用同一验证和
+求值入口，solver 不另藏一套比较逻辑。
 
 快速建模可使用以 `;` 结尾、且从关键字到 `;` 不跨物理行的 compact 形式：
 
@@ -125,9 +172,13 @@ enum        = "enum" Name ":" INDENT { Name NEWLINE } DEDENT ;
 port        = "port" qualified-name "(" [ type { "," type } ] ")" NEWLINE ;
 function    = "function" Name "(" [ parameter { "," parameter } ] ")"
               "->" type ":" INDENT expression DEDENT ;
-state       = "state" Name [ "@" Name ] [ "initial" ] ":" INDENT
-                { field | invariant }
-              DEDENT ;
+state       = "state" Name [ "@" Name ] [ "initial" ]
+              ( ":" INDENT { state-component | invariant } DEDENT
+              | "=" state-component { "," state-component } ";" NEWLINE ) ;
+state-component = choice | field ;
+choice      = Name "(" control { "|" control } ")" ;
+control     = Name [ "(" state-component { "," state-component }
+                    { "," "invariant" "(" expression ")" } ")" ] ;
 field       = Name ":" type "=" literal [ "merge" ( "equal" | "union" ) ] NEWLINE ;
 invariant   = "invariant" ":" INDENT expression DEDENT ;
 
@@ -183,6 +234,8 @@ claim       = "Claim" Name "@" [ "trace" | "state" | "procedure" ] Name
                 | "count" Name "<=" integer NEWLINE )
               DEDENT ;
 temporal-expression = expression
+                    | "(" temporal-expression "," temporal-expression ")"
+                      "~" "happens_before"
                     | "always" "(" temporal-expression ")"
                     | "eventually" "(" temporal-expression ")"
                     | "until" "(" temporal-expression "," temporal-expression ")"
@@ -202,7 +255,8 @@ type        = "bool" | "int" | "rational" | "string"
             | "option" "<" type ">"
             | "result" "<" type "," type ">"
             | "tuple" "<" type { "," type } ">"
-            | "relation" "<" type { "," type } ">"
+            | "relation" type | "relation" "(" type { "," type } ")"
+            | "relation" "<" type { "," type } ">" // v0 compatibility
             | Name ;
 
 name-value  = Name "(" Name ")" ;
@@ -218,7 +272,10 @@ expression  = literal | name | "round" | "before." Name
             | ( "E" | "A" ) Name ( "in" | "~" ) expression ":" expression
             | "select" Name ( "in" | "~" ) expression "where" expression
                 "by" "lex" "(" expression { "," expression } ")"
+            | subject "~" relation-expression
             | constructor | record-constructor | match-expression ;
+relation-expression = relation-term { "," relation-term }
+                      { "|" relation-term { "," relation-term } } ;
 match-expression = "match" name "{"
                      pattern "->" expression
                      { "," pattern "->" expression }
@@ -245,9 +302,13 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
 `set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
 
-`ensure:` 与 `where:` 不同：`where` 只看当前 Configuration 并决定边是否可用；
+`ensure:` 与 `where:` 不同：`where` 只看当前 Embedding 并决定边是否可用；
 `ensure` 在边发生后的 successor 上激活时序 obligation，由 finite Trace monitor 或
-`StateExpand × ClaimMonitor` 检查。执行器绝不会为了判断 `eventually` 而预知未来。
+`EmbeddingExpand × ClaimMonitor` 检查。执行器绝不会为了判断 `eventually` 而预知未来。
+时序同样使用关系表面：`(a, b) ~ happens_before` 是 trace-domain 的
+`TraceRelationMatch`，可嵌套在 `always/eventually/until/within/since` 中；它不会进入
+只看当前 Embedding 的瞬时 evaluator。有限 trace 可直接判定完整嵌套，当前 Solver
+无法编译的 future-under-future 片段明确返回 `inconclusive`。
 Procedure 中直接写的 `(source-set) -> (target-set):` 是匿名局部 transition，Solver 只在
 该 Procedure 的状态空间中展开它；它不是按源码顺序执行的 workflow step。
 
@@ -341,7 +402,8 @@ dtessl repl examples/procedure_replay.dtessl
 
 - `name WorkerId` 定义开放的名义逻辑名称，值写作 `WorkerId(a)`；它不是 string，
   也不是 capability 或 authority；
-- `~Worker`、`~(A,B)`、`~{...}` 和 `item ~ relation` 构成紧凑关系语法；
+- `relation Worker`/`relation (A,B)` 定义关系值，`subject ~ relation-expression`
+  递归表达关系满足；
 - `[T]`、`[]`、`[value]` 分别表示 typed option、无值和有值，列表显式写作
   `list[...]`；
 - 布尔运算 `and/or/not`；
@@ -358,7 +420,7 @@ dtessl repl examples/procedure_replay.dtessl
 `err<T>(error)` 给出 result 的另一侧类型。初值已有声明类型上下文，因此可简写为
 `none`、`some(value)`、`ok(value)`、`err(value)`。
 
-`~T`/`~(A,B,...)` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
+`relation T`/`relation (A,B,...)` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
 每行是同 arity 的 `tuple<T...>`，按 canonical tuple 顺序排序并去重。当前关系代数包括：
 
 - `project(r, column...)`、`join(left, li, right, ri)`；
@@ -426,13 +488,13 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.3.5 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.0 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
-它按 transition 展开动态 `Configuration`，形成 `StateExpand`，再与有限
+它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限
 `ClaimMonitor` 做按需 Product 并搜索 finite prefix / deadlock / lasso 反例；
 它不是 SMT/SAT 产品名称，也不执行 ActionPlan。
-下一个增量补 derived/shared state 与更丰富的 typed destructuring，随后才加入稀疏矩阵
+下一个增量补 derived/shared state 与更丰富的值 pattern destructuring，随后才加入稀疏矩阵
 与可替换 solver backend。
 它们应继续服从同一条边界：
 transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。

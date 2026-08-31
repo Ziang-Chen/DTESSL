@@ -3,6 +3,30 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.0
+
+- Added one recursive `StateSchema` AST shared by general block and compact
+  single-line state syntax. `,` is product, `|` is choice, and `A(B)` is nested
+  state containment; typed values and local invariants may occur recursively.
+- Added recursive structural transition patterns such as
+  `Scheduler(Phase.Running.Stage.Reserving, Health.Healthy)`, with verified
+  ancestor expansion and stable canonical paths.
+- Renamed the dynamic semantic object to `Embedding` and the reachable graph to
+  `EmbeddingExpand`. Added `RawKeyMap` as semantic-path-to-raw-vector-offset
+  lowering metadata; exact raw content, not a digest, owns node identity.
+- Unified relation satisfaction as `subject ~ relation-expression`, including
+  tuple subjects and recursively nested `,` AND / `|` OR. Prefix `~` relation
+  types and literals remain compatibility-only.
+- Unified equality, ordering and membership under the typed `RelationMatch`
+  AST/evaluator used by guards, invariants, trace predicates and ClaimMonitor
+  atoms; arithmetic/boolean Binary nodes no longer hide comparison semantics.
+- Added trace-domain relation syntax `(a, b) ~ happens_before` and a distinct
+  `TraceRelationMatch` AST case. `before(a,b)` enters the same node; finite
+  traces evaluate nested formulas directly and Solver lowering rejects an
+  unsupported future nesting as `inconclusive`.
+- Added recursive parser, type/invariant validation, runtime, Solver, feature,
+  compact/general example and hostile-shape tests.
+
 ## v0.3.5
 
 - Replaced the two ad-hoc Claim cases with one typed temporal AST and
@@ -14,7 +38,7 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   optional multi-context scope declarations while retaining legacy `@ Trace`
   input compatibility.
 - Added finite-trace evaluation including logical Round 0 and on-demand
-  `StateExpand × ClaimMonitor` exploration with immediate, deadlock and lasso
+  `EmbeddingExpand × ClaimMonitor` exploration with immediate, deadlock and lasso
   counterexamples. `since` uses recurrence bits and `within`/count use bounded
   monitor counters instead of retaining trace prefixes.
 - Added procedure-local anonymous `(source-set)->(target-set)` automaton edges.
@@ -31,16 +55,16 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 
 - Added `Solver` as the high-performance semantic layer between the verified
   frontend Program and execution/exploration backends.
-- Separated static source `state` declarations from dynamic `Configuration`
+- Separated static source `state` declarations from dynamic `Embedding`
   nodes, whose canonical binary encoding contains active locations and typed
   variable valuations.
-- Added exact content-addressed Configuration deduplication and named the
-  reachable directed transition graph `StateExpand`; witness parents remain
+- Added exact content-addressed Embedding deduplication and named the
+  reachable directed transition graph `EmbeddingExpand`; witness parents remain
   paths through that graph rather than pretending it is a tree.
 - Added dense context/state/transition/route IDs with the prior string/map
   matcher retained as a benchmark and semantic-parity baseline.
 - Added bounded Claim counterexample search: `always` finds reachable violating
-  Configurations and `eventually` finds nonmatching deadlocks or lassos.
+  Embeddings and `eventually` finds nonmatching deadlocks or lassos.
   Parameterized domains and count-monitor products report `inconclusive`.
 - Added staged encoding benchmarks, four runnable Claim models, public Solver
   result/status APIs and CLI `bench` / `verify-claim` commands.

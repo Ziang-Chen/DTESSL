@@ -23,7 +23,7 @@ provider any authority.
 source -> frontend -> typed canonical module -> Solver -> projection backend
                                                    |              |
                                                    |              +-> artifact/result
-                                                   +-> StateExpand / counterexample
+                                                   +-> EmbeddingExpand / counterexample
 
 decision ActionPlan ----------------------------------> external host adapter
 ```
@@ -31,7 +31,7 @@ decision ActionPlan ----------------------------------> external host adapter
 1. A frontend owns parsing, name resolution, typing, canonicalization and core
    verification.
 2. The built-in Solver owns deterministic transition selection, dynamic
-   Configuration expansion, the StateExpand graph and Claim counterexample
+   Embedding expansion, the EmbeddingExpand graph and Claim counterexample
    search. It performs no physical effect.
 3. A projection backend consumes only a versioned canonical module and Solver
    products. Projection kinds are typed: execute, monitor, explore and formal
@@ -60,10 +60,11 @@ typed operation, row/work limits, determinism and ambiguity policy. It is
 diagnostic/negotiation data, not the private expression tree and not yet the
 CanonicalModule lowering interface.
 
-`v0.2.3` adds `logical-names` because the canonical `Name` value is neither a
-string nor a newtype, and `direct-relation-binding` because `~T` binds `T`
-rather than a legacy unary tuple. A backend missing either semantic must reject
-the corresponding program during negotiation.
+`v0.4.0` additionally advertises `recursive-state-schema` and
+`relation-expression`. `logical-names` remains separate because a canonical
+Name is neither string nor newtype; `direct-relation-binding` identifies the
+direct unary row model rather than the legacy unary tuple. A backend missing
+any required semantic must reject the program during negotiation.
 
 ```cpp
 dtessl::BackendDescriptor chen_vm{

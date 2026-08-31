@@ -816,7 +816,7 @@ TraceSnapshot replay_procedures(
       }
       if (artifact.initial_context != declaration->second.initial_context ||
           artifact.initial_states != declared_states) {
-        throw Error("procedure artifact initial configuration does not match '" +
+        throw Error("procedure artifact initial embedding does not match '" +
                     artifact.procedure + "'");
       }
       runtime.start(artifact.procedure);
@@ -1251,6 +1251,20 @@ bool evaluate_temporal(const TemporalExprPtr& expression,
       result = evaluate(expression->atom, environment).as_bool();
       break;
     }
+    case TemporalExpr::Kind::TraceRelationMatch:
+      if (expression->relation != "happens_before") {
+        throw Error("unknown trace relation '" + expression->relation + "'");
+      }
+      // Strict happens-before: the first subject must hold at a round where
+      // the second is still false, and the second may not have held earlier.
+      for (std::size_t index = position; index < frames.size(); ++index) {
+        if (at(expression->right, index)) break;
+        if (at(expression->left, index)) {
+          result = true;
+          break;
+        }
+      }
+      break;
     case TemporalExpr::Kind::Not:
       result = !at(expression->left, position);
       break;

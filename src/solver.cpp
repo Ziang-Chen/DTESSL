@@ -5,8 +5,8 @@
 
 namespace {
 
-Configuration configuration_of(const Engine& engine) {
-  return Configuration{engine.current_states(), engine.values()};
+Embedding embedding_of(const Engine& engine) {
+  return Embedding{engine.current_states(), engine.values()};
 }
 
 bool unavailable_transition(const Error& error) {
@@ -89,13 +89,13 @@ bool program_observes_round(const Program::Impl& program) {
   return false;
 }
 
-// StateExpand is the reachable graph produced by transition expansion. Its
-// node index is the matching ConfigurationStore index; it is deliberately not
+// EmbeddingExpand is the reachable graph produced by transition expansion. Its
+// node index is the matching EmbeddingStore index; it is deliberately not
 // a tree because transitions may join or form cycles.
-struct StateExpand {
+struct EmbeddingExpand {
   using Edge = std::pair<std::size_t, std::string>;
 
-  explicit StateExpand(std::size_t initial_nodes)
+  explicit EmbeddingExpand(std::size_t initial_nodes)
       : outgoing_edges(initial_nodes) {}
 
   void add_node() { outgoing_edges.emplace_back(); }
@@ -132,6 +132,8 @@ struct ClaimMonitorState {
 
 struct ClaimMonitorSpec {
   MonitorGoal goal{MonitorGoal::Point};
+  // Owns the canonical temporal core produced from trace-relation syntax.
+  TemporalExprPtr normalized_root;
   TemporalExprPtr left;
   TemporalExprPtr right;
   std::uint64_t bound{0};
@@ -143,16 +145,41 @@ bool same_temporal_tree(const TemporalExprPtr& left,
                         const TemporalExprPtr& right) {
   if (left == right) return true;
   if (!left || !right || left->kind != right->kind ||
-      left->bound != right->bound) return false;
+      left->bound != right->bound || left->relation != right->relation) return false;
   if (left->kind == TemporalExpr::Kind::Atom) return left->atom == right->atom;
   return same_temporal_tree(left->left, right->left) &&
          same_temporal_tree(left->right, right->right);
+}
+
+TemporalExprPtr lower_trace_relation_matches(const TemporalExprPtr& expression) {
+  if (!expression) return {};
+  if (expression->kind == TemporalExpr::Kind::TraceRelationMatch) {
+    if (expression->relation != "happens_before") {
+      throw Error("unknown trace relation '" + expression->relation + "'");
+    }
+    TemporalExprPtr first = lower_trace_relation_matches(expression->left);
+    TemporalExprPtr second = lower_trace_relation_matches(expression->right);
+    // (first, second) ~ happens_before
+    //   := until(not second, first and not second)
+    return make_temporal_binary(
+        TemporalExpr::Kind::Until,
+        make_temporal_unary(TemporalExpr::Kind::Not, second),
+        make_temporal_binary(
+            TemporalExpr::Kind::And, std::move(first),
+            make_temporal_unary(TemporalExpr::Kind::Not, std::move(second))));
+  }
+  if (expression->kind == TemporalExpr::Kind::Atom) return expression;
+  auto result = std::make_shared<TemporalExpr>(*expression);
+  result->left = lower_trace_relation_matches(expression->left);
+  result->right = lower_trace_relation_matches(expression->right);
+  return result;
 }
 
 bool is_past_formula(const TemporalExprPtr& expression) {
   if (!expression) return false;
   switch (expression->kind) {
     case TemporalExpr::Kind::Atom: return true;
+    case TemporalExpr::Kind::TraceRelationMatch: return false;
     case TemporalExpr::Kind::Not:
       return is_past_formula(expression->left);
     case TemporalExpr::Kind::And:
@@ -189,8 +216,9 @@ std::optional<ClaimMonitorSpec> compile_claim_monitor(
     spec.counted_transition = claim.transition;
     return spec;
   }
-  const TemporalExprPtr& property = claim.property;
+  const TemporalExprPtr property = lower_trace_relation_matches(claim.property);
   if (!property) return std::nullopt;
+  spec.normalized_root = property;
   if (property->kind == TemporalExpr::Kind::Always &&
       is_past_formula(property->left)) {
     spec.goal = MonitorGoal::Always;
@@ -278,6 +306,7 @@ bool evaluate_past_formula(
     case TemporalExpr::Kind::Eventually:
     case TemporalExpr::Kind::Until:
     case TemporalExpr::Kind::Within:
+    case TemporalExpr::Kind::TraceRelationMatch:
       throw Error("future temporal operator reached a past monitor");
   }
   memo.emplace(expression.get(), result);
@@ -434,13 +463,17 @@ Solver::Solver(Program program, SolverEncoding encoding)
   if (program_.empty()) throw Error("cannot construct a Solver from an empty program");
 }
 
-Configuration Solver::initial_configuration() const {
-  return configuration_of(Engine(program_, encoding_));
+Embedding Solver::initial_embedding() const {
+  return embedding_of(Engine(program_, encoding_));
+}
+
+const RawKeyMap& Solver::raw_key_map() const {
+  return program_.implementation()->raw_key_map;
 }
 
 ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
                                       SolverLimits limits) const {
-  if (limits.max_configurations == 0U || limits.max_depth == 0U) {
+  if (limits.max_embeddings == 0U || limits.max_depth == 0U) {
     throw Error("Solver limits must be positive");
   }
   const Program::Impl& program = *program_.implementation();
@@ -457,7 +490,7 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
     result.status = ClaimSolveStatus::Inconclusive;
     result.detail =
         "round-dependent semantics need an explicit finite time model in the "
-        "StateExpand product";
+        "EmbeddingExpand product";
     return result;
   }
   const std::optional<ClaimMonitorSpec> compiled = compile_claim_monitor(*claim);
@@ -514,15 +547,15 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
 
   struct ProductNode {
     Engine engine;
-    std::size_t configuration{0};
+    std::size_t embedding{0};
     ClaimMonitorState monitor;
     std::vector<ActiveObligation> obligations;
     std::optional<std::size_t> parent;
     std::string transition;
     std::size_t depth{0};
   };
-  ConfigurationStore configurations;
-  const auto root = configurations.insert(configuration_of(initial));
+  EmbeddingStore embeddings;
+  const auto root = embeddings.insert(embedding_of(initial));
   ClaimMonitorState empty_monitor;
   empty_monitor.since_values.assign(monitor.since_slots.size(), 0U);
   ClaimMonitorState initial_monitor =
@@ -532,11 +565,11 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
   nodes.push_back(ProductNode{std::move(initial), root.index,
                               std::move(initial_monitor),
                               std::move(initial_obligations), {}, {}, 0U});
-  StateExpand state_expand(1U);
-  std::vector<std::vector<StateExpand::Edge>> product_edges(1U);
-  std::map<std::pair<std::string, std::string>, std::size_t> product_index;
+  EmbeddingExpand state_expand(1U);
+  std::vector<std::vector<EmbeddingExpand::Edge>> product_edges(1U);
+  std::map<std::pair<std::size_t, std::string>, std::size_t> product_index;
   product_index.emplace(
-      std::pair{configurations.at(root.index).digest,
+      std::pair{root.index,
                 monitor_key(nodes.front().monitor) +
                     obligation_key(nodes.front().obligations)}, 0U);
   std::set<std::string, std::less<>> monitor_states{
@@ -553,16 +586,16 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
     frames.reserve(path.size());
     for (const std::size_t item : path) {
       const ProductNode& node = nodes[item];
-      const ConfigurationRecord& configuration =
-          configurations.at(node.configuration);
-      frames.push_back(CounterexampleFrame{node.depth, configuration.digest,
+      const EmbeddingRecord& embedding =
+          embeddings.at(node.embedding);
+      frames.push_back(CounterexampleFrame{node.depth, embedding.digest,
                                             node.transition,
-                                            configuration.configuration});
+                                            embedding.embedding});
     }
     return frames;
   };
   const auto update_counts = [&]() {
-    result.explored_configurations = configurations.size();
+    result.explored_embeddings = embeddings.size();
     result.explored_product_states = nodes.size();
     result.claim_monitor_states = monitor_states.size();
   };
@@ -570,7 +603,7 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
   if (nodes.front().monitor.phase == MonitorPhase::Violated) {
     result.status = ClaimSolveStatus::Counterexample;
     result.counterexample = counterexample(0U);
-    result.detail = "initial Configuration is rejected by ClaimMonitor";
+    result.detail = "initial Embedding is rejected by ClaimMonitor";
     update_counts();
     return result;
   }
@@ -591,7 +624,7 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
 
   std::size_t cursor = 0;
   bool depth_limited = false;
-  bool configuration_limited = false;
+  bool embedding_limited = false;
   bool parameterized_inputs = false;
 
   while (cursor < nodes.size()) {
@@ -635,26 +668,22 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
       }
       enabled_any = true;
       ++result.explored_edges;
-      Configuration configuration = configuration_of(successor);
-      const std::string digest = configuration_digest(configuration);
-      std::size_t configuration_index = 0;
-      if (const auto existing = configurations.find(digest)) {
-        if (!(configurations.at(*existing).configuration == configuration)) {
-          throw Error("Configuration digest collision in StateExpand");
-        }
-        configuration_index = *existing;
+      Embedding embedding = embedding_of(successor);
+      std::size_t embedding_index = 0;
+      if (const auto existing = embeddings.find(embedding)) {
+        embedding_index = *existing;
       } else {
-        if (nodes.size() >= limits.max_configurations) {
-          configuration_limited = true;
+        if (nodes.size() >= limits.max_embeddings) {
+          embedding_limited = true;
           continue;
         }
-        const auto inserted = configurations.insert(
-            std::move(configuration), nodes[cursor].configuration,
+        const auto inserted = embeddings.insert(
+            std::move(embedding), nodes[cursor].embedding,
             step.transition);
-        configuration_index = inserted.index;
+        embedding_index = inserted.index;
         state_expand.add_node();
       }
-      state_expand.add_edge(nodes[cursor].configuration, configuration_index,
+      state_expand.add_edge(nodes[cursor].embedding, embedding_index,
                             step.transition);
       ClaimMonitorState successor_monitor = advance_monitor(
           monitor, nodes[cursor].monitor, successor, step.transition);
@@ -664,19 +693,19 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
       const std::string next_monitor_key = monitor_key(successor_monitor) +
           obligation_key(successor_obligations);
       monitor_states.insert(next_monitor_key);
-      const auto key = std::pair{digest, next_monitor_key};
+      const auto key = std::pair{embedding_index, next_monitor_key};
       std::size_t successor_index = 0;
       if (const auto existing = product_index.find(key);
           existing != product_index.end()) {
         successor_index = existing->second;
       } else {
-        if (nodes.size() >= limits.max_configurations) {
-          configuration_limited = true;
+        if (nodes.size() >= limits.max_embeddings) {
+          embedding_limited = true;
           continue;
         }
         successor_index = nodes.size();
         product_index.emplace(key, successor_index);
-        nodes.push_back(ProductNode{std::move(successor), configuration_index,
+        nodes.push_back(ProductNode{std::move(successor), embedding_index,
                                     std::move(successor_monitor),
                                     std::move(successor_obligations), cursor,
                                     step.transition, nodes[cursor].depth + 1U});
@@ -766,17 +795,17 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
       result.status = ClaimSolveStatus::Counterexample;
       result.counterexample = counterexample(cycle_nodes.front());
       for (std::size_t index = 1U; index < cycle_nodes.size(); ++index) {
-        const ConfigurationRecord& configuration =
-            configurations.at(nodes[cycle_nodes[index]].configuration);
+        const EmbeddingRecord& embedding =
+            embeddings.at(nodes[cycle_nodes[index]].embedding);
         result.counterexample.push_back(CounterexampleFrame{
-            result.counterexample.back().depth + 1U, configuration.digest,
-            cycle_transitions[index - 1U], configuration.configuration});
+            result.counterexample.back().depth + 1U, embedding.digest,
+            cycle_transitions[index - 1U], embedding.embedding});
       }
-      const ConfigurationRecord& target =
-          configurations.at(nodes[cycle_nodes.front()].configuration);
+      const EmbeddingRecord& target =
+          embeddings.at(nodes[cycle_nodes.front()].embedding);
       result.counterexample.push_back(CounterexampleFrame{
           result.counterexample.back().depth + 1U, target.digest,
-          cycle_transitions.back(), target.configuration});
+          cycle_transitions.back(), target.embedding});
       result.detail =
           "pending temporal obligation has a reachable accepting-cycle counterexample";
       update_counts();
@@ -788,13 +817,13 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
   if (parameterized_inputs) {
     result.status = ClaimSolveStatus::Inconclusive;
     result.detail = "parameterized transitions need explicit finite input domains";
-  } else if (depth_limited || configuration_limited) {
+  } else if (depth_limited || embedding_limited) {
     result.status = ClaimSolveStatus::BoundedVerified;
     result.detail = "no counterexample found within configured Solver bounds";
   } else {
     result.status = ClaimSolveStatus::Verified;
     result.detail =
-        "finite StateExpand x ClaimMonitor product exhausted without a counterexample";
+        "finite EmbeddingExpand x ClaimMonitor product exhausted without a counterexample";
   }
   return result;
 }

@@ -276,7 +276,7 @@ struct ProcedureInjection {
 };
 
 // Complete replay input for one procedure. v0.3 artifacts start from the
-// declared initial configuration; checkpoint restoration is deliberately a
+// declared initial embedding; checkpoint restoration is deliberately a
 // later extension of this same shape.
 struct ProcedureArtifact {
   std::string procedure;
@@ -406,7 +406,7 @@ class Engine {
          std::map<std::string, std::string, std::less<>> initial_states,
          SolverEncoding encoding);
 
-  // A procedure is only a named Engine entry configuration. It supplies the
+  // A procedure is only a named Engine entry embedding. It supplies the
   // initial orthogonal states and lexical entry context; all later progress is
   // still selected by the program's global transition engine.
   [[nodiscard]] static Engine from_procedure(Program program,

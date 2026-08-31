@@ -2,7 +2,7 @@
 
 Status labels used below:
 
-- **Implemented**: accepted and executed through the `v0.3.5` temporal Solver slice.
+- **Implemented**: accepted and executed through the `v0.4.0` recursive Embedding slice.
 - **P0**: required for the complete executable modeling core.
 - **P1**: standard library or standard dialect built on the core.
 - **P2**: external solver, exporter or advanced assurance integration.
@@ -16,7 +16,7 @@ These rules override any earlier v0 experimental syntax or implementation:
 1. A `procedure` is one persistent automaton instance built from DTESSL
    `state` and `transition` definitions. It is not a workflow script, trace or
    transition list.
-2. Replay replays a procedure: its initial configuration, typed context
+2. Replay replays a procedure: its initial embedding, typed context
    injections and resulting logical history. Transition occurrences and the
    dynamic DAG are recomputed evidence, never authoritative replay input.
 3. Capture either selects complete procedures or accepts a state/transition/
@@ -238,7 +238,7 @@ shared input topology: Relation<Node, Node>
 - `bool`, exact bounded/unbounded `int`, exact `rational`, `string`, `bytes`.
 - `[T]` options with `[]`/`[value]`, plus `result<T,E>`, explicit
   `list<T> = list[...]`, `set<T>`, `map<K,V>` and `bag<T>`.
-- direct unary `~T`, tuple relation `~(A,B,...)` and deterministic iteration.
+- direct unary `relation T`, tuple `relation (A,B,...)` and deterministic iteration.
 - records, variants, enums and nominal `newtype`.
 - `name T` with nominal logical atoms `T(a)`, separate from string text and
   from authority-bearing host references.
@@ -262,8 +262,20 @@ project/equijoin/compose/inverse/closure/set algebra, `E/A`, deterministic
 `select ... by lex`, typed static search-plan summaries and explicit row/work
 budgets. Its executable contract is frozen in `RELATION_SEARCH_V1.md`.
 
-The `v0.2.3` surface adds first-class canonical logical names, direct
-unary-record relations, `~` relation matching and bracket option forms. Legacy
+The `v0.4.0` surface fixes `~` to one meaning: recursively typed
+`subject ~ relation-expression`, with comma conjunction and pipe disjunction.
+The typed AST names this predicate `RelationMatch`. Both its value subject and
+relation expression retain recursive structure. In a transition it combines
+with the recursive control-state selector as
+`TransitionMatch = StructuralPattern and RelationMatch`; it does not turn a
+control location into an untyped value and does not perform the transition.
+At the semantic layer, relation is the umbrella: instantaneous comparison and
+membership are `RelationMatch`; trace-position/order formulas are the separate
+recursive `TraceRelation` branch. The latter may contain temporal operator
+cases because its domain is a trace rather than one Embedding, but both branches
+enter verification and Solver through the same typed predicate boundary.
+It retains first-class canonical logical names, direct unary-record relations
+and bracket option forms. Legacy
 `relation<T...>`, `in`, `option<T>`, `none` and `some` remain accepted during
 v0 migration, but canonical value rendering uses the compact forms.
 
@@ -302,28 +314,42 @@ resolver are a runtime verification error. `choose` belongs to `spec` mode.
 
 ## 6. State definitions
 
-Current flat fields are retained as sugar for `data`. The target form is:
+The implemented form is one recursive algebra rather than separate control and
+data languages:
 
-```text
+```dtessl
 state Scheduler @ fabric initial:
-  data:
-    mode: Mode = Idle
-    ready: set<TaskId> = {}
-    capacity: bag<Resource> = {}
-    bindings: set<Binding<Provider>> = {}
-
-  derive:
-    available(t) = E p in bindings: satisfies(p, t.requirement)
+  Phase(Idle | Running(Stage(Reserve | Commit), attempts: int = 0,
+                         invariant(attempts >= 0)))
+  Health(Healthy | Degraded)
+  ready: set<TaskId> = {}
+  providers: relation Provider = {}
 
   invariant:
-    capacity >= 0
-    disjoint(running, cancelled)
+    self ~ ValidScheduler, (HasCapacity | MayQueue)
 ```
 
-A state can therefore contain domain data, named resource values, derived
-relations and invariants. Higher-order facts such as “transition T occurred N
-times” are modeled over the explicit trace/history projection, not compiler
-magic.
+`,` is product/conjunction, `|` is choice/disjunction and `A(B)` recursively
+contains B. A typed value leaf is semantically a valued state component. A
+choice leaf is a finite control component. Both belong to the same recursive
+`StateSchema` and concrete `Embedding`, while `@context` remains the instance
+address rather than another mutable field.
+
+General and semicolon-terminated compact declarations construct the same AST.
+Recursive validation rejects duplicate sibling/path names, empty/singleton
+choices, invalid local invariants, excessive depth and excessive node count.
+Lowering assigns stable semantic paths and uses `RawKeyMap` to map them to raw
+embedding-vector offsets. `EmbeddingExpand` operates on semantic Embeddings;
+the dense vectors are implementation details.
+
+State-local invariants filter initial and successor Embeddings; they never
+generate repairs or hidden search. Candidate-specific conditions remain in
+transition `where`, temporal obligations in `ensure`, and global/path
+properties in `Claim`. Future `derive` values remain planned and must be
+recomputable rather than silently stored.
+
+Higher-order facts such as “transition T occurred N times” are modeled over the
+explicit trace/history projection, not compiler magic.
 
 State may carry two orthogonal standard axes:
 
@@ -377,7 +403,7 @@ transition Assign @ Submit(task: Task):
   runtime mode.
 - `ensure:` is a path-local temporal obligation activated on the selected
   successor. It is checked by the Solver/monitor product and never used as an
-  oracle-like runtime guard. `where` remains the only current-Configuration
+  oracle-like runtime guard. `where` remains the only current-Embedding
   enablement predicate.
 
 ## 8. Guard, predicate, requires and scheduler
@@ -461,6 +487,12 @@ DTESSL inputs.
   `since`. `never`, `before` and `weak_until` are standard frontend definitions
   lowered into that basis; ordinary typed `function` continues to define the
   predicate leaves. `count Transition <= N` lowers to the same monitor product.
+- Trace ordering uses the same relational surface. In particular,
+  `(first, second) ~ happens_before` is a typed `TraceRelationMatch`, and
+  `before(first, second)` is compatibility sugar for that node. Temporal
+  relations may nest inside temporal formulas. Finite trace evaluation supports
+  arbitrary accepted nesting; bounded/unbounded Solver fragments must return
+  `inconclusive` for a nesting they cannot compile, never optimistic success.
   A finite open trace returns `pending` unless it
   already contains a decisive counterexample or witness. A closed trace can
   return `satisfied` or `violated`; positive satisfaction is downgraded to
@@ -521,7 +553,7 @@ first bounded `ScratchPool` for trivially destructible temporary objects.
 
 ## 12. Claims and compositional automata
 
-Claims do not mutate state. Implemented v0.3.5 examples are:
+Claims do not mutate state. Implemented v0.4.0 examples are:
 
 ```dtessl
 Claim Safe @ procedure Session @ (security, workflow):
@@ -537,7 +569,7 @@ Claim AuthorizedHistory @ trace Audit:
 Predicate leaves reuse the state/transition expression, relation and finite
 search engine. The frontend lowers temporal structure to a typed AST; the
 Solver compiles the supported deterministic fragment to `ClaimMonitor`, then
-explores `StateExpand × ClaimMonitor`. A `since` subformula stores its recurrence
+explores `EmbeddingExpand × ClaimMonitor`. A `since` subformula stores its recurrence
 bit, not a copy of the history. `eventually` and strong `until` use waiting
 deadlock/cycle detection; `within` uses a bounded counter. Unsupported nesting
 returns `inconclusive`, never an optimistic proof.

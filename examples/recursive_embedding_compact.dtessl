@@ -1,0 +1,6 @@
+state Switch @ local = Mode(Off | On(Level(Low | High), stable: bool = true, invariant(stable))), Health(Good | Failed), changes: int = 0;
+
+transition TurnOn():
+  case (Switch(Mode.Off, Health.Good) @ local) -> (Switch(Mode.On.Level.Low) @ local):
+    set @ local:
+      changes = before.local.changes + 1
