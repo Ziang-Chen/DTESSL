@@ -172,7 +172,7 @@ enum        = "enum" Name ":" INDENT { Name NEWLINE } DEDENT ;
 port        = "port" qualified-name "(" [ type { "," type } ] ")" NEWLINE ;
 function    = "function" Name "(" [ parameter { "," parameter } ] ")"
               "->" type ":" INDENT expression DEDENT ;
-state       = "state" Name [ "@" Name ] [ "initial" ]
+state       = "state" Name [ "@" Name ] [ "initial" ] [ extensions ]
               ( ":" INDENT { state-component | invariant } DEDENT
               | "=" state-component { "," state-component } ";" NEWLINE ) ;
 state-component = choice | field ;
@@ -186,12 +186,15 @@ transition  = "transition" Name transition-head ":" INDENT
                 case { case }
               DEDENT ;
 transition-head = "(" [ parameter { "," parameter } ] ")"
-                    [ "@" scope optimizer ]
-                | "@" scope optimizer
+                    [ "@" scope ] [ extensions ]
+                | "@" scope [ extensions ]
                     "(" [ parameter { "," parameter } ] ")"
                 | "@" legacy-event
                     "(" [ parameter { "," parameter } ] ")" ;
-optimizer   = "[" "optimized_score" "=" expression "]" ;
+extensions  = "[" extension { "," extension } "]" ;
+extension   = "capture" "=" capture-target { "|" capture-target }
+            | "optimized_score" "=" expression ;
+capture-target = Name [ "/" Name ] ;
 case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                 [ "where" ":" INDENT expression DEDENT ]
                 [ "set" ":" INDENT
@@ -204,7 +207,7 @@ state-pattern-set = "(" state-pattern { "," state-pattern } ")" ;
 state-pattern = ( Name | "{" Name { "," Name } "}" | "_" ) [ "@" Name ] ;
 exact-state-set = "(" state-binding { "," state-binding } ")" ;
 state-binding = Name [ "@" Name ] ;
-procedure   = "procedure" Name "@" Name ":" INDENT
+procedure   = "procedure" Name "@" Name [ extensions ] ":" INDENT
                 "initial" exact-state-set NEWLINE
                 { anonymous-transition }
               DEDENT ;
@@ -367,6 +370,21 @@ typed expression 封装；只能读取
 injection、所有 RoundId（包括空闲帧）和派生 decision，输出 `ProcedureArtifact` 并标记
 `replayable=yes`。这比裁剪单条因果边更宽，但不会漏依赖。`capture projected` 只供观察，始终
 `replayable=no`，也不会生成可冒充完整重放输入的 artifact。
+
+`state`、`transition`、`procedure` 可用统一后缀扩展把分散的 capture seed 汇入显式 `trace`：
+
+```dtessl
+state Active @ session [capture=Audit/default | Debug/sessionA]:
+transition Dispatch() @ scheduler [capture=Audit/default]:
+procedure Session @ system [capture=Audit/default]:
+```
+
+这里没有第二套 capture 声明。`Audit/default` 汇入 `trace Audit`；非默认 session 形成
+`Trace/Session` 实例。若只有分散标注而没有显式 trace，生成的实例默认是
+`capture projected`，不能冒充可重放证据；只有显式 `capture closed` 模板才赋予闭包行为。
+state seed 同时匹配进入和离开该 state 的 decision，transition family seed 匹配它的命名
+case。不同 seed 是并集；命中后的行为是 `mark -> causal/procedure closure -> emit trace`，
+不改变 relation matcher 的真假语义，也不执行状态转移。
 
 REPL 直接暴露同一套 RuntimeContext，而不是另造执行器：
 

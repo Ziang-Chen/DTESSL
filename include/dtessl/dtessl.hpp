@@ -229,6 +229,9 @@ struct StepResult {
   std::uint64_t procedure_revision{0};
   // Qualified as Transition.caseName when the selected case is named.
   std::string transition;
+  // Exact Transition family identity, kept separately so family selectors do
+  // not infer structure from a display string.
+  std::string transition_family;
   std::string case_name;
   // Present when an explicit transition optimizer resolved the candidate.
   // Higher exact numeric scores are better; ties are rejected.
@@ -236,6 +239,9 @@ struct StepResult {
   std::optional<Value> optimized_score;
   std::string from_state;
   std::string to_state;
+  // Active state per context before this decision. Capture relations use both
+  // sides so a state seed observes entering and leaving transitions.
+  std::map<std::string, std::string, std::less<>> before_active_states;
   // Active state per explicit @ context after this decision. The empty
   // context is the legacy single-state root.
   std::map<std::string, std::string, std::less<>> active_states;
@@ -329,6 +335,7 @@ struct TraceSnapshot {
   TraceCaptureMode mode{TraceCaptureMode::Static};
   bool closed{false};
   std::set<std::string, std::less<>> captured_contexts;
+  std::set<std::pair<std::string, std::string>> captured_states;
   std::set<std::string, std::less<>> captured_paths;
   std::set<std::string, std::less<>> captured_procedures;
   std::vector<ParallelStepResult> rounds;

@@ -503,6 +503,25 @@ DTESSL inputs.
   `ProcedureArtifact` values. A captured procedure retains one immutable frame
   for every global RoundId, including idle frames, and can be queried by
   `(trace, procedure, RoundId)`.
+- Capture selection is a typed relation match with a distinct disposition, not
+  a parallel string-filter subsystem. Its subject is a State Embedding,
+  Transition occurrence or Procedure instance. A match marks the occurrence,
+  expands its actual causal/procedure closure and emits it to the trace; a
+  miss is ignored. The ordinary Transition disposition commits an Embedding,
+  while Claim/Property dispositions report evidence or failure. All three
+  reuse the same typed relation and structural matching foundation.
+- A postfix `[capture=Trace/Session | Other/default]` on `state`, `transition`
+  or `procedure` contributes distributed seeds to the corresponding trace
+  instance. `default` maps to the bare trace name; other sessions use the
+  stable `Trace/Session` identity. Multiple annotations aggregate by that
+  identity. State seeds observe both entry and exit, Transition family seeds
+  include named cases, and seed kinds are OR alternatives rather than an
+  accidental AND filter.
+- A distributed-only trace instance is `projected` and non-replayable. An
+  explicit `trace` may supply the centralized `closed/projected` mode and its
+  filters; a non-default session clones that explicit template before merging
+  its distributed seeds. Only explicit `capture closed` may produce a
+  replayable closure.
 - A trace may put `capture closed/projected:` after `replay:` to declare both a
   replay input and a capture projection; the section order is semantic and
   cannot be reversed.

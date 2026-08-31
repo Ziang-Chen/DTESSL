@@ -5,6 +5,16 @@ Semantic Versioning. See `docs/VERSIONING.md`.
 
 ## v0.4.0
 
+- Added unified declaration extensions on `state`, `transition` and
+  `procedure`, including `[capture=Trace/Session | Other/default]` and the
+  existing transition optimizer in the same bracket grammar.
+- Distributed capture annotations now aggregate into trace instances. A state
+  seed observes entry and exit, a Transition family seed includes named cases,
+  and state/path/procedure seeds use OR semantics through one typed capture
+  relation matcher.
+- Closed capture now expands matched runtime occurrences to their actual
+  causal/procedure closure; distributed-only traces remain projected and
+  non-replayable unless an explicit closed trace template supplies that mode.
 - Unified transition guards, state invariants, transition ensures and named
   Claims under one typed Property truth/disposition core. Their formulas and
   monitor compiler are shared while false remains explicitly mapped to

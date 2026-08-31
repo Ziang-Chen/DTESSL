@@ -429,6 +429,19 @@ using TransitionId = std::size_t;
 using RouteId = std::size_t;
 constexpr std::size_t invalid_dense_id = std::numeric_limits<std::size_t>::max();
 
+struct CaptureBinding {
+  std::string trace;
+  std::string session{"default"};
+
+  friend bool operator<(const CaptureBinding& left,
+                        const CaptureBinding& right) {
+    return std::tie(left.trace, left.session) <
+           std::tie(right.trace, right.session);
+  }
+};
+
+using CaptureBindings = std::set<CaptureBinding>;
+
 struct State {
   std::string name;
   std::string context;
@@ -440,6 +453,7 @@ struct State {
   std::vector<std::string> ancestors;
   std::vector<Field> fields;
   std::vector<ExprPtr> invariants;
+  CaptureBindings captures;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -465,6 +479,7 @@ struct StateSchema {
   bool initial{false};
   StateSchemaNode root;
   std::vector<ExprPtr> invariants;
+  CaptureBindings captures;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -546,6 +561,9 @@ struct Transition {
   // Empty for package transitions.  Anonymous transitions declared inside a
   // procedure are visible only to that procedure's automaton instance.
   std::string procedure_scope;
+  // Optional declaration/observation context introduced by a postfix
+  // extension header. It is not an Event alias or authority.
+  std::string declaration_context;
   std::string event;
   std::string optimization_scope;
   ExprPtr optimized_score;
@@ -559,6 +577,7 @@ struct Transition {
   std::shared_ptr<struct TemporalExpr> obligation;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
+  CaptureBindings captures;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -668,6 +687,7 @@ struct ProcedureDeclaration {
   std::string initial_context;
   std::vector<StateBinding> initial_states;
   std::vector<Transition> anonymous_transitions;
+  CaptureBindings captures;
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -1536,6 +1556,12 @@ class Parser {
   std::shared_ptr<ActionExpr> block_action();
   std::vector<Token> take_block_tokens();
 
+  struct DeclarationExtensions {
+    CaptureBindings captures;
+    ExprPtr optimized_score;
+  };
+  DeclarationExtensions declaration_extensions(bool allow_optimizer);
+
   std::vector<Token> tokens_;
   std::size_t cursor_{0};
   TypeRegistry types_;
@@ -2103,6 +2129,65 @@ std::shared_ptr<ActionExpr> Parser::block_action() {
   return parser.action();
 }
 
+Parser::DeclarationExtensions Parser::declaration_extensions(
+    bool allow_optimizer) {
+  DeclarationExtensions result;
+  expect("[");
+  bool first = true;
+  while (!at("]")) {
+    if (!first) expect(",");
+    first = false;
+    const Token key_token = peek();
+    const std::string key = identifier();
+    expect("=");
+    if (key == "capture") {
+      do {
+        CaptureBinding binding;
+        binding.trace = identifier();
+        if (match("/")) binding.session = identifier();
+        if (!result.captures.insert(binding).second) {
+          fail(key_token, "capture extension repeats Trace/Session target");
+        }
+      } while (match("|"));
+      continue;
+    }
+    if (key == "optimized_score") {
+      if (!allow_optimizer) {
+        fail(key_token, "optimized_score is valid only on a transition");
+      }
+      if (result.optimized_score) {
+        fail(key_token, "extension repeats optimized_score");
+      }
+      std::vector<Token> expression_tokens;
+      std::size_t depth = 0U;
+      while (!(depth == 0U && (at(",") || at("]")))) {
+        if (at(TokenKind::End) || at(TokenKind::Newline)) {
+          fail(key_token, "unterminated optimized_score extension");
+        }
+        Token token = take();
+        if (token.text == "(" || token.text == "[" || token.text == "{") {
+          ++depth;
+        } else if (token.text == ")" || token.text == "]" || token.text == "}") {
+          if (depth == 0U) fail(token, "unbalanced optimized_score extension");
+          --depth;
+        }
+        expression_tokens.push_back(std::move(token));
+      }
+      if (expression_tokens.empty()) {
+        fail(key_token, "optimized_score needs an expression");
+      }
+      FlatParser parser(std::move(expression_tokens), types_);
+      result.optimized_score = parser.expression();
+      parser.expect_end();
+      continue;
+    }
+    fail(key_token, "unknown declaration extension '" + key + "'");
+  }
+  expect("]");
+  if (first) fail(peek(), "declaration extension cannot be empty");
+  return result;
+}
+
 ParsedStateDeclaration Parser::state() {
   const Token start = peek();
   expect("state");
@@ -2112,7 +2197,21 @@ ParsedStateDeclaration Parser::state() {
   schema.column = start.column;
   schema.name = identifier();
   if (match("@")) schema.context = identifier();
-  schema.initial = match("initial");
+  bool saw_extensions = false;
+  for (;;) {
+    if (match("initial")) {
+      if (schema.initial) fail(start, "state repeats initial");
+      schema.initial = true;
+      continue;
+    }
+    if (at("[")) {
+      if (saw_extensions) fail(peek(), "state repeats declaration extensions");
+      saw_extensions = true;
+      schema.captures = declaration_extensions(false).captures;
+      continue;
+    }
+    break;
+  }
   schema.root.kind = StateSchemaNode::Kind::Product;
   schema.root.name = schema.name;
   schema.root.canonical_path = schema.name;
@@ -2289,6 +2388,7 @@ ParsedStateDeclaration Parser::state() {
   root.context = schema.context;
   root.initial = schema.initial;
   root.invariants = schema.invariants;
+  root.captures = schema.captures;
   root.line = schema.line;
   root.column = schema.column;
   for (const StateSchemaNode& child : schema.root.children) {
@@ -2310,6 +2410,7 @@ ParsedStateDeclaration Parser::state() {
         state.line = alternative.line;
         state.column = alternative.column;
         state.invariants = alternative.invariants;
+        state.captures = schema.captures;
         for (const StateSchemaNode& child : alternative.children) {
           if (child.kind == StateSchemaNode::Kind::Value) state.fields.push_back(*child.value);
         }
@@ -2336,31 +2437,24 @@ Transition Parser::transition() {
   result.column = start.column;
   result.name = identifier();
   result.event = result.name;
-  const auto optimization = [&]() {
-    expect("[");
-    expect("optimized_score");
-    expect("=");
-    std::vector<Token> expression_tokens;
-    std::size_t nested_brackets = 0;
-    while (!(at("]") && nested_brackets == 0U)) {
-      if (at(TokenKind::End) || at(TokenKind::Newline)) {
-        fail(peek(), "unterminated optimized_score annotation");
+  bool saw_extensions = false;
+  const auto apply_extensions = [&](DeclarationExtensions extensions) {
+    if (saw_extensions) fail(peek(), "transition repeats declaration extensions");
+    saw_extensions = true;
+    result.captures = std::move(extensions.captures);
+    result.optimized_score = std::move(extensions.optimized_score);
+    if (result.optimized_score) {
+      if (result.declaration_context.empty()) {
+        fail(peek(), "optimized_score requires an explicit @ context");
       }
-      if (at("[")) ++nested_brackets;
-      if (at("]")) --nested_brackets;
-      expression_tokens.push_back(take());
+      result.optimization_scope = result.declaration_context;
     }
-    expect("]");
-    if (expression_tokens.empty()) fail(peek(), "optimized_score needs an expression");
-    FlatParser parser(std::move(expression_tokens), types_);
-    result.optimized_score = parser.expression();
-    parser.expect_end();
   };
   if (match("@")) {
     const std::string binding = identifier();
     if (at("[")) {
-      result.optimization_scope = binding;
-      optimization();
+      result.declaration_context = binding;
+      apply_extensions(declaration_extensions(true));
     } else {
       // v0 compatibility: the pre-parameter @ name is the legacy Event alias.
       result.event = binding;
@@ -2381,17 +2475,13 @@ Transition Parser::transition() {
     expect(")");
   }
   if (match("@")) {
-    if (!result.optimization_scope.empty()) {
-      fail(peek(), "transition repeats optimization scope");
+    if (!result.declaration_context.empty()) {
+      fail(peek(), "transition repeats declaration context");
     }
-    result.optimization_scope = identifier();
+    result.declaration_context = identifier();
   }
   if (at("[")) {
-    if (result.optimization_scope.empty()) {
-      fail(peek(), "optimized_score requires an explicit @ scope");
-    }
-    if (result.optimized_score) fail(peek(), "transition repeats optimized_score");
-    optimization();
+    apply_extensions(declaration_extensions(true));
   }
   expect(":");
   newline();
@@ -3036,6 +3126,9 @@ ProcedureDeclaration Parser::procedure() {
   result.name = identifier();
   expect("@");
   result.initial_context = identifier();
+  if (at("[")) {
+    result.captures = declaration_extensions(false).captures;
+  }
   expect(":");
   newline();
   indent();
@@ -3580,6 +3673,71 @@ void Parser::lower_compact(
   }
 }
 
+std::string capture_instance_name(const CaptureBinding& binding) {
+  if (binding.session == "default") return binding.trace;
+  return binding.trace + "/" + binding.session;
+}
+
+void aggregate_distributed_captures(Program::Impl& program) {
+  struct Aggregate {
+    std::set<std::pair<std::string, std::string>> states;
+    std::set<std::string, std::less<>> transitions;
+    std::set<std::string, std::less<>> procedures;
+  };
+  std::map<CaptureBinding, Aggregate> aggregates;
+  for (const State& state : program.states) {
+    for (const CaptureBinding& binding : state.captures) {
+      aggregates[binding].states.emplace(state.context, state.name);
+    }
+  }
+  for (const Transition& transition : program.transitions) {
+    for (const CaptureBinding& binding : transition.captures) {
+      aggregates[binding].transitions.insert(transition.name);
+    }
+  }
+  for (const auto& [name, procedure] : program.procedures) {
+    for (const CaptureBinding& binding : procedure.captures) {
+      aggregates[binding].procedures.insert(name);
+    }
+  }
+
+  for (const auto& [binding, aggregate] : aggregates) {
+    const std::string instance_name = capture_instance_name(binding);
+    auto instance = std::find_if(
+        program.traces.begin(), program.traces.end(),
+        [&](const TraceDeclaration& trace) { return trace.name == instance_name; });
+    if (instance == program.traces.end()) {
+      TraceDeclaration generated;
+      const auto templ = std::find_if(
+          program.traces.begin(), program.traces.end(),
+          [&](const TraceDeclaration& trace) { return trace.name == binding.trace; });
+      if (templ != program.traces.end()) generated = *templ;
+      generated.name = instance_name;
+      if (!generated.has_capture) {
+        generated.has_capture = true;
+        generated.capture_mode = TraceCaptureMode::Projected;
+      }
+      program.traces.push_back(std::move(generated));
+      instance = std::prev(program.traces.end());
+    } else if (!instance->has_capture) {
+      instance->has_capture = true;
+      instance->capture_mode = TraceCaptureMode::Projected;
+    }
+    for (const auto& [context, state] : aggregate.states) {
+      const bool duplicate = std::any_of(
+          instance->capture.begin(), instance->capture.end(),
+          [&](const StateBinding& item) {
+            return item.context == context && item.state == state;
+          });
+      if (!duplicate) instance->capture.push_back(StateBinding{state, context});
+    }
+    instance->paths.insert(aggregate.transitions.begin(),
+                           aggregate.transitions.end());
+    instance->captured_procedures.insert(aggregate.procedures.begin(),
+                                         aggregate.procedures.end());
+  }
+}
+
 std::shared_ptr<Program::Impl> Parser::program() {
   auto result = std::make_shared<Program::Impl>();
   std::vector<CompactStateDeclaration> compact_states;
@@ -3646,6 +3804,7 @@ std::shared_ptr<Program::Impl> Parser::program() {
   }
   lower_compact(*result, compact_states, compact_transitions, compact_procedures,
                 compact_traces);
+  aggregate_distributed_captures(*result);
   result->types = types_;
   return result;
 }

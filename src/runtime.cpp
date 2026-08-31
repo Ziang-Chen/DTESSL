@@ -3,6 +3,93 @@
 // All Engine/RuntimeContext round, dispatch, replay and capture behavior lives
 // here; parsing and verification remain in frontend.cpp.
 
+namespace {
+
+bool capture_path_matches(const StepResult& selected,
+                          std::string_view seed) {
+  return seed.find('.') == std::string_view::npos
+             ? selected.transition_family == seed
+             : selected.transition == seed;
+}
+
+bool capture_state_matches(
+    const StepResult& step,
+    const std::set<std::pair<std::string, std::string>>& seeds) {
+  return std::any_of(
+      seeds.begin(), seeds.end(), [&](const auto& seed) {
+        const auto before = step.before_active_states.find(seed.first);
+        const auto after = step.active_states.find(seed.first);
+        return (before != step.before_active_states.end() &&
+                before->second == seed.second) ||
+               (after != step.active_states.end() &&
+                after->second == seed.second);
+      });
+}
+
+bool capture_relation_matches(const TraceSnapshot& trace,
+                              const StepResult& step,
+                              std::string_view procedure) {
+  const bool has_seeds = !trace.captured_states.empty() ||
+      !trace.captured_paths.empty() || !trace.captured_procedures.empty();
+  if (!has_seeds) return true;
+  const bool state = capture_state_matches(step, trace.captured_states);
+  const bool path = std::any_of(
+      trace.captured_paths.begin(), trace.captured_paths.end(),
+      [&](const std::string& seed) {
+        return capture_path_matches(step, seed);
+      });
+  const bool procedure_match = trace.captured_procedures.contains(
+      step.procedure.empty() ? std::string(procedure) : step.procedure);
+  return state || path || procedure_match;
+}
+
+std::set<std::string, std::less<>> capture_procedure_closure(
+    const TraceSnapshot& seeds,
+    const std::vector<ParallelStepResult>& rounds) {
+  std::set<std::string, std::less<>> procedures = seeds.captured_procedures;
+  std::set<std::string, std::less<>> causal_decisions;
+  for (const ParallelStepResult& round : rounds) {
+    for (const StepResult& step : round.transitions) {
+      if (!capture_relation_matches(seeds, step, step.procedure)) continue;
+      procedures.insert(step.procedure);
+      causal_decisions.insert(step.causal_predecessors.begin(),
+                              step.causal_predecessors.end());
+    }
+  }
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const ParallelStepResult& round : rounds) {
+      for (const StepResult& step : round.transitions) {
+        if (!causal_decisions.contains(step.id)) continue;
+        changed = procedures.insert(step.procedure).second || changed;
+        const std::size_t before = causal_decisions.size();
+        causal_decisions.insert(step.causal_predecessors.begin(),
+                                step.causal_predecessors.end());
+        changed = causal_decisions.size() != before || changed;
+      }
+    }
+  }
+  return procedures;
+}
+
+bool capture_procedure_selected(
+    const std::set<std::string, std::less<>>& procedures,
+    std::string_view procedure) {
+  return procedures.contains(std::string(procedure));
+}
+
+bool capture_qualified_field_selected(
+    const std::set<std::string, std::less<>>& procedures,
+    std::string_view field) {
+  return std::any_of(procedures.begin(), procedures.end(),
+                     [&](const std::string& procedure) {
+                       return field.starts_with(procedure + ".");
+                     });
+}
+
+}  // namespace
+
 Engine::Engine(Program program)
     : Engine(std::move(program), {}, SolverEncoding::DenseIds) {}
 
@@ -57,8 +144,10 @@ Engine::Engine(Program program,
     snapshot.mode = trace.capture_mode;
     for (const StateBinding& binding : trace.capture) {
       snapshot.captured_contexts.insert(binding.context);
+      snapshot.captured_states.emplace(binding.context, binding.state);
     }
     snapshot.captured_paths = trace.paths;
+    snapshot.captured_procedures = trace.captured_procedures;
     if (trace.capture_mode == TraceCaptureMode::Projected) {
       snapshot.causal_gaps.push_back(
           "projected capture omits decisions outside selected @ contexts");
@@ -505,12 +594,14 @@ ParallelStepResult Engine::step_inputs_at(
     step_result.round = result.round;
     step_result.id = "r" + std::to_string(result.round) + ":" + std::to_string(index);
     step_result.case_name = *decision.case_name;
-    step_result.transition = decision.transition->name;
+    step_result.transition_family = decision.transition->name;
+    step_result.transition = step_result.transition_family;
     if (!step_result.case_name.empty()) step_result.transition += "." + step_result.case_name;
     step_result.optimization_scope = std::move(decision.optimization_scope);
     step_result.optimized_score = std::move(decision.optimized_score);
     step_result.from_state = binding_set_text(*decision.from);
     step_result.to_state = target_set_text(*decision.to);
+    step_result.before_active_states = active_states_;
     step_result.active_states = next_active;
     step_result.state = next;
     step_result.actions = std::move(decision.actions);
@@ -547,23 +638,13 @@ ParallelStepResult Engine::step_inputs_at(
                                    field.find('.') == std::string_view::npos);
                          });
     };
-    const auto path_selected = [&](const StepResult& step_result) {
-      return trace.captured_paths.empty() ||
-             trace.captured_paths.contains(step_result.transition);
-    };
-    if (trace.mode == TraceCaptureMode::Projected && !trace.captured_paths.empty() &&
-        std::none_of(result.transitions.begin(), result.transitions.end(), path_selected)) {
-      continue;
-    }
     ParallelStepResult captured = result;
     if (trace.mode == TraceCaptureMode::Projected) {
       captured.transitions.erase(
           std::remove_if(captured.transitions.begin(), captured.transitions.end(),
                          [&](const StepResult& step_result) {
-                           const bool touches_context = trace.captured_contexts.empty() ||
-                               std::any_of(step_result.reads.begin(), step_result.reads.end(), belongs) ||
-                               std::any_of(step_result.writes.begin(), step_result.writes.end(), belongs);
-                           return !path_selected(step_result) || !touches_context;
+                           return !capture_relation_matches(
+                               trace, step_result, procedure_name_);
                          }),
           captured.transitions.end());
       if (captured.transitions.empty()) continue;
@@ -771,6 +852,122 @@ TraceSnapshot RuntimeContext::snapshot(std::string_view name) const {
     result.procedure_contexts.emplace(procedure, engine->initial_context());
   }
   if (!result.rounds.empty()) result.final_state = result.rounds.back().state;
+
+  const auto declaration = std::find_if(
+      impl_->program.implementation()->traces.begin(),
+      impl_->program.implementation()->traces.end(),
+      [&](const TraceDeclaration& trace) { return trace.name == name; });
+  if (declaration == impl_->program.implementation()->traces.end() ||
+      !declaration->has_capture) {
+    return result;
+  }
+
+  result.root_context = declaration->root_context;
+  result.mode = declaration->capture_mode;
+  result.captured_contexts.clear();
+  result.captured_states.clear();
+  result.captured_paths = declaration->paths;
+  result.captured_procedures = declaration->captured_procedures;
+  for (const StateBinding& binding : declaration->capture) {
+    result.captured_contexts.insert(binding.context);
+    result.captured_states.emplace(binding.context, binding.state);
+  }
+  const TraceSnapshot capture_seeds = result;
+  std::set<std::string, std::less<>> closure =
+      capture_procedure_closure(capture_seeds, result.rounds);
+  if (closure.empty() && capture_seeds.captured_states.empty() &&
+      capture_seeds.captured_paths.empty() &&
+      capture_seeds.captured_procedures.empty()) {
+    for (const auto& [procedure, engine] : impl_->engines) {
+      static_cast<void>(engine);
+      closure.insert(procedure);
+    }
+  }
+  result.captured_procedures = closure;
+
+  for (auto round = result.rounds.begin(); round != result.rounds.end();) {
+    round->transitions.erase(
+        std::remove_if(
+            round->transitions.begin(), round->transitions.end(),
+            [&](const StepResult& step) {
+              if (declaration->capture_mode == TraceCaptureMode::Projected) {
+                return !capture_relation_matches(capture_seeds, step,
+                                                 step.procedure);
+              }
+              return !capture_procedure_selected(closure, step.procedure);
+            }),
+        round->transitions.end());
+    if (declaration->capture_mode == TraceCaptureMode::Projected &&
+        round->transitions.empty()) {
+      round = result.rounds.erase(round);
+      continue;
+    }
+    if (declaration->capture_mode == TraceCaptureMode::Closed &&
+        closure.empty()) {
+      round = result.rounds.erase(round);
+      continue;
+    }
+    if (impl_->engines.size() > 1U) {
+      for (auto field = round->state.begin(); field != round->state.end();) {
+        if (!capture_qualified_field_selected(closure, field->first)) {
+          field = round->state.erase(field);
+        } else {
+          ++field;
+        }
+      }
+    }
+    ++round;
+  }
+  if (impl_->engines.size() > 1U) {
+    for (auto field = result.final_state.begin(); field != result.final_state.end();) {
+      if (!capture_qualified_field_selected(closure, field->first)) {
+        field = result.final_state.erase(field);
+      } else {
+        ++field;
+      }
+    }
+  }
+  for (auto state = result.procedure_states.begin();
+       state != result.procedure_states.end();) {
+    if (!capture_procedure_selected(closure, state->first)) {
+      state = result.procedure_states.erase(state);
+    } else {
+      ++state;
+    }
+  }
+  for (auto context = result.procedure_contexts.begin();
+       context != result.procedure_contexts.end();) {
+    if (!capture_procedure_selected(closure, context->first)) {
+      context = result.procedure_contexts.erase(context);
+    } else {
+      ++context;
+    }
+  }
+  for (auto history = result.procedure_history.begin();
+       history != result.procedure_history.end();) {
+    if (!capture_procedure_selected(closure, history->first)) {
+      history = result.procedure_history.erase(history);
+    } else {
+      ++history;
+    }
+  }
+  for (auto artifact = result.procedure_artifacts.begin();
+       artifact != result.procedure_artifacts.end();) {
+    if (!capture_procedure_selected(closure, artifact->first)) {
+      artifact = result.procedure_artifacts.erase(artifact);
+    } else {
+      ++artifact;
+    }
+  }
+  if (declaration->capture_mode == TraceCaptureMode::Projected) {
+    result.replayable = false;
+    result.procedure_history.clear();
+    result.procedure_artifacts.clear();
+    result.causal_gaps.push_back(
+        "projected capture omits decisions outside the capture relation");
+  } else {
+    result.replayable = !result.procedure_artifacts.empty();
+  }
   return result;
 }
 
@@ -1034,29 +1231,46 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
     }
     for (const StateBinding& binding : found->capture) {
       execution.snapshot.captured_contexts.insert(binding.context);
+      execution.snapshot.captured_states.emplace(binding.context,
+                                                  binding.state);
     }
     execution.snapshot.captured_paths = found->paths;
     execution.snapshot.captured_procedures = found->captured_procedures;
+    const TraceSnapshot capture_seeds = execution.snapshot;
     std::set<std::string, std::less<>> closure_procedures =
         found->captured_procedures;
-    if (closure_procedures.empty()) {
+    std::set<std::string, std::less<>> causal_decisions;
+    for (const ParallelStepResult& round : execution.logical.rounds) {
+      for (const StepResult& step : round.transitions) {
+        if (!capture_relation_matches(execution.snapshot, step,
+                                      step.procedure)) {
+          continue;
+        }
+        closure_procedures.insert(step.procedure);
+        causal_decisions.insert(step.causal_predecessors.begin(),
+                                step.causal_predecessors.end());
+      }
+    }
+    bool changed = true;
+    while (changed) {
+      changed = false;
       for (const ParallelStepResult& round : execution.logical.rounds) {
         for (const StepResult& step : round.transitions) {
-          const bool path_seed = found->paths.empty() || found->paths.contains(step.transition);
-          const bool state_seed = found->capture.empty() || std::any_of(
-              found->capture.begin(), found->capture.end(), [&](const StateBinding& binding) {
-                const auto active = step.active_states.find(binding.context);
-                return active != step.active_states.end() && active->second == binding.state;
-              });
-          if (path_seed && state_seed) closure_procedures.insert(step.procedure);
+          if (!causal_decisions.contains(step.id)) continue;
+          changed = closure_procedures.insert(step.procedure).second || changed;
+          const std::size_t before = causal_decisions.size();
+          causal_decisions.insert(step.causal_predecessors.begin(),
+                                  step.causal_predecessors.end());
+          changed = causal_decisions.size() != before || changed;
         }
       }
     }
-    if (closure_procedures.empty() && found->capture.empty() && found->paths.empty()) {
+    if (closure_procedures.empty() && found->capture.empty() &&
+        found->paths.empty() && found->captured_procedures.empty()) {
       closure_procedures = referenced_procedures;
     }
+    execution.snapshot.captured_procedures = closure_procedures;
     if (!found->has_capture || found->capture_mode == TraceCaptureMode::Closed) {
-      execution.snapshot.captured_procedures = closure_procedures;
       for (const std::string& procedure : closure_procedures) {
         const auto declaration = program.implementation()->procedures.find(procedure);
         if (declaration == program.implementation()->procedures.end()) continue;
@@ -1107,8 +1321,9 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
         return std::string(field);
       };
       const auto field_procedure_selected = [&](std::string_view field) {
-        if (execution.snapshot.captured_procedures.empty()) return true;
         if (single_procedure &&
+            execution.snapshot.captured_procedures.contains(
+                *referenced_procedures.begin()) &&
             std::none_of(referenced_procedures.begin(), referenced_procedures.end(),
                          [&](const std::string& procedure) {
                            return field.starts_with(procedure + ".");
@@ -1135,57 +1350,56 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
                       referenced_procedures.size() == 1U);
             });
       };
-      const auto path_selected = [&](const StepResult& step) {
-        return execution.snapshot.captured_paths.empty() ||
-               execution.snapshot.captured_paths.contains(step.transition);
-      };
       const auto procedure_selected = [&](const StepResult& step) {
-        return execution.snapshot.captured_procedures.empty() ||
-               execution.snapshot.captured_procedures.contains(step.procedure);
-      };
-      const auto state_selected = [&](const StepResult& step) {
-        return found->capture.empty() ||
-               std::any_of(found->capture.begin(), found->capture.end(),
-                           [&](const StateBinding& binding) {
-                             const auto active = step.active_states.find(binding.context);
-                             return active != step.active_states.end() &&
-                                    active->second == binding.state;
-                           });
+        return execution.snapshot.captured_procedures.contains(step.procedure);
       };
       if (found->capture_mode == TraceCaptureMode::Projected) {
         execution.snapshot.replayable = false;
         execution.snapshot.procedure_artifacts.clear();
+        execution.snapshot.procedure_history.clear();
         execution.snapshot.causal_gaps.push_back(
             "projected capture omits decisions outside selected procedures, paths, or contexts");
       }
       for (auto round = execution.snapshot.rounds.begin();
            round != execution.snapshot.rounds.end();) {
-        if (!execution.snapshot.captured_paths.empty() ||
-            !execution.snapshot.captured_procedures.empty() || !found->capture.empty()) {
+        if (found->capture_mode == TraceCaptureMode::Projected) {
           round->transitions.erase(
               std::remove_if(
                   round->transitions.begin(), round->transitions.end(),
                   [&](const StepResult& step) {
-                    const bool touches = execution.snapshot.captured_contexts.empty() ||
-                        std::any_of(step.reads.begin(), step.reads.end(), belongs) ||
-                        std::any_of(step.writes.begin(), step.writes.end(), belongs);
-                    return !procedure_selected(step) || !path_selected(step) ||
-                           !state_selected(step) || !touches;
+                    return !capture_relation_matches(capture_seeds, step,
+                                                     step.procedure);
                   }),
               round->transitions.end());
-          if (round->transitions.empty() &&
-              execution.snapshot.procedure_history.empty()) {
+          if (round->transitions.empty()) {
             round = execution.snapshot.rounds.erase(round);
             continue;
           }
+        } else {
+          round->transitions.erase(
+              std::remove_if(
+                  round->transitions.begin(), round->transitions.end(),
+                  [&](const StepResult& step) {
+                    return !procedure_selected(step);
+                  }),
+              round->transitions.end());
+        }
+        if (found->capture_mode == TraceCaptureMode::Closed &&
+            execution.snapshot.captured_procedures.empty()) {
+          round = execution.snapshot.rounds.erase(round);
+          continue;
         }
         for (auto item = round->state.begin(); item != round->state.end();) {
-          if (!belongs(item->first)) item = round->state.erase(item);
+          const bool selected = found->capture_mode == TraceCaptureMode::Closed
+                                    ? field_procedure_selected(item->first)
+                                    : belongs(item->first);
+          if (!selected) item = round->state.erase(item);
           else ++item;
         }
         for (StepResult& step : round->transitions) {
           for (auto item = step.state.begin(); item != step.state.end();) {
-            const bool local_belongs = execution.snapshot.captured_contexts.empty() ||
+            const bool local_belongs = found->capture_mode == TraceCaptureMode::Closed ||
+                execution.snapshot.captured_contexts.empty() ||
                 std::any_of(
                     execution.snapshot.captured_contexts.begin(),
                     execution.snapshot.captured_contexts.end(),
@@ -1203,13 +1417,22 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
       }
       for (auto item = execution.snapshot.final_state.begin();
            item != execution.snapshot.final_state.end();) {
-        if (!belongs(item->first)) item = execution.snapshot.final_state.erase(item);
+        const bool selected = found->capture_mode == TraceCaptureMode::Closed
+                                  ? field_procedure_selected(item->first)
+                                  : belongs(item->first);
+        if (!selected) item = execution.snapshot.final_state.erase(item);
         else ++item;
       }
-      for (auto& [procedure, state] : execution.snapshot.procedure_states) {
-        static_cast<void>(procedure);
+      for (auto procedure = execution.snapshot.procedure_states.begin();
+           procedure != execution.snapshot.procedure_states.end();) {
+        if (!execution.snapshot.captured_procedures.contains(procedure->first)) {
+          procedure = execution.snapshot.procedure_states.erase(procedure);
+          continue;
+        }
+        auto& state = procedure->second;
         for (auto item = state.begin(); item != state.end();) {
-          const bool local_belongs = execution.snapshot.captured_contexts.empty() ||
+          const bool local_belongs = found->capture_mode == TraceCaptureMode::Closed ||
+              execution.snapshot.captured_contexts.empty() ||
               std::any_of(
                   execution.snapshot.captured_contexts.begin(),
                   execution.snapshot.captured_contexts.end(),
@@ -1219,6 +1442,15 @@ TraceSnapshot run_named_trace(const Program& program, std::string_view name) {
                   });
           if (!local_belongs) item = state.erase(item);
           else ++item;
+        }
+        ++procedure;
+      }
+      for (auto context = execution.snapshot.procedure_contexts.begin();
+           context != execution.snapshot.procedure_contexts.end();) {
+        if (!execution.snapshot.captured_procedures.contains(context->first)) {
+          context = execution.snapshot.procedure_contexts.erase(context);
+        } else {
+          ++context;
         }
       }
     }

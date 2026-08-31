@@ -1976,5 +1976,107 @@ Claim ModelIsTyped @ Model:
                                evaluation.status == dtessl::ClaimStatus::Violated;
                       }),
           "finite Trace monitor did not evaluate a transition ensure obligation");
+
+  constexpr std::string_view distributed_capture_extensions = R"DTESSL(
+state Idle @ lane initial:
+  value: int = 0
+
+state Active @ lane [capture=Audit/default | StateOnly/default]:
+  value: int = 1
+
+state Done @ lane:
+  value: int = 2
+
+state Never @ lane [capture=Missing/default]:
+  value: int = 3
+
+transition Enter() @ lane [capture=Transitions/sessionB]:
+  case go (Idle @ lane) -> (Active @ lane):
+    set:
+      value = 1 @ lane
+
+transition Leave():
+  case go (Active @ lane) -> (Done @ lane):
+    set:
+      value = 2 @ lane
+
+procedure Work @ system [capture=Procedure/sessionC]:
+  initial (Idle @ lane)
+
+trace Audit:
+  capture closed:
+    state()
+
+trace Procedure:
+  capture closed:
+    procedure()
+
+trace Missing:
+  capture closed:
+    state()
+)DTESSL";
+  const dtessl::Program capture_program =
+      dtessl::parse(distributed_capture_extensions);
+  const std::vector<std::string> capture_traces =
+      dtessl::declared_traces(capture_program);
+  require(std::find(capture_traces.begin(), capture_traces.end(), "Audit") !=
+                  capture_traces.end() &&
+              std::find(capture_traces.begin(), capture_traces.end(), "StateOnly") !=
+                  capture_traces.end() &&
+              std::find(capture_traces.begin(), capture_traces.end(),
+                        "Transitions/sessionB") != capture_traces.end() &&
+              std::find(capture_traces.begin(), capture_traces.end(),
+                        "Procedure/sessionC") != capture_traces.end(),
+          "distributed capture extensions did not aggregate by Trace/Session");
+
+  dtessl::Engine capture_engine =
+      dtessl::Engine::from_procedure(capture_program, "Work");
+  static_cast<void>(capture_engine.step_transition({"Enter", {}}));
+  static_cast<void>(capture_engine.step_transition({"Leave", {}}));
+  const dtessl::TraceSnapshot state_capture =
+      capture_engine.captured_trace("StateOnly", true);
+  require(state_capture.mode == dtessl::TraceCaptureMode::Projected &&
+              state_capture.rounds.size() == 2U &&
+              state_capture.captured_states.contains({"lane", "Active"}) &&
+              state_capture.rounds.front().transitions.front().transition ==
+                  "Enter.go" &&
+              state_capture.rounds.back().transitions.front().transition ==
+                  "Leave.go",
+          "state capture relation did not observe both entry and exit");
+  const dtessl::TraceSnapshot transition_capture =
+      capture_engine.captured_trace("Transitions/sessionB", true);
+  require(transition_capture.mode == dtessl::TraceCaptureMode::Projected &&
+              transition_capture.rounds.size() == 1U &&
+              transition_capture.captured_paths.contains("Enter") &&
+              transition_capture.rounds.front().transitions.front().transition ==
+                  "Enter.go" &&
+              !transition_capture.replayable,
+          "transition-family capture relation did not select named cases");
+
+  dtessl::RuntimeContext capture_runtime(capture_program);
+  capture_runtime.start("Work");
+  static_cast<void>(capture_runtime.inject({{"Work", {"Enter", {}}}}));
+  static_cast<void>(capture_runtime.inject({{"Work", {"Leave", {}}}}));
+  const dtessl::TraceSnapshot audit_capture = capture_runtime.snapshot("Audit");
+  require(audit_capture.mode == dtessl::TraceCaptureMode::Closed &&
+              audit_capture.rounds.size() == 2U && audit_capture.replayable &&
+              audit_capture.procedure_artifacts.at("Work").injections.size() == 2U,
+          "closed state seed did not expand to the actual procedure closure");
+  const dtessl::TraceSnapshot procedure_capture =
+      capture_runtime.snapshot("Procedure/sessionC");
+  require(procedure_capture.mode == dtessl::TraceCaptureMode::Closed &&
+              procedure_capture.rounds.size() == 2U &&
+              procedure_capture.captured_procedures.contains("Work") &&
+              procedure_capture.procedure_history.at("Work").size() == 2U &&
+              procedure_capture.replayable,
+          "procedure capture extension did not retain a replayable closure");
+  const dtessl::TraceSnapshot missing_capture =
+      capture_runtime.snapshot("Missing");
+  require(missing_capture.mode == dtessl::TraceCaptureMode::Closed &&
+              missing_capture.rounds.empty() &&
+              missing_capture.captured_procedures.empty() &&
+              missing_capture.procedure_artifacts.empty() &&
+              !missing_capture.replayable,
+          "a closed capture with no relation match leaked unrelated procedures");
   return 0;
 }
