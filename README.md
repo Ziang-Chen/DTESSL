@@ -405,22 +405,34 @@ case。不同 seed 是并集；命中后的行为是
 只参与 seed 匹配和结果分组，不会把同 procedure 的无关 occurrence 自动卷入；此过程不改变
 relation matcher 的真假语义，也不执行状态转移。
 
-REPL 直接暴露同一套 RuntimeContext，而不是另造执行器：
+REPL 直接复用 production parser、`Engine`、`RuntimeContext` 与通用
+`replay_trace_artifact`，没有展示专用执行旁路。Occurrence/时间闭包的主演示是：
 
 ```text
-dtessl repl examples/procedure_replay.dtessl
-:inject SessionA Increment delta=1 -- SessionB Increment delta=2
-:inject SessionA Increment delta=3
-:runtime
-:capture InterleavedRuntime
-:replay-procedures
+dtessl repl examples/occurrence_capture.dtessl
+:trace StartUntilDone
+:replay-artifact StartUntilDone
+
+:reset
+:step Start
+:step Progress
+:trace-live StartUntilDone
+:step Finish
+:step After
+:trace-live StartUntilDone close
+:replay-artifact StartUntilDone live
 ```
 
-`:inject` 会按需启动 procedure；`--` 两侧的注入共享一个 RoundId 并原子提交。
-`:capture` 生成包含初始配置和完整 typed injection history 的闭合 artifact；
-`:replay-procedures` 重新准入这些 context 并重新搜索 decision DAG。`:trace NAME` 和
-`:claims NAME` 执行源码声明的 trace；legacy Engine 的动态观察明确使用
-`:trace-live`/`:claims-live`，不与正式 procedure replay 混用。
+`:step` 直接调用精确 TransitionId admission，所以游离 transition/state 无需伪造
+procedure。`:trace` 执行源码声明，`:trace-live` 观察当前 Engine；两者都显示
+OccurrenceId、因果前驱、temporal anchor/witness 和 typed input prefix。
+`:replay-artifact` 将该 prefix 交回正式核心逐轮重算路径、before/after Embedding、因果边与
+ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，但不会被
+`Start -> eventually Done` 时间区间卷入。
+
+持久 procedure 的 `:start`、同 RoundId 多路 `:inject`、`:runtime`、`:capture` 与兼容
+`:replay-procedures` 仍然保留；procedure artifact 只是通用 occurrence artifact 的兼容投影，
+不拥有 capture closure。
 
 `@` 只表达调用或定义所处的上下文，不授予权限。动作未写 `@` 时继承源 state 的上下文；
 写 `@ worker` 时，如果 `worker` 是 string 类型事件参数，就绑定到该参数的值，否则它是

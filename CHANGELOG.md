@@ -21,6 +21,14 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   Transition topology now preserves Embedding continuity even when a later
   edge reads no value field; field writer edges remain an additional source of
   causality.
+- Refreshed the REPL on the same production parser and runtime APIs: `:step`
+  admits exact free transition occurrences, trace views show occurrence IDs,
+  causal predecessors, temporal intervals and typed artifact rounds, and
+  `:replay-artifact` invokes the generic `TraceArtifact` replay authority for
+  declared or live Engine traces.
+- Expanded `occurrence_capture.dtessl` into a copyable REPL demo proving that a
+  free Engine needs no procedure owner and that a later same-procedure
+  occurrence remains outside the witnessed temporal interval.
 
 - Attached a complete immutable `OccurrenceInput` to every accepted decision
   at its causal RoundId: admission kind, requested symbol, normalized Event,

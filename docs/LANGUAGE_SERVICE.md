@@ -1,9 +1,10 @@
 # DTESSL Language Service and REPL
 
-DTESSL v0.3.0 integrates the language workbench with compact core logic and the
-language-owned procedure RuntimeContext. The CLI REPL uses it today and
-editor/LSP adapters can use the same API later. It does not implement Language
-Server Protocol transport.
+DTESSL v0.4.0 integrates the language workbench with recursive Embeddings,
+occurrence-owned causal/temporal capture, the standalone Engine and the
+language-owned procedure RuntimeContext. The CLI REPL uses these production
+APIs today and editor/LSP adapters can use the same language analysis later. It
+does not implement Language Server Protocol transport.
 
 ## One language pipeline
 
@@ -81,14 +82,22 @@ The workbench supports:
 - `:append`, `:insert`, `:replace`, `:delete` with multi-line blocks;
 - `:undo`, `:redo`, `:history`;
 - `:load`, `:write`;
-- `:reset` and `:run Event field=value` for legacy single-Engine execution;
+- `:reset`, `:run Event field=value` and `:step Transition field=value` for
+  standalone Engine execution, including free exact-transition occurrences;
 - `:start`, `:inject`, `:runtime`, `:capture` and `:replay-procedures` for
   persistent procedure instances and complete artifact replay;
 - `:trace`/`:claims` for declared source traces, kept distinct from
-  `:trace-live`/`:claims-live` dynamic Engine capture.
+  `:trace-live`/`:claims-live` dynamic Engine capture;
+- `:replay-artifact Trace [live]` for generic typed `TraceArtifact` replay,
+  independent of procedure ownership.
 
 Interactive `:run` output is a presentation-layer decision card showing only
 state deltas plus reads, writes, causal predecessors and the ActionPlan DAG.
+`:step` renders the same card but admits an exact TransitionId through
+`Engine::step_transition`. Trace views expose the selected OccurrenceIds,
+causal edges, temporal anchor/witness status and every typed artifact input
+round; `:replay-artifact` calls the public core replay API and does not force a
+recorded decision.
 Procedure `:inject` renders a RoundId card containing every injected procedure,
 re-derived decision, procedure revision, qualified state delta and ActionPlan.
 The core `result_text` representation remains stable and unstyled for tests,

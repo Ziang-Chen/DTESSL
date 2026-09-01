@@ -1,6 +1,6 @@
 # DTESSL Project QC Control
 
-Updated: 2026-08-31, Asia/Shanghai
+Updated: 2026-09-01, Asia/Shanghai
 
 ## Control metadata
 
@@ -52,7 +52,10 @@ false relation constraints and exact-raw node identity are covered. Standard,
 The occurrence-owned correction removes procedure as a closure boundary,
 adds active-state-axis causality, `eventually` capture intervals and generic
 typed `TraceArtifact` replay for free and procedure-labelled occurrences.
-Standard, `-Werror`, and ASan/UBSan builds each pass 44/44 tests.
+The REPL now exposes exact free `:step`, occurrence/causal/temporal trace detail
+and generic `:replay-artifact` through those same public runtime APIs. Standard,
+`-Werror`, and ASan/UBSan builds each pass 45/45 tests; real PTY history and the
+declared/live occurrence demo pass.
 
 ## Current goal contract
 
@@ -111,7 +114,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 44/44 tests.
 | Shared language pipeline | `analyze_source` runs the production lexer/parser/verifier; valid core fixture asserts `name`, `~`, option and `list` spans | CLI highlight and REPL check agree with `dtessl check` fixtures | pass |
 | Editor document model | Monotonic versions, validated UTF-8 byte ranges and non-overlapping snapshot edits | Replace and stale-version tests pass | pass |
 | Located diagnostics | Lex/parse/semantic categories retain source ranges and stable codes | Parser and wrong-type assignment locations asserted | pass |
-| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and both Engine/RuntimeContext invalidation implemented | Real PTY passes history recall, cursor/Delete repair, replace, undo, check and fancy procedure rounds | pass |
+| REPL workbench | Multi-line insert/replace/delete, undo/redo, load/save and both Engine/RuntimeContext invalidation implemented; exact `:step` and `:replay-artifact` call production APIs | Real PTY passes history recall, free occurrence decisions, pending/witnessed intervals, excluded post-witness occurrence and generic replay | pass |
 | Multi-state transition model | Conjunctive source/target sets, alternative case paths, atomic invariant gate and ambiguity tests | Composite scheduler example and CLI trace pass | pass |
 | Native static/dynamic trace | Source EventTrace plus closed/projected Engine capture scoped by `@context` | Static run and projected capture tests pass | pass |
 | Temporal Claim AST | always/eventually/until/within/since plus derived never/before/weak_until share typed predicate leaves | Finite trace and procedure examples exercise all primitives | pass |
@@ -131,7 +134,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 44/44 tests.
 | Indexed transition search | Exact TransitionId/event index followed by active-state-signature path index; only indexed candidates evaluate `where` | Index-plan evidence and shared-Event ambiguity/bypass test pass | pass |
 | Explicit optimized choice | Typed exact after-state score, greatest unique winner, tie rollback and unchanged unannotated ambiguity rule | Runnable `optimized_transition.dtessl`, feature/plan/output evidence and positive/tie/type-error tests; all three suites pass 25/25 | pass |
 | Semantic source boundaries | Volatile parsing remains in `frontend.cpp`; instantaneous, trace and monitor semantics, runtime orchestration, Solver exploration and backend negotiation have explicit files | One public parser and one semantic route remain; standard, warning-clean and sanitizer suites pass | pass |
-| Occurrence/temporal capture closure | State/transition/procedure seeds select actual occurrences; closed capture follows explicit predecessor IDs and optional eventually intervals without requiring procedure ownership | A transition seed excludes a later same-procedure edge; free Engine capture retains anchor-through-witness and generic artifact replay matches | pass |
+| Occurrence/temporal capture closure | State/transition/procedure seeds select actual occurrences; closed capture follows explicit predecessor IDs and optional eventually intervals without requiring procedure ownership | CLI plus REPL show a transition seed excluding the later `After` edge; free Engine capture retains anchor-through-witness and generic artifact replay matches | pass |
 | Physical receipt isolation | Public API contains no receipt/journal ingestion | Physical completion remains outside DTESSL | pass |
 | Four AST projections | Architecture specified | Implementations absent | missing |
 
@@ -232,6 +235,11 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 44/44 tests.
   relations over occurrences; closed closure follows explicit causal edges and
   optional temporal intervals. Procedure is only a grouping label. Generic
   `TraceArtifact` replay now covers both free Engine and procedure runtimes.
+- 2026-09-01: refreshed the REPL around occurrence ownership. Exact free
+  transition admission uses `Engine::step_transition`; declared/live trace
+  views expose occurrence causality, temporal status and typed prefix rounds;
+  `:replay-artifact` invokes the generic core replay API. All three suites pass
+  45/45 and a real PTY smoke passes.
 - 2026-08-28: `v0.3.1` corrects injection to an extra typed transition
   occurrence addressed by TransitionId. A procedure contains only initial
   context/state, starts DTESSL's own search loop and is quiescent when no

@@ -1,3 +1,20 @@
+// Occurrence-owned causal + temporal closure. The fourth occurrence is in the
+// same procedure but remains outside the Start-to-Done interval.
+//
+// Declared trace REPL demo:
+//   :trace StartUntilDone
+//   :replay-artifact StartUntilDone
+//
+// Free Engine demo (no procedure owner):
+//   :reset
+//   :step Start
+//   :step Progress
+//   :trace-live StartUntilDone
+//   :step Finish
+//   :step After
+//   :trace-live StartUntilDone close
+//   :replay-artifact StartUntilDone live
+
 state Idle @ flow initial:
   value: int = 0
 

@@ -321,6 +321,23 @@ std::string event_text(const dtessl::Event& event) {
   return result + ")";
 }
 
+std::string occurrence_input_text(const dtessl::OccurrenceInput& input) {
+  std::string result = input.kind == dtessl::OccurrenceInputKind::Transition
+                           ? "transition "
+                           : "event ";
+  result += input.symbol + "(";
+  bool first = true;
+  for (const auto& [name, value] : input.fields) {
+    if (!first) result += ", ";
+    first = false;
+    result += name + "=" + dtessl::value_text(value);
+  }
+  result += ")";
+  if (!input.target_procedure.empty()) result += " @ " + input.target_procedure;
+  if (!input.target_context.empty()) result += "/" + input.target_context;
+  return result;
+}
+
 std::map<std::string, dtessl::Value, std::less<>> qualified_runtime_state(
     const std::map<std::string, dtessl::Value, std::less<>>& state) {
   const bool has_qualified = std::any_of(
@@ -423,12 +440,22 @@ void print_runtime_snapshot(const dtessl::TraceSnapshot& snapshot,
     decisions += round.transitions.size();
   }
   std::cout << kind << ' ' << snapshot.name
-            << " closed replayable=" << (snapshot.replayable ? "yes" : "no")
+            << (snapshot.closed ? " closed" : " open")
+            << " replayable=" << (snapshot.replayable ? "yes" : "no")
             << " rounds=" << snapshot.rounds.size()
             << " decisions=" << decisions
             << " occurrence-artifact-rounds="
             << (snapshot.trace_artifact ? snapshot.trace_artifact->rounds.size() : 0U)
             << " procedure-views=" << snapshot.procedure_artifacts.size() << '\n';
+  for (const dtessl::ParallelStepResult& round : snapshot.rounds) {
+    for (const dtessl::StepResult& step : round.transitions) {
+      std::cout << "  occurrence " << step.id << " round=" << round.round
+                << " input=" << occurrence_input_text(step.input) << '\n'
+                << "    decision " << step.transition << ' ' << step.from_state
+                << " -> " << step.to_state
+                << " after=" << field_set_text(step.causal_predecessors) << '\n';
+    }
+  }
   const auto interval_status = [](dtessl::CaptureIntervalStatus status) {
     switch (status) {
       case dtessl::CaptureIntervalStatus::Pending: return "pending";
@@ -457,6 +484,19 @@ void print_runtime_snapshot(const dtessl::TraceSnapshot& snapshot,
               << " revision=" << revision
               << " injections=" << artifact.injections.size()
               << " initial-states=" << artifact.initial_states.size() << '\n';
+  }
+  if (snapshot.trace_artifact) {
+    std::cout << "  artifact typed-prefix rounds="
+              << snapshot.trace_artifact->rounds.size() << '\n';
+    for (const dtessl::TraceArtifactRound& round :
+         snapshot.trace_artifact->rounds) {
+      std::cout << "    round " << round.round << " inputs="
+                << round.inputs.size() << " expects="
+                << round.expected.transitions.size() << '\n';
+      for (const dtessl::OccurrenceInput& input : round.inputs) {
+        std::cout << "      " << occurrence_input_text(input) << '\n';
+      }
+    }
   }
 }
 
@@ -539,6 +579,7 @@ void repl_help() {
       << "  :check | :highlight      parse/verify or list semantic highlight spans\n"
       << "  :load PATH | :write [PATH]\n"
       << "  :run EVENT [name=value]  execute against the current logical state\n"
+      << "  :step TRANSITION [...]   execute an exact free transition occurrence\n"
       << "  :traces | :trace NAME    list or execute a declared source trace\n"
       << "  :trace-live NAME [close] inspect a legacy Engine dynamic capture\n"
       << "  :procedures              list declared procedure instances\n"
@@ -547,6 +588,7 @@ void repl_help() {
       << "  :runtime                 inspect the live procedure RuntimeContext\n"
       << "  :capture [NAME]          close the live runtime into replay artifacts\n"
       << "  :replay-procedures [P]   replay live artifacts and re-derive decisions\n"
+      << "  :replay-artifact TRACE [live] replay the generic typed trace artifact\n"
       << "  :claims NAME             evaluate a declared source trace\n"
       << "  :claims-live NAME [close] evaluate a legacy Engine capture\n"
       << "  :reset                   rebuild legacy and procedure runtimes\n"
@@ -562,9 +604,10 @@ void repl_help() {
       << "  [T] / [] / [value]       option type, absent and present values\n"
       << "  list[...]                explicit ordered-list literal\n"
       << "\nexample:\n"
-      << "  :inject SessionA Increment delta=1 -- SessionB Increment delta=2\n"
-      << "  :capture InterleavedRuntime\n"
-      << "  :replay-procedures\n"
+      << "  :trace StartUntilDone\n"
+      << "  :replay-artifact StartUntilDone\n"
+      << "  free occurrence (no procedure owner required):\n"
+      << "  :step Start\n"
       << "A non-command line is appended as one source line.\n";
 }
 
@@ -706,6 +749,14 @@ int repl(std::optional<std::string> initial_path) {
         const auto before = engine->values();
         const dtessl::StepResult result = engine->step(parse_event(words, 1));
         print_repl_result(before, result, color);
+      } else if (command == ":step") {
+        if (!engine) engine.emplace(dtessl::parse(document.source()));
+        const auto before = engine->values();
+        dtessl::Event parsed = parse_event(words, 1);
+        const dtessl::StepResult result = engine->step_transition(
+            dtessl::TransitionInput{std::move(parsed.name),
+                                    std::move(parsed.fields)});
+        print_repl_result(before, result, color);
       } else if (command == ":start") {
         if (words.size() != 2) throw dtessl::Error("usage: :start PROCEDURE");
         ensure_started(words[1], true);
@@ -768,6 +819,27 @@ int repl(std::optional<std::string> initial_path) {
             dtessl::parse(document.source()), artifacts);
         std::cout << "procedure replay ok\n";
         print_runtime_snapshot(replayed, "replay");
+      } else if (command == ":replay-artifact") {
+        if (words.size() < 2 || words.size() > 3 ||
+            (words.size() == 3 && words[2] != "live")) {
+          throw dtessl::Error("usage: :replay-artifact TRACE [live]");
+        }
+        const dtessl::Program program = dtessl::parse(document.source());
+        dtessl::TraceSnapshot source;
+        if (words.size() == 3) {
+          if (!engine) throw dtessl::Error("no free Engine runtime is active");
+          source = engine->captured_trace(words[1], true);
+        } else {
+          source = dtessl::run_named_trace(program, words[1]);
+        }
+        if (!source.trace_artifact) {
+          throw dtessl::Error("trace '" + words[1] +
+                              "' has no closed generic TraceArtifact");
+        }
+        const dtessl::TraceSnapshot replayed =
+            dtessl::replay_trace_artifact(program, *source.trace_artifact);
+        std::cout << "trace artifact replay ok source=" << words[1] << '\n';
+        print_runtime_snapshot(replayed, "artifact-replay");
       } else if (command == ":traces") {
         const dtessl::Program program = dtessl::parse(document.source());
         for (const std::string& name : dtessl::declared_traces(program)) {

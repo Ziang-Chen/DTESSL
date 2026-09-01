@@ -68,7 +68,7 @@ The project is complete only when all of the following are evidenced:
 ## Current v0.4.0 recursive Embedding boundary
 
 - Work is restricted to the DTESSL repository and the
-  `codex/compact-automaton-v0-3-3` branch.
+  `codex/repl-occurrence-artifact-demo-v0-4-0` branch.
 - The built-in `Solver` is the sole high-performance semantic layer between the
   verified frontend Program and runtime/exploration backends. Static `state`
   declarations are not search nodes: dynamic `Embedding` nodes and
@@ -92,9 +92,11 @@ The project is complete only when all of the following are evidenced:
 - Golden replay consumes a complete procedure artifact: initial/checkpoint
   state plus typed transition-occurrence injections. Transition paths and the
   dynamic DAG are recomputed evidence, not replay commands.
-- Capture of a procedure is complete. A capture filter is only a seed for
-  automatic causal/data closure into a complete replayable procedure; a lossy
-  projection cannot be labelled replayable.
+- Capture is owned by actual OccurrenceIds. State/transition/procedure filters
+  are seed relations; closed capture follows explicit causal predecessors and
+  optional RoundId temporal intervals into a generic typed `TraceArtifact`.
+  Procedure is only a label and compatibility projection; a lossy projection
+  cannot be labelled replayable.
 - A quiescent procedure resumes when
   `inject Transition(fields...) @ Procedure` adds an occurrence to its pending
   set. The runtime selects candidates by exact TransitionId and active-state
@@ -102,9 +104,9 @@ The project is complete only when all of the following are evidenced:
   directly mutates state.
 - RoundId is derived from the dynamic causal DAG layer, while per-procedure
   revision is a distinct state-version counter.
-- Completion requires parser/verifier/runtime/CLI evidence plus standard,
-  REPL/PTY, `-Werror` and ASan/UBSan gates, followed by a scoped commit and
-  push.
+- Completion requires parser/verifier/runtime/CLI/REPL and real PTY evidence,
+  plus standard, `-Werror` and ASan/UBSan gates, followed by a scoped commit
+  and push.
 - This slice does not authorize changes to `main`, tags, chenRT, ChenVM or any
   other task thread.
 

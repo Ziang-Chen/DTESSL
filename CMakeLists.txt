@@ -348,4 +348,9 @@ if(DTESSL_BUILD_TESTS)
                    StartUntilDone)
   set_tests_properties(dtessl.occurrence_capture_trace PROPERTIES
                        PASS_REGULAR_EXPRESSION "closed rounds=3 replayable=yes occurrence-artifact-rounds=3 procedure-views=1;interval anchor=Flow/r1:0 round=1 witnessed=Flow/r3:0 round=3")
+  add_test(NAME dtessl.repl_occurrence_artifact
+           COMMAND ${CMAKE_COMMAND}
+                   -DCLI=$<TARGET_FILE:dtessl_cli>
+                   -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/occurrence_capture.dtessl
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/repl_occurrence_smoke.cmake)
 endif()
