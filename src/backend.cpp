@@ -32,8 +32,29 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
           expr->text == "join" || expr->text == "compose" ||
           expr->text == "inverse" || expr->text == "closure" ||
           expr->text == "union" || expr->text == "intersection" ||
-          expr->text == "difference") {
+          expr->text == "difference" || expr->text == "domain" ||
+          expr->text == "range" || expr->text == "product" ||
+          expr->text == "identity" || expr->text == "image" ||
+          expr->text == "preimage" || expr->text == "reflexive_closure" ||
+          expr->text == "subset" || expr->text == "disjoint" ||
+          expr->text == "functional" || expr->text == "injective" ||
+          expr->text == "reflexive" || expr->text == "irreflexive" ||
+          expr->text == "symmetric" || expr->text == "antisymmetric" ||
+          expr->text == "transitive" || expr->text == "acyclic" ||
+          expr->text == "equivalence" || expr->text == "partial_order" ||
+          expr->text == "left_total" || expr->text == "surjective" ||
+          expr->text == "bijective" || expr->text == "total_order") {
         features.insert(LanguageFeature::RelationAlgebra);
+        if (expr->text == "subset" || expr->text == "disjoint" ||
+            expr->text == "functional" || expr->text == "injective" ||
+            expr->text == "reflexive" || expr->text == "irreflexive" ||
+            expr->text == "symmetric" || expr->text == "antisymmetric" ||
+            expr->text == "transitive" || expr->text == "acyclic" ||
+            expr->text == "equivalence" || expr->text == "partial_order" ||
+            expr->text == "left_total" || expr->text == "surjective" ||
+            expr->text == "bijective" || expr->text == "total_order") {
+          features.insert(LanguageFeature::RelationProperties);
+        }
       } else {
         features.insert(LanguageFeature::AlgebraicDataTypes);
         features.insert(LanguageFeature::NominalTypes);
@@ -92,6 +113,13 @@ void collect_type_features(const DataType& type, FeatureSet& features) {
   if (type.kind == DataType::Kind::Tuple || type.kind == DataType::Kind::Relation) {
     features.insert(LanguageFeature::RelationAlgebra);
   }
+  if (type.kind == DataType::Kind::Relation &&
+      std::any_of(type.elements.begin(), type.elements.end(),
+                  [](const DataType& element) {
+                    return element.kind == DataType::Kind::Relation;
+                  })) {
+    features.insert(LanguageFeature::HigherOrderRelations);
+  }
   if (type.kind == DataType::Kind::Relation && type.direct_relation_row) {
     features.insert(LanguageFeature::DirectRelationBinding);
   }
@@ -119,7 +147,19 @@ void collect_search_plans(const ExprPtr& expr, std::vector<SearchPlanSummary>& p
              (expr->text == "project" || expr->text == "join" ||
               expr->text == "compose" || expr->text == "inverse" ||
               expr->text == "closure" || expr->text == "union" ||
-              expr->text == "intersection" || expr->text == "difference")) {
+              expr->text == "intersection" || expr->text == "difference" ||
+              expr->text == "domain" || expr->text == "range" ||
+              expr->text == "product" || expr->text == "identity" ||
+              expr->text == "image" || expr->text == "preimage" ||
+              expr->text == "reflexive_closure" || expr->text == "subset" ||
+              expr->text == "disjoint" || expr->text == "functional" ||
+              expr->text == "injective" || expr->text == "reflexive" ||
+              expr->text == "irreflexive" || expr->text == "symmetric" ||
+              expr->text == "antisymmetric" || expr->text == "transitive" ||
+              expr->text == "acyclic" || expr->text == "equivalence" ||
+              expr->text == "partial_order" || expr->text == "left_total" ||
+              expr->text == "surjective" || expr->text == "bijective" ||
+              expr->text == "total_order")) {
     plans.push_back({expr->text, relation_row_limit, relation_work_limit, true, false});
   }
   collect_search_plans(expr->left, plans);
@@ -192,6 +232,10 @@ FeatureSet required_features(const Program& program) {
     static_cast<void>(name);
     collect_type_features(relation.type, result);
     result.insert(LanguageFeature::RelationAlgebra);
+    if (relation.derived_expression) {
+      result.insert(LanguageFeature::DerivedRelations);
+    }
+    collect_features(relation.derived_expression, result);
     for (const ComprehensionClause& clause : relation.clauses) {
       collect_features(clause.expression, result);
     }
@@ -238,6 +282,9 @@ FeatureSet required_features(const Program& program) {
   }
   if (!implementation.claims.empty()) result.insert(LanguageFeature::TraceClaims);
   for (const ClaimDeclaration& claim : implementation.claims) {
+    if (claim.target_kind == ClaimDeclaration::TargetKind::Relation) {
+      result.insert(LanguageFeature::RelationClaims);
+    }
     collect_temporal_features(claim.property, result);
   }
   if (std::any_of(implementation.transitions.begin(),
@@ -274,10 +321,13 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
   }
   for (const auto& [name, relation] : implementation.relations) {
     static_cast<void>(name);
-    plans.push_back({relation.enumerable ? "typed-relation-enumeration"
-                                        : "typed-relation-membership",
+    plans.push_back({relation.derived_expression
+                         ? "derived-relation-plan"
+                         : (relation.enumerable ? "typed-relation-enumeration"
+                                                : "typed-relation-membership"),
                      relation.enumerable ? relation_row_limit : 1U,
                      relation_work_limit, true, false});
+    collect_search_plans(relation.derived_expression, plans);
     for (const ComprehensionClause& clause : relation.clauses) {
       collect_search_plans(clause.expression, plans);
     }
@@ -353,6 +403,10 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::RecursiveStateSchema: return "recursive-state-schema";
     case LanguageFeature::RelationExpression: return "relation-expression";
     case LanguageFeature::FiniteDomains: return "finite-domains";
+    case LanguageFeature::DerivedRelations: return "derived-relations";
+    case LanguageFeature::RelationProperties: return "relation-properties";
+    case LanguageFeature::RelationClaims: return "relation-claims";
+    case LanguageFeature::HigherOrderRelations: return "higher-order-relations";
   }
   return "unknown";
 }

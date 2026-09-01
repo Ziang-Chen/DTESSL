@@ -3,6 +3,25 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.3
+
+- Add explicitly typed named derived `RelationPlan` declarations. Plans may
+  depend on state fields and other plans through an acyclic dependency graph;
+  they materialize only at a membership/algebra/collection boundary.
+- Add `domain`, `range`, `product`, `identity`, `image`, `preimage` and
+  `reflexive_closure` transformations.
+- Add typed finite relation properties `subset`, `disjoint`, `functional`,
+  `injective`, `reflexive`, `irreflexive`, `symmetric`, `antisymmetric`,
+  `transitive`, `acyclic`, `equivalence`, `partial_order`, `left_total`,
+  `surjective`, `bijective` and `total_order`; carrier-relative properties
+  reject relation rows outside their explicit finite carrier.
+- Add `Claim Name @ relation RelationName` as a first-class Property target;
+  finite counterexamples reuse the existing EmbeddingExpand × ClaimMonitor
+  product rather than a separate relation verifier.
+- Freeze the higher-order boundary: canonical finite `RelationValue` rows may
+  contain other `RelationValue`s, while environment-capturing `RelationPlan`s
+  are not first-class values. Add nested codec/runtime examples and tests.
+
 ## v0.4.2
 
 - Add general and single-line compact typed relation declarations. Membership

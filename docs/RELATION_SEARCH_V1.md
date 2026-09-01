@@ -29,6 +29,18 @@ Membership runs the rule directly. Consumers that need rows enumerate only on
 demand, and require every parameter to have a collection generator or static
 finite type domain.
 
+DTESSL `v0.4.3` adds named derived plans:
+
+```dtessl
+relation Reachable: relation (Node, Node) = closure(Edges)
+relation Carrier: relation Node = domain(Reachable)
+```
+
+The declared result type is checked exactly. Dependencies form a static DAG;
+cycles are rejected unless recursion is made finite and explicit through an
+operator such as `closure`. A plan may observe typed fields in the current
+Embedding, but it is not a mutable relation table or a first-class closure.
+
 ## Values and bounds
 
 - `<T,...>` is the canonical positive-arity structural product type and
@@ -62,10 +74,56 @@ budgets:
 - `closure(r)` returns the non-reflexive transitive closure of a homogeneous
   binary relation. Reflexive pairs occur only when implied by an actual cycle.
 - `union`, `intersection` and `difference` require identical relation types.
+- `domain(r)` and `range(r)` return canonical direct unary relations for the
+  first and second column of a binary relation.
+- `product(l,r)` returns the Cartesian product with concatenated row columns.
+- `identity(xs)` turns a finite set or unary relation into `<x,x>` rows.
+- `image(r,xs)` and `preimage(r,ys)` project reachable codomain/domain values.
+- `reflexive_closure(r)` adds identity rows for the carrier occurring in a
+  homogeneous binary relation. Use `union(r, identity(domain))` when isolated
+  carrier members must also be included.
+
+The following finite properties return `bool` and share the ordinary Property
+path used by guards, invariants, ensures and Claims:
+
+```text
+subset       disjoint       functional    injective
+reflexive    irreflexive    symmetric     antisymmetric
+transitive   acyclic        equivalence   partial_order
+left_total   surjective     bijective     total_order
+```
+
+`reflexive`, `equivalence`, `partial_order` and `total_order` take an explicit
+finite carrier as their second argument. `left_total` and `surjective` take the
+relevant domain/codomain carrier; `bijective` takes both. Explicit carriers
+prevent an isolated member from disappearing merely because it does not occur
+in a relation row. Carrier-relative algebra also rejects rows outside the
+declared carrier; a law cannot become true by silently treating those rows as
+part of a larger universe.
 
 Operands may be materialized relation values, lazy relation comprehensions,
 finite declared relations, or results of other algebra operations. A declared
 relation never has to be rewritten as a set/relation literal first.
+
+## Relation Claims and higher-order values
+
+```dtessl
+Claim ReachIsAcyclic @ relation Reachable:
+  always:
+    acyclic(Reachable)
+```
+
+The relation target is checked during verification and gives the Property a
+stable scope. Its atoms still use the single typed evaluator; the Solver checks
+the property at each reachable Embedding and returns an ordinary Product
+counterexample when a transition changes a dependency of the plan.
+
+`RelationValue<Row>` is recursively canonical: a row column may itself contain
+a finite RelationValue, and codec/digest/equality recurse through it. This is
+the supported higher-order data boundary. `RelationPlan<Row>` is intensional
+and may capture the current Embedding, so it cannot be stored as a row, passed
+as a closure, or compared by source identity. Using a named plan where a value
+is required explicitly materializes its finite result under the public budgets.
 
 ## Lazy comprehensions and pattern containers
 

@@ -356,7 +356,8 @@ State-local invariants filter initial and successor Embeddings; they never
 generate repairs or hidden search. Candidate-specific conditions remain in
 transition `where`, temporal obligations in `ensure`, and global/path
 properties in `Claim`. Future `derive` values remain planned and must be
-recomputable rather than silently stored.
+recomputable rather than silently stored. `v0.4.3` supplies that rule for
+named derived relations; general scalar/record derived fields are still absent.
 
 Higher-order facts such as “transition T occurred N times” are modeled over the
 explicit trace/history projection, not compiler magic.
@@ -416,6 +417,24 @@ transition Assign @ Submit(task: Task):
   oracle-like runtime guard. `where` remains the only current-Embedding
   enablement predicate.
 
+The remaining State/Transition operator gaps are explicit rather than hidden
+in the runtime:
+
+- State still lacks reusable parameterized schemas, general derived fields,
+  explicit history-state operators and dynamically created instance sets.
+- Shared mutable state has no declared consistency/merge profile beyond the
+  current equal/union merge rules.
+- Transition is not yet a first-class `TransitionRelation` that can itself be
+  projected, composed, hidden or refined with the ordinary relation algebra.
+- Source patterns do not yet bind arbitrary nested record/variant payloads;
+  such destructuring currently belongs to an ordinary typed `match` in the
+  guard.
+- Priority, fairness and nondeterministic choice remain spec/Scheduler policy,
+  not implicit runtime tie breakers.
+- Message delivery, retries, compensation and physical completion remain
+  explicit state/event/typed-port protocols; there is no ambient operator that
+  pretends a host effect completed.
+
 ## 8. Guard, predicate, requires and scheduler
 
 These concepts are related but not duplicate syntax:
@@ -444,7 +463,7 @@ with a stable semantic `PropertyUse`:
 
 ```text
 PropertyUse {
-  scope:    State | Transition | Trace | Procedure
+  scope:    State | Transition | Trace | Procedure | Relation
   trigger:  Candidate | Successor | Occurrence | Target
   failure:  Disable | Reject | Violation | Counterexample
 }
@@ -458,7 +477,7 @@ failure behavior then gives the operational disposition:
 | transition `where` | candidate search | disable this candidate and continue searching |
 | state `invariant` | initial/successor Embedding | reject the state commit |
 | transition `ensure` | selected occurrence | record an activated obligation violation |
-| named `Claim` | selected state/procedure/trace target | return a counterexample |
+| named `Claim` | selected state/procedure/trace/relation target | return a counterexample |
 
 `Pending` always defers; it is never silently converted to success. A Solver
 may report a path containing an `ensure` violation as a counterexample to the
@@ -559,8 +578,9 @@ DTESSL inputs.
 - `capture projected` retains only decisions touching those axes, records a
   causal gap, sets `replayable=false` and emits no trace artifact. It is
   useful for inspection, not conclusive global assurance.
-- `Claim C @ trace T`, `Claim C @ state S` and `Claim C @ procedure P`
-  distinguish finite evidence, a local declaration check and path exploration.
+- `Claim C @ trace T`, `Claim C @ state S`, `Claim C @ procedure P` and
+  `Claim C @ relation R` distinguish finite evidence, a local declaration
+  check, path exploration and a named derived-relation property.
   An optional `@ (context, ...)` records the explicit logical scope.
 - The core temporal basis is `always`, `eventually`, `until`, `within` and
   `since`. `never`, `before` and `weak_until` are standard frontend definitions

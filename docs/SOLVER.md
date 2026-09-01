@@ -138,7 +138,10 @@ not first-class runtime values.
 Trace claims use finite-trace semantics and include logical Round 0. Procedure
 claims start from the procedure's declared initial Embedding and quantify
 over all admitted zero-parameter transition paths. `Claim C @ state S` is a
-local check and cannot discharge an unresolved future obligation.
+local check and cannot discharge an unresolved future obligation. A
+`Claim C @ relation R` checks the named RelationPlan at each explored
+Embedding; changes to any typed state dependency therefore produce ordinary
+Product edges and reproducible counterexamples.
 
 Transition `ensure` clauses compile through the same ClaimMonitor builder. An
 occurrence activates its obligation on the successor state. This is not a

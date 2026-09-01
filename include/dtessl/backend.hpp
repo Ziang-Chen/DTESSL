@@ -48,6 +48,10 @@ enum class LanguageFeature {
   RecursiveStateSchema,
   RelationExpression,
   FiniteDomains,
+  DerivedRelations,
+  RelationProperties,
+  RelationClaims,
+  HigherOrderRelations,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

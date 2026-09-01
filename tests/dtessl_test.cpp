@@ -304,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.2", "compiled version must be v0.4.2");
+  require(dtessl::version == "0.4.3", "compiled version must be v0.4.3");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -473,6 +473,12 @@ int main() {
       }});
   roundtrip(tuple);
   roundtrip(relation);
+  const dtessl::Value higher_order_relation(dtessl::ValueRelation{
+      1U, {dtessl::ValueTuple{{relation}}}});
+  roundtrip(higher_order_relation);
+  require(higher_order_relation.as_relation().rows.front().fields.front() ==
+              relation,
+          "a canonical RelationValue could not be nested as a relation row");
   const dtessl::Value worker_name(dtessl::ValueName{"WorkerId", "a"});
   roundtrip(worker_name);
   require(dtessl::value_text(worker_name) == "WorkerId(a)",
@@ -897,6 +903,53 @@ int main() {
               std::vector<dtessl::Value>{dtessl::Value(std::int64_t{1}),
                                          dtessl::Value(std::int64_t{2})},
           "parenthesized anonymous-relation filter precedence is wrong");
+
+  bool derived_cycle_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state Model initial:
+  values: relation int = relation{1}
+
+relation Left: relation int = Right
+relation Right: relation int = Left
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    derived_cycle_rejected = true;
+  }
+  require(derived_cycle_rejected,
+          "a cyclic derived RelationPlan dependency was accepted");
+
+  bool unknown_relation_claim_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state Model initial:
+  value: int = 0
+
+Claim Missing @ relation Unknown:
+  true
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    unknown_relation_claim_rejected = true;
+  }
+  require(unknown_relation_claim_rejected,
+          "relation Claim accepted an unknown RelationPlan target");
+
+  const dtessl::Program carrier_property_program = dtessl::parse(R"DTESSL(
+state Model initial:
+  carrier: set<int> = {1, 2}
+  relation_value: relation (int, int) = relation{<1, 1>, <2, 2>, <3, 3>}
+  valid: bool = true
+
+transition Check @ Go():
+  from Model
+  to Model:
+    valid = equivalence(before.relation_value, before.carrier)
+)DTESSL");
+  dtessl::Engine carrier_property_engine(carrier_property_program);
+  const dtessl::StepResult carrier_property_result =
+      carrier_property_engine.step(dtessl::Event{"Go", {}});
+  require(!carrier_property_result.state.at("valid").as_bool(),
+          "carrier-relative relation property ignored rows outside the carrier");
 
   const dtessl::SemanticDescriptor semantic = semantic_fixture();
   const std::string canonical_descriptor = dtessl::print_semantic_descriptor(semantic);
@@ -1591,6 +1644,24 @@ state Idle initial:
     impure_function_error = true;
   }
   require(impure_function_error, "pure function observed the automaton round");
+
+  constexpr std::string_view relation_capturing_function = R"DTESSL(
+function bad() -> relation int:
+  Values
+
+state Model initial:
+  values: relation int = relation{1}
+
+relation Values: relation int = values
+)DTESSL";
+  bool relation_capture_error = false;
+  try {
+    static_cast<void>(dtessl::parse(relation_capturing_function));
+  } catch (const dtessl::Error&) {
+    relation_capture_error = true;
+  }
+  require(relation_capture_error,
+          "pure function captured an Embedding-dependent RelationPlan");
 
   constexpr std::string_view recursive_function = R"DTESSL(
 function loop(value: int) -> int:

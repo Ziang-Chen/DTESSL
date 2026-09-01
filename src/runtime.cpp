@@ -1716,6 +1716,7 @@ PropertyScope property_scope(const ClaimDeclaration& claim) {
     case ClaimDeclaration::TargetKind::Trace: return PropertyScope::Trace;
     case ClaimDeclaration::TargetKind::State: return PropertyScope::State;
     case ClaimDeclaration::TargetKind::Procedure: return PropertyScope::Procedure;
+    case ClaimDeclaration::TargetKind::Relation: return PropertyScope::Relation;
   }
   return PropertyScope::Trace;
 }

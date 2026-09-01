@@ -4,13 +4,252 @@
 
 using CollectionVisitor = std::function<bool(const Value&)>;
 
+bool relation_row_less(const ValueTuple& left, const ValueTuple& right) {
+  for (std::size_t index = 0; index < left.fields.size(); ++index) {
+    const int order = canonical_compare(left.fields[index], right.fields[index]);
+    if (order != 0) return order < 0;
+  }
+  return false;
+}
+
+bool relation_contains_row(const ValueRelation& relation,
+                           const ValueTuple& row) {
+  return std::binary_search(relation.rows.begin(), relation.rows.end(), row,
+                            relation_row_less);
+}
+
+std::vector<Value> unary_collection_values(const Value& collection) {
+  if (collection.kind() == Value::Kind::StringSet) {
+    std::vector<Value> result;
+    result.reserve(collection.as_string_set().values.size());
+    for (const std::string& item : collection.as_string_set().values) {
+      result.emplace_back(item);
+    }
+    return result;
+  }
+  if (collection.kind() == Value::Kind::Set) {
+    return collection.as_set().values;
+  }
+  if (collection.kind() == Value::Kind::Relation &&
+      collection.as_relation().arity == 1U) {
+    std::vector<Value> result;
+    result.reserve(collection.as_relation().rows.size());
+    for (const ValueTuple& row : collection.as_relation().rows) {
+      result.push_back(row.fields.front());
+    }
+    return result;
+  }
+  throw Error("expected a finite set or unary relation domain");
+}
+
+bool relation_subset_of(const ValueRelation& left,
+                        const ValueRelation& right) {
+  return std::includes(right.rows.begin(), right.rows.end(),
+                       left.rows.begin(), left.rows.end(), relation_row_less);
+}
+
+bool relation_disjoint_from(const ValueRelation& left,
+                            const ValueRelation& right) {
+  std::size_t lhs = 0;
+  std::size_t rhs = 0;
+  while (lhs < left.rows.size() && rhs < right.rows.size()) {
+    if (!relation_row_less(left.rows[lhs], right.rows[rhs]) &&
+        !relation_row_less(right.rows[rhs], left.rows[lhs])) {
+      return false;
+    }
+    if (relation_row_less(left.rows[lhs], right.rows[rhs])) ++lhs;
+    else ++rhs;
+  }
+  return true;
+}
+
+bool relation_is_functional(const ValueRelation& relation,
+                            bool inverse = false) {
+  std::size_t work = 0;
+  const std::size_t key = inverse ? 1U : 0U;
+  const std::size_t value = inverse ? 0U : 1U;
+  for (std::size_t left = 0; left < relation.rows.size(); ++left) {
+    for (std::size_t right = left + 1U; right < relation.rows.size(); ++right) {
+      if (++work > relation_work_limit) {
+        throw Error("relation property exceeds work budget");
+      }
+      if (equal_values(relation.rows[left].fields[key],
+                       relation.rows[right].fields[key]) &&
+          !equal_values(relation.rows[left].fields[value],
+                        relation.rows[right].fields[value])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool relation_is_symmetric(const ValueRelation& relation) {
+  for (const ValueTuple& row : relation.rows) {
+    if (!relation_contains_row(
+            relation, ValueTuple{{row.fields[1], row.fields[0]}})) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool relation_is_antisymmetric(const ValueRelation& relation) {
+  for (const ValueTuple& row : relation.rows) {
+    if (equal_values(row.fields[0], row.fields[1])) continue;
+    if (relation_contains_row(
+            relation, ValueTuple{{row.fields[1], row.fields[0]}})) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool relation_is_transitive(const ValueRelation& relation) {
+  std::size_t work = 0;
+  for (const ValueTuple& left : relation.rows) {
+    for (const ValueTuple& right : relation.rows) {
+      if (++work > relation_work_limit) {
+        throw Error("relation transitivity exceeds work budget");
+      }
+      if (!equal_values(left.fields[1], right.fields[0])) continue;
+      if (!relation_contains_row(
+              relation, ValueTuple{{left.fields[0], right.fields[1]}})) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+ValueRelation relation_transitive_closure(ValueRelation current) {
+  std::size_t work = 0;
+  for (;;) {
+    std::vector<ValueTuple> additions;
+    for (const ValueTuple& left : current.rows) {
+      for (const ValueTuple& right : current.rows) {
+        if (++work > relation_work_limit) {
+          throw Error("relation closure exceeds work budget");
+        }
+        if (!equal_values(left.fields[1], right.fields[0])) continue;
+        ValueTuple candidate{{left.fields[0], right.fields[1]}};
+        if (!relation_contains_row(current, candidate)) {
+          additions.push_back(std::move(candidate));
+        }
+      }
+    }
+    if (additions.empty()) return current;
+    current.rows.insert(current.rows.end(), additions.begin(), additions.end());
+    const Value normalized(std::move(current));
+    current = normalized.as_relation();
+    if (current.rows.size() > relation_row_limit) {
+      throw Error("relation closure exceeds row budget");
+    }
+  }
+}
+
+bool relation_is_reflexive(const ValueRelation& relation,
+                           const std::vector<Value>& domain) {
+  return std::all_of(domain.begin(), domain.end(), [&](const Value& item) {
+    return relation_contains_row(relation, ValueTuple{{item, item}});
+  });
+}
+
+bool relation_is_irreflexive(const ValueRelation& relation) {
+  return std::none_of(relation.rows.begin(), relation.rows.end(),
+                      [](const ValueTuple& row) {
+                        return equal_values(row.fields[0], row.fields[1]);
+                      });
+}
+
+bool relation_is_acyclic(const ValueRelation& relation) {
+  const ValueRelation closure = relation_transitive_closure(relation);
+  return relation_is_irreflexive(closure);
+}
+
+bool relation_covers_carrier(const ValueRelation& relation,
+                             const std::vector<Value>& carrier,
+                             std::size_t column) {
+  std::size_t work = 0;
+  return std::all_of(carrier.begin(), carrier.end(), [&](const Value& item) {
+    return std::any_of(relation.rows.begin(), relation.rows.end(),
+                       [&](const ValueTuple& row) {
+                         if (++work > relation_work_limit) {
+                           throw Error("relation coverage exceeds work budget");
+                         }
+                         return equal_values(item, row.fields[column]);
+                       });
+  });
+}
+
+bool relation_is_between_carriers(const ValueRelation& relation,
+                                  const std::vector<Value>& domain,
+                                  const std::vector<Value>& codomain) {
+  std::size_t work = 0;
+  const auto contains = [&](const std::vector<Value>& carrier,
+                            const Value& item) {
+    return std::any_of(carrier.begin(), carrier.end(), [&](const Value& value) {
+      if (++work > relation_work_limit) {
+        throw Error("relation carrier check exceeds work budget");
+      }
+      return equal_values(value, item);
+    });
+  };
+  return std::all_of(relation.rows.begin(), relation.rows.end(),
+                     [&](const ValueTuple& row) {
+                       return contains(domain, row.fields[0]) &&
+                              contains(codomain, row.fields[1]);
+                     });
+}
+
+bool relation_is_total_order(const ValueRelation& relation,
+                             const std::vector<Value>& carrier) {
+  if (!relation_is_between_carriers(relation, carrier, carrier) ||
+      !relation_is_reflexive(relation, carrier) ||
+      !relation_is_antisymmetric(relation) ||
+      !relation_is_transitive(relation)) {
+    return false;
+  }
+  std::size_t work = 0;
+  for (const Value& left : carrier) {
+    for (const Value& right : carrier) {
+      if (++work > relation_work_limit) {
+        throw Error("total-order property exceeds work budget");
+      }
+      if (!relation_contains_row(relation, ValueTuple{{left, right}}) &&
+          !relation_contains_row(relation, ValueTuple{{right, left}})) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool visit_collection_expression(const ExprPtr& expression,
                                  Environment& environment,
                                  const CollectionVisitor& visitor,
                                  std::size_t& work);
+Value materialize_relation(const RelationDeclaration& declaration,
+                           Environment& environment);
 
 bool relation_membership(const RelationDeclaration& declaration,
                          const Value& subject, Environment& environment) {
+  if (declaration.derived_expression) {
+    const Value relation = materialize_relation(declaration, environment);
+    const ValueTuple target = declaration.type.direct_relation_row
+                                  ? ValueTuple{{subject}}
+                                  : subject.as_tuple();
+    return std::binary_search(
+        relation.as_relation().rows.begin(), relation.as_relation().rows.end(),
+        target, [](const ValueTuple& left, const ValueTuple& right) {
+          for (std::size_t index = 0; index < left.fields.size(); ++index) {
+            const int order = canonical_compare(left.fields[index],
+                                                right.fields[index]);
+            if (order != 0) return order < 0;
+          }
+          return false;
+        });
+  }
   std::vector<Value> arguments;
   if (declaration.parameters.size() == 1U && declaration.type.direct_relation_row) {
     arguments.push_back(subject);
@@ -141,6 +380,9 @@ bool visit_comprehension(const ExprPtr& expression, Environment& environment,
 
 Value materialize_relation(const RelationDeclaration& declaration,
                            Environment& environment) {
+  if (declaration.derived_expression) {
+    return evaluate(declaration.derived_expression, environment);
+  }
   if (!declaration.enumerable) {
     throw Error("relation '" + declaration.name +
                 "' is decidable but not enumerable; add finite generators");

@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.2` typed and anonymous relation surface.
+Status: `v0.4.3` typed, derived and higher-order relation surface.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -91,6 +91,19 @@ workers: relation Worker = {
   Worker{id: WorkerId(b), capacity: 1}
 }
 ```
+
+A named rule and a named derived plan are distinct declarations:
+
+```dtessl
+relation Edge(a: Node, b: Node):
+  <a,b> in edges
+
+relation Reachable: relation (Node, Node) = closure(Edge)
+```
+
+The first is a membership predicate that may be decidable without being
+enumerable. The second is an explicitly typed, enumerable algebra plan. Both
+have stable names and one dependency DAG, but neither is a mutable global table.
 
 Quantification and deterministic selection use the same relation binding:
 

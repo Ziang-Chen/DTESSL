@@ -8,8 +8,8 @@ Updated: 2026-09-01, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.2` typed/anonymous relation, lazy
-  comprehension and structural compact-pattern slice
+- Current target: validate the `v0.4.3` derived/higher-order relation and
+  relation-targeted Claim slice
 - Stop orders: none
 
 ## Current state
@@ -71,6 +71,12 @@ Transition updates. The frontend now has separate private AST and relation
 semantic layers. Standard, `-Werror`, and ASan/UBSan builds each pass 51/51
 tests, including branch-permutation and parenthesized-filter checks.
 
+The `v0.4.3` slice adds acyclic named derived RelationPlans, relation
+transform/property operators, relation-targeted ClaimMonitor products and
+canonical nested RelationValues. The positive model checks every operator and
+the negative model reconstructs the exact AddCycle counterexample. Standard,
+`-Werror`, and ASan/UBSan builds each pass 56/56 tests.
+
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
@@ -106,7 +112,7 @@ tests, including branch-permutation and parenthesized-filter checks.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.4.2` | Built CLI reports `v0.4.2` | pass |
+| Version identity | CMake/generated header target `0.4.3` | Built CLI reports `v0.4.3` | pass |
 | Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
@@ -114,6 +120,10 @@ tests, including branch-permutation and parenthesized-filter checks.
 | Recursive relation expression | Tuple/name/value subjects plus explicit `and`/`or` parser/type/evaluator tests; false conjunction rejects initial embedding | `<a,b> ~ R1 and (<a,b> ~ R2 or <a,b> ~ R3)` runs in the recursive scheduler fixture | pass |
 | Typed relation rules | General and compact declarations share typed parameters, direct membership and bounded lazy enumeration | `typed_relations.dtessl` composes declared relations through closure/union | pass |
 | Anonymous relation containers | `<...>` preserves product order; `{...}` canonicalizes unordered union branches; nested compact Transition patterns retain structural AST | Independent set union, explicit Cartesian product, grouped filters and nested Scatter transition run | pass |
+| Derived RelationPlan DAG | Explicit result types, state-dependent algebra plans and named-plan dependencies are verified; cycles reject | Reachable/Carrier/ReachWithSelf recompute from the current Graph Embedding | pass |
+| Relation property algebra | Domain/range/product/identity/image/preimage/reflexive closure plus sixteen standard properties share typed budgets | Operator fixture sets `valid=true` and renders canonical derived rows | pass |
+| Relation-targeted Claim | `Claim @ relation` validates its target and reuses the ordinary Property/ClaimMonitor Product | Transitivity verifies; AddCycle reconstructs an acyclicity counterexample | pass |
+| Higher-order RelationValue | Relation row types recurse; codec, equality, digest and algebra preserve nested canonical relation values; RelationPlan capture is forbidden in pure functions | Tagged relation fixture extracts and quantifies one nested relation | pass |
 | Unified RelationMatch path | Equality/order/membership and recursive `~` lower to one typed AST/evaluator; runtime and ClaimMonitor atoms call it without private predicate evaluation | Existing comparison corpus plus nested tuple relation and canonical-render tests pass | pass |
 | Trace relation syntax | `(a,b) ~ happens_before` has a distinct trace-domain AST case; compatibility `before(a,b)` shares it; finite nesting executes and unsupported Solver nesting is inconclusive | Procedure Product verifies strict ordering; closed trace satisfies nested `eventually(RelationMatch)` | pass |
 | Recursive StateSchema | General/compact recursive declaration, duplicate/path/depth checks, local typed fields/invariants and structural transition matching | Nested scheduler and switch examples execute and Claim search reaches three Embeddings | pass |

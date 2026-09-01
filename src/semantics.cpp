@@ -10,7 +10,7 @@ int compare_values(const Value& left, const Value& right);
 // and, critically, what a false or unresolved result means. Surface
 // invariant/where/ensure/Claim declarations all lower to this stable policy
 // model without losing their distinct operational behavior.
-enum class PropertyScope { State, Transition, Trace, Procedure };
+enum class PropertyScope { State, Transition, Trace, Procedure, Relation };
 enum class PropertyTrigger { Candidate, Successor, Occurrence, Target };
 enum class PropertyFailure { Disable, Reject, Violation, Counterexample };
 enum class PropertyTruth { Satisfied, Violated, Pending };

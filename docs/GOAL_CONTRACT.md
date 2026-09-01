@@ -86,7 +86,7 @@ The project is complete only when all of the following are evidenced:
   anonymous local automaton transitions. Those declarations are unordered
   graph edges scoped to the procedure, not admission rules, traces or workflow
   steps. Named external work still requires typed TransitionId injection.
-- Claims bind explicitly to a trace, state or procedure. Their five primitive
+- Claims bind explicitly to a trace, state, procedure or named relation. Their five primitive
   temporal operators compile to finite monitor state, and verification explores
   `EmbeddingExpand × ClaimMonitor`; derived temporal names do not add Solver cases.
 - Golden replay consumes a complete procedure artifact: initial/checkpoint

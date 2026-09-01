@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; current typed-relation candidate: `v0.4.2`.
+`v0.2.3`; current relation-property candidate: `v0.4.3`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -57,6 +57,7 @@ ordered workflow steps. Static topology and dynamic `where` remain distinct.
 | `v0.4.0` | Recursive StateSchema, Embedding and RelationMatch | General/compact recursive `A(B)` state declarations, `,` product and `|` choice, recursively typed values/invariants, structural transition matching, semantic `Embedding`/`EmbeddingExpand`, schema-path `RawKeyMap`, unified comparison/membership `RelationMatch`, recursive `subject ~ relation-expression`, `(a,b) ~ happens_before` trace relations, distributed State/Transition/Procedure seed relations aggregated by Trace/Session, occurrence-owned causal and eventually-interval closure, generic typed `TraceArtifact` replay, and immutable per-RoundId occurrence input plus before/after typed state evidence; derived/shared state remains a later v0.4.x slice |
 | `v0.4.1` | State case, finite constraints, delta witnesses | Named/anonymous recursive `case` axes with no inferred edges, compact/full syntax parity, `typetrait<T>`, enumeration and integer-range constraints, bounded parameter generation through ordinary guard/invariant admission, runtime and Solver `EmbeddingDelta` plus parent/child digest verification |
 | `v0.4.2` | Lazy typed relations and pattern containers | General/compact rule relation declarations, lazy set/relation comprehensions, all finite relation algebra over declared plans, canonical `<...>` tuple/pattern/update containers, composite runtime relation filters, compact pattern/update transition lowering, typed-class application sugar, and separated private AST/relation-semantics files |
+| `v0.4.3` | Derived/higher-order relation closure | Typed named derived RelationPlans with dependency DAGs, domain/range/product/identity/image/preimage/reflexive closure, standard finite relation properties, `Claim @ relation`, canonical nested RelationValues and explicit RelationValue/RelationPlan boundary |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |
 | `v0.7.0` | Monitor automata and assurance | Compile existing claims/invariants to monitor automata, trace redaction, evidence metadata and refinement-oriented statuses |

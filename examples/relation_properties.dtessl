@@ -1,0 +1,62 @@
+name Node
+
+state Graph initial:
+  nodes: set<Node> = {Node(a), Node(b), Node(c)}
+  starts: set<Node> = {Node(a)}
+  ends: set<Node> = {Node(c)}
+  edges: relation (Node, Node) = relation{
+    <Node(a), Node(b)>,
+    <Node(b), Node(c)>
+  }
+  backedge: relation (Node, Node) = relation{<Node(c), Node(a)>}
+  tagged: relation (relation (Node, Node), string) = relation{
+    <relation{<Node(a), Node(b)>}, "base">
+  }
+  reach: relation (Node, Node) = relation{}
+  carriers: relation Node = relation{}
+  terminal: relation Node = relation{}
+  forward: relation Node = relation{}
+  backward: relation Node = relation{}
+  pairs: relation (Node, Node) = relation{}
+  identities: relation (Node, Node) = relation{}
+  extracted: relation relation (Node, Node) = relation{}
+  higher_count: int = 0
+  valid: bool = false
+
+// A named derived RelationPlan. It is evaluated against the current Graph
+// Embedding and remains a plan until a consumer requests rows.
+relation Reachable: relation (Node, Node) = closure(edges)
+relation Carrier: relation Node = domain(Reachable)
+relation ReachWithSelf: relation (Node, Node) = reflexive_closure(Reachable)
+
+// A relation whose row is itself a canonical finite RelationValue.
+relation TransitiveFamily(r: relation (Node, Node)):
+  r in domain(tagged),
+  transitive(r)
+
+transition Analyze @ Tick():
+  from Graph
+  to Graph:
+    reach = Reachable
+    carriers = Carrier
+    terminal = range(Reachable)
+    forward = image(Reachable, before.starts)
+    backward = preimage(Reachable, before.ends)
+    pairs = product(domain(before.edges), range(before.edges))
+    identities = identity(before.nodes)
+    extracted = domain(before.tagged)
+    higher_count = count(TransitiveFamily)
+    valid = subset(before.edges, Reachable) and disjoint(before.edges, before.backedge) and functional(before.edges) and injective(before.edges) and left_total(before.edges, domain(before.edges)) and surjective(before.edges, range(before.edges)) and bijective(before.edges, domain(before.edges), range(before.edges)) and irreflexive(Reachable) and transitive(Reachable) and acyclic(Reachable) and partial_order(ReachWithSelf, before.nodes) and total_order(ReachWithSelf, before.nodes) and equivalence(identity(before.nodes), before.nodes)
+
+transition AddCycle @ Break():
+  from Graph
+  to Graph:
+    edges = union(before.edges, before.backedge)
+
+Claim ReachIsTransitive @ relation Reachable:
+  always:
+    transitive(Reachable)
+
+Claim ReachIsAcyclic @ relation Reachable:
+  always:
+    acyclic(Reachable)

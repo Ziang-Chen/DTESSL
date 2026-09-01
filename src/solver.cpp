@@ -243,7 +243,9 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
           ? PropertyScope::Trace
           : (claim->target_kind == ClaimDeclaration::TargetKind::State
                  ? PropertyScope::State
-                 : PropertyScope::Procedure);
+                 : (claim->target_kind == ClaimDeclaration::TargetKind::Procedure
+                        ? PropertyScope::Procedure
+                        : PropertyScope::Relation));
   const PropertyUse claim_use{claim->name, claim_scope,
                               PropertyTrigger::Target,
                               PropertyFailure::Counterexample};

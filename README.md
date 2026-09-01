@@ -1,4 +1,4 @@
-# DTESSL v0.4.2
+# DTESSL v0.4.3
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -31,7 +31,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - `transition` 的 `case (source-set) -> (target-set)` 定义原子状态集重写；
 - `procedure` 定义持久自动机实例的初态/上下文，并可内联定义匿名局部 transition；
 - `trace` 定义原生静态事件序列或按 `@context` 捕获的动态执行投影；
-- `Claim` 可绑定 `trace/state/procedure`，并以 `always/eventually/until/within/since`
+- `Claim` 可绑定 `trace/state/procedure/relation`，并以 `always/eventually/until/within/since`
   判定有限 trace 或 EmbeddingExpand 路径。
 
 语义上，`StateSchema` 是递归静态结构，`Embedding` 是它在一个时刻的具体嵌入，
@@ -243,7 +243,7 @@ capture-filter = "state" "(" [ state-binding { "," state-binding } ] ")" NEWLINE
                | "procedure" "(" [ Name { "," Name } ] ")" NEWLINE
                | "eventually" "state" "(" state-binding ")" NEWLINE
                | "eventually" "transition" "(" qualified-name ")" NEWLINE ;
-claim       = "Claim" Name "@" [ "trace" | "state" | "procedure" ] Name
+claim       = "Claim" Name "@" [ "trace" | "state" | "procedure" | "relation" ] Name
                 [ "@" "(" Name { "," Name } ")" ] ":" INDENT
                 ( temporal-expression NEWLINE
                 | ( "always" | "eventually" ) ":" INDENT expression DEDENT
@@ -308,7 +308,9 @@ relation-declaration = "relation" Name "(" parameter { "," parameter } ")"
                          { "," comprehension-clause } DEDENT
                      | "relation" "<" parameter { "," parameter } ">"
                          "~" Name ":" comprehension-clause
-                         { "," comprehension-clause } ";" ;
+                         { "," comprehension-clause } ";"
+                     | "relation" Name ":" relation-type
+                         "=" expression ;
 match-expression = "match" name "{"
                      pattern "->" expression
                      { "," pattern "->" expression }
@@ -481,6 +483,9 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
   也不是 capability 或 authority；
 - `relation Worker`/`relation (A,B)` 定义关系值；顶层 `relation Name(...)`
   定义惰性规则 relation，`subject ~ relation` 执行统一 RelationMatch；
+- `relation Name: relation (...) = algebra(...)` 定义依赖当前 Embedding 的
+  命名派生 RelationPlan；`Claim ... @ relation Name` 使用同一 Property/Solver
+  基础设施搜索关系属性反例；
 - `[T]`、`[]`、`[value]` 分别表示 typed option、无值和有值，列表显式写作
   `list[...]`；
 - 布尔运算 `and/or/not`；
@@ -502,7 +507,11 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
 
 - `project(r, column...)`、`join(left, li, right, ri)`；
 - 二元关系的 `compose`、`inverse` 和非自反传递 `closure`；
-- `union`、`intersection`、`difference`；
+- `union`、`intersection`、`difference`、`domain`、`range`、`product`、
+  `identity`、`image`、`preimage`、`reflexive_closure`；
+- `subset/disjoint/functional/injective/reflexive/irreflexive/symmetric/`
+  `antisymmetric/transitive/acyclic/equivalence/partial_order/left_total/`
+  `surjective/bijective/total_order` 等有限关系性质；
 - `E/A` 量词、成员关系和 `count`；
 - `select row ~ r where p by lex(score...)`，结果为 typed option。
 
@@ -565,7 +574,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.2 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.3 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

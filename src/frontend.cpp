@@ -484,6 +484,10 @@ struct RelationDeclaration {
   std::string name;
   std::vector<Parameter> parameters;
   std::vector<ComprehensionClause> clauses;
+  // A derived relation is an intensional RelationPlan with an explicit
+  // extensional result type. It is evaluated against the current Embedding
+  // only when membership, algebra, or collection consumption demands rows.
+  ExprPtr derived_expression;
   DataType type;
   bool enumerable{false};
   std::size_t line{0};
@@ -667,7 +671,7 @@ struct TraceDeclaration {
 };
 
 struct ClaimDeclaration {
-  enum class TargetKind { Trace, State, Procedure };
+  enum class TargetKind { Trace, State, Procedure, Relation };
   std::string name;
   TargetKind target_kind{TargetKind::Trace};
   std::string target;
@@ -2183,6 +2187,27 @@ RelationDeclaration Parser::relation_declaration() {
 
   if (!compact) {
     result.name = identifier();
+    if (match(":")) {
+      result.type = type();
+      if (result.type.kind != DataType::Kind::Relation) {
+        fail(start, "derived relation declaration requires a relation result type");
+      }
+      expect("=");
+      std::vector<Token> expression_tokens;
+      while (!at(TokenKind::Newline)) {
+        if (at(TokenKind::End)) fail(peek(), "derived relation must end on one line");
+        expression_tokens.push_back(take());
+      }
+      newline();
+      if (expression_tokens.empty()) {
+        fail(start, "derived relation declaration needs an algebra expression");
+      }
+      FlatParser expression_parser(std::move(expression_tokens), types_);
+      result.derived_expression = expression_parser.expression();
+      expression_parser.expect_end();
+      result.enumerable = true;
+      return result;
+    }
     expect("(");
   }
   std::set<std::string, std::less<>> parameter_names;
@@ -3876,6 +3901,9 @@ ClaimDeclaration Parser::claim() {
   } else if (match("procedure")) {
     result.target_kind = ClaimDeclaration::TargetKind::Procedure;
     result.target = identifier();
+  } else if (match("relation")) {
+    result.target_kind = ClaimDeclaration::TargetKind::Relation;
+    result.target = identifier();
   } else {
     // v0.3 compatibility: an untyped target after @ denotes a trace.
     result.target_kind = ClaimDeclaration::TargetKind::Trace;
@@ -5277,8 +5305,21 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
           expr->text == "project" || expr->text == "join" ||
           expr->text == "compose" || expr->text == "inverse" ||
           expr->text == "closure" || expr->text == "union" ||
-          expr->text == "intersection" || expr->text == "difference";
-      if (relation_operation) {
+          expr->text == "intersection" || expr->text == "difference" ||
+          expr->text == "domain" || expr->text == "range" ||
+          expr->text == "product" || expr->text == "identity" ||
+          expr->text == "image" || expr->text == "preimage" ||
+          expr->text == "reflexive_closure";
+      const bool relation_property =
+          expr->text == "subset" || expr->text == "disjoint" ||
+          expr->text == "functional" || expr->text == "injective" ||
+          expr->text == "reflexive" || expr->text == "irreflexive" ||
+          expr->text == "symmetric" || expr->text == "antisymmetric" ||
+          expr->text == "transitive" || expr->text == "acyclic" ||
+          expr->text == "equivalence" || expr->text == "partial_order" ||
+          expr->text == "left_total" || expr->text == "surjective" ||
+          expr->text == "bijective" || expr->text == "total_order";
+      if (relation_operation || relation_property) {
         if (expr->type_argument) throw Error("relation operation cannot take a type argument");
         const auto argument_type = [&](std::size_t index) {
           if (index >= expr->children.size()) throw Error("relation operation has too few arguments");
@@ -5302,6 +5343,65 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
           }
           return static_cast<std::size_t>(expr->children[index]->literal->as_int());
         };
+        const auto unary_domain_item = [&](std::size_t index) {
+          const DataType domain = argument_type(index);
+          if (domain.kind == DataType::Kind::Set) return *domain.first;
+          if (domain.kind == DataType::Kind::Relation &&
+              domain.elements.size() == 1U) {
+            return domain.elements.front();
+          }
+          throw Error("relation domain must be a finite set or unary relation");
+        };
+        if (relation_property) {
+          const DataType relation = argument_type(0);
+          if (relation.kind != DataType::Kind::Relation) {
+            throw Error(expr->text + " requires a relation");
+          }
+          const bool pair_property =
+              expr->text == "subset" || expr->text == "disjoint";
+          const bool domain_property =
+              expr->text == "reflexive" || expr->text == "equivalence" ||
+              expr->text == "partial_order" || expr->text == "total_order";
+          const bool mapping_property =
+              expr->text == "functional" || expr->text == "injective" ||
+              expr->text == "left_total" || expr->text == "surjective" ||
+              expr->text == "bijective";
+          if (pair_property) {
+            if (expr->children.size() != 2U || argument_type(1) != relation) {
+              throw Error(expr->text + " requires two relations of the same type");
+            }
+          } else {
+            if (relation.elements.size() != 2U ||
+                (!mapping_property &&
+                 relation.elements[0] != relation.elements[1])) {
+              throw Error(expr->text + " requires a homogeneous binary relation");
+            }
+            if (expr->text == "left_total" || expr->text == "surjective") {
+              const std::size_t column = expr->text == "left_total" ? 0U : 1U;
+              if (expr->children.size() != 2U ||
+                  unary_domain_item(1) != relation.elements[column]) {
+                throw Error(expr->text +
+                            " requires a matching finite carrier domain");
+              }
+            } else if (expr->text == "bijective") {
+              if (expr->children.size() != 3U ||
+                  unary_domain_item(1) != relation.elements[0] ||
+                  unary_domain_item(2) != relation.elements[1]) {
+                throw Error("bijective requires matching domain and codomain carriers");
+              }
+            } else if (domain_property) {
+              if (expr->children.size() != 2U ||
+                  unary_domain_item(1) != relation.elements[0]) {
+                throw Error(expr->text +
+                            " requires a matching finite carrier domain");
+              }
+            } else if (expr->children.size() != 1U) {
+              throw Error(expr->text + " requires one relation argument");
+            }
+          }
+          expr->resolved_type = bool_type();
+          return bool_type();
+        }
         DataType result;
         if (expr->text == "project") {
           const DataType relation = argument_type(0);
@@ -5317,6 +5417,54 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
             projected.push_back(relation.elements[column]);
           }
           result = DataType(DataType::Kind::Relation, std::move(projected));
+        } else if (expr->text == "domain" || expr->text == "range") {
+          const DataType relation = argument_type(0);
+          if (expr->children.size() != 1U ||
+              relation.kind != DataType::Kind::Relation ||
+              relation.elements.size() != 2U) {
+            throw Error(expr->text + " requires one binary relation");
+          }
+          const std::size_t column = expr->text == "domain" ? 0U : 1U;
+          result = DataType(DataType::Kind::Relation,
+                            std::vector<DataType>{relation.elements[column]});
+          result.direct_relation_row = true;
+        } else if (expr->text == "identity") {
+          if (expr->children.size() != 1U) {
+            throw Error("identity requires one finite carrier domain");
+          }
+          const DataType item = unary_domain_item(0);
+          result = DataType(DataType::Kind::Relation,
+                            std::vector<DataType>{item, item});
+        } else if (expr->text == "product") {
+          const DataType left = argument_type(0);
+          const DataType right = argument_type(1);
+          if (expr->children.size() != 2U ||
+              left.kind != DataType::Kind::Relation ||
+              right.kind != DataType::Kind::Relation) {
+            throw Error("product requires two relations");
+          }
+          std::vector<DataType> columns = left.elements;
+          columns.insert(columns.end(), right.elements.begin(),
+                         right.elements.end());
+          if (columns.size() > relation_arity_limit) {
+            throw Error("relation product exceeds arity limit");
+          }
+          result = DataType(DataType::Kind::Relation, std::move(columns));
+        } else if (expr->text == "image" || expr->text == "preimage") {
+          const DataType relation = argument_type(0);
+          if (expr->children.size() != 2U ||
+              relation.kind != DataType::Kind::Relation ||
+              relation.elements.size() != 2U) {
+            throw Error(expr->text + " requires a binary relation and domain");
+          }
+          const std::size_t input = expr->text == "image" ? 0U : 1U;
+          const std::size_t output = expr->text == "image" ? 1U : 0U;
+          if (unary_domain_item(1) != relation.elements[input]) {
+            throw Error(expr->text + " domain has the wrong element type");
+          }
+          result = DataType(DataType::Kind::Relation,
+                            std::vector<DataType>{relation.elements[output]});
+          result.direct_relation_row = true;
         } else if (expr->text == "inverse") {
           const DataType relation = argument_type(0);
           if (expr->children.size() != 1U || relation.kind != DataType::Kind::Relation ||
@@ -5325,12 +5473,14 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
           }
           result = DataType(DataType::Kind::Relation,
                             std::vector<DataType>{relation.elements[1], relation.elements[0]});
-        } else if (expr->text == "closure") {
+        } else if (expr->text == "closure" ||
+                   expr->text == "reflexive_closure") {
           const DataType relation = argument_type(0);
           if (expr->children.size() != 1U || relation.kind != DataType::Kind::Relation ||
               relation.elements.size() != 2U ||
               relation.elements[0] != relation.elements[1]) {
-            throw Error("closure requires one homogeneous binary relation");
+            throw Error(expr->text +
+                        " requires one homogeneous binary relation");
           }
           result = relation;
         } else if (expr->text == "compose") {
@@ -5582,6 +5732,11 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
         for (const Parameter& parameter : relation->second.parameters) {
           relation_shadowed.insert(parameter.name);
         }
+        if (relation->second.derived_expression) {
+          collect_reads(relation->second.derived_expression, state,
+                        relation_shadowed, reads);
+          return;
+        }
         for (const ComprehensionClause& clause : relation->second.clauses) {
           collect_reads(clause.expression, state, relation_shadowed, reads);
         }
@@ -5740,6 +5895,7 @@ void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
 }
 
 void inspect_function_body(const ExprPtr& expr, const FunctionRegistry& functions,
+                           const RelationRegistry& relations,
                            std::set<std::string, std::less<>>& calls) {
   if (!expr) return;
   if (expr->kind == Expr::Kind::Name &&
@@ -5750,13 +5906,22 @@ void inspect_function_body(const ExprPtr& expr, const FunctionRegistry& function
   if (expr->kind == Expr::Kind::Construct && functions.contains(expr->text)) {
     calls.insert(expr->text);
   }
-  inspect_function_body(expr->left, functions, calls);
-  inspect_function_body(expr->right, functions, calls);
-  inspect_function_body(expr->third, functions, calls);
-  for (const ExprPtr& child : expr->children) inspect_function_body(child, functions, calls);
-  for (const MatchArm& arm : expr->arms) inspect_function_body(arm.body, functions, calls);
+  if (expr->kind == Expr::Kind::Name && relations.contains(expr->text)) {
+    throw Error("pure function cannot capture named RelationPlan '" + expr->text +
+                    "'; pass a finite RelationValue parameter",
+                expr->line, expr->column);
+  }
+  inspect_function_body(expr->left, functions, relations, calls);
+  inspect_function_body(expr->right, functions, relations, calls);
+  inspect_function_body(expr->third, functions, relations, calls);
+  for (const ExprPtr& child : expr->children) {
+    inspect_function_body(child, functions, relations, calls);
+  }
+  for (const MatchArm& arm : expr->arms) {
+    inspect_function_body(arm.body, functions, relations, calls);
+  }
   for (const ComprehensionClause& clause : expr->clauses) {
-    inspect_function_body(clause.expression, functions, calls);
+    inspect_function_body(clause.expression, functions, relations, calls);
   }
 }
 
@@ -5765,7 +5930,12 @@ void verify_program(Program::Impl& program) {
   FunctionScope function_scope(program.functions, &program.relations, &program.types);
   static const std::set<std::string, std::less<>> reserved_functions{
       "tuple", "project", "join", "compose", "inverse", "closure",
-      "union", "intersection", "difference", "none", "some", "ok", "err"};
+      "union", "intersection", "difference", "domain", "range", "product",
+      "identity", "image", "preimage", "reflexive_closure", "subset",
+      "disjoint", "functional", "injective", "reflexive", "irreflexive",
+      "symmetric", "antisymmetric", "transitive", "acyclic", "equivalence",
+      "partial_order", "left_total", "surjective", "bijective", "total_order",
+      "none", "some", "ok", "err"};
   std::map<std::string, std::set<std::string, std::less<>>, std::less<>> call_graph;
   std::map<std::string, std::set<std::string, std::less<>>, std::less<>> relation_graph;
   TypeEnvironment relation_state_types;
@@ -5799,6 +5969,19 @@ void verify_program(Program::Impl& program) {
         program.functions.contains(name)) {
       throw Error("relation name '" + name + "' conflicts with a type, function, or builtin",
                   relation.line, relation.column);
+    }
+    if (relation.derived_expression) {
+      collect_relations(relation.derived_expression, relation_graph[name]);
+      const DataType actual = infer_type(relation.derived_expression,
+                                         relation_state_types, {}, {},
+                                         program.types);
+      if (actual != relation.type) {
+        throw Error("derived relation '" + name + "' expression has type '" +
+                        type_identity(actual) + "', expected '" +
+                        type_identity(relation.type) + "'",
+                    relation.line, relation.column);
+      }
+      continue;
     }
     TypeEnvironment parameters;
     for (const Parameter& parameter : relation.parameters) {
@@ -5867,7 +6050,8 @@ void verify_program(Program::Impl& program) {
                     parameter.line, parameter.column);
       }
     }
-    inspect_function_body(function.body, program.functions, call_graph[name]);
+    inspect_function_body(function.body, program.functions, program.relations,
+                          call_graph[name]);
     if (infer_type(function.body, {}, {}, parameters, program.types) != function.result) {
       throw Error("function '" + name + "' body has the wrong result type",
                   function.line, function.column);
@@ -6594,6 +6778,11 @@ void verify_program(Program::Impl& program) {
       }
     } else if (claim.target_kind == ClaimDeclaration::TargetKind::State) {
       claimed_state = &find_state(program, claim.target);
+    } else if (claim.target_kind == ClaimDeclaration::TargetKind::Relation) {
+      if (!program.relations.contains(claim.target)) {
+        throw Error("Claim references unknown relation '" + claim.target + "'",
+                    claim.line, claim.column);
+      }
     } else if (!program.procedures.contains(claim.target)) {
       throw Error("Claim references unknown procedure '" + claim.target + "'",
                   claim.line, claim.column);
@@ -6630,6 +6819,10 @@ void verify_program(Program::Impl& program) {
       }
     }
     if (claim.count_at_most) {
+      if (claim.target_kind == ClaimDeclaration::TargetKind::Relation) {
+        throw Error("relation Claim requires a typed relation property, not transition count",
+                    claim.line, claim.column);
+      }
       const bool base_transition = std::any_of(
           program.transitions.begin(), program.transitions.end(),
           [&](const Transition& transition) { return transition.name == claim.transition; });
@@ -7219,7 +7412,85 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
           expr->text == "project" || expr->text == "join" ||
           expr->text == "compose" || expr->text == "inverse" ||
           expr->text == "closure" || expr->text == "union" ||
-          expr->text == "intersection" || expr->text == "difference";
+          expr->text == "intersection" || expr->text == "difference" ||
+          expr->text == "domain" || expr->text == "range" ||
+          expr->text == "product" || expr->text == "identity" ||
+          expr->text == "image" || expr->text == "preimage" ||
+          expr->text == "reflexive_closure";
+      const bool relation_property =
+          expr->text == "subset" || expr->text == "disjoint" ||
+          expr->text == "functional" || expr->text == "injective" ||
+          expr->text == "reflexive" || expr->text == "irreflexive" ||
+          expr->text == "symmetric" || expr->text == "antisymmetric" ||
+          expr->text == "transitive" || expr->text == "acyclic" ||
+          expr->text == "equivalence" || expr->text == "partial_order" ||
+          expr->text == "left_total" || expr->text == "surjective" ||
+          expr->text == "bijective" || expr->text == "total_order";
+      if (relation_property) {
+        const ValueRelation relation =
+            evaluate(expr->children[0], environment).as_relation();
+        if (expr->text == "subset" || expr->text == "disjoint") {
+          const ValueRelation other =
+              evaluate(expr->children[1], environment).as_relation();
+          return Value(expr->text == "subset"
+                           ? relation_subset_of(relation, other)
+                           : relation_disjoint_from(relation, other));
+        }
+        if (expr->text == "functional") {
+          return Value(relation_is_functional(relation));
+        }
+        if (expr->text == "injective") {
+          return Value(relation_is_functional(relation, true));
+        }
+        if (expr->text == "irreflexive") {
+          return Value(relation_is_irreflexive(relation));
+        }
+        if (expr->text == "symmetric") {
+          return Value(relation_is_symmetric(relation));
+        }
+        if (expr->text == "antisymmetric") {
+          return Value(relation_is_antisymmetric(relation));
+        }
+        if (expr->text == "transitive") {
+          return Value(relation_is_transitive(relation));
+        }
+        if (expr->text == "acyclic") {
+          return Value(relation_is_acyclic(relation));
+        }
+        if (expr->text == "left_total" || expr->text == "surjective") {
+          const std::vector<Value> carrier = unary_collection_values(
+              evaluate(expr->children[1], environment));
+          return Value(relation_covers_carrier(
+              relation, carrier, expr->text == "left_total" ? 0U : 1U));
+        }
+        if (expr->text == "bijective") {
+          const std::vector<Value> domain = unary_collection_values(
+              evaluate(expr->children[1], environment));
+          const std::vector<Value> codomain = unary_collection_values(
+              evaluate(expr->children[2], environment));
+          return Value(relation_is_between_carriers(relation, domain, codomain) &&
+                       relation_is_functional(relation) &&
+                       relation_is_functional(relation, true) &&
+                       relation_covers_carrier(relation, domain, 0U) &&
+                       relation_covers_carrier(relation, codomain, 1U));
+        }
+        const std::vector<Value> carrier = unary_collection_values(
+            evaluate(expr->children[1], environment));
+        const bool on_carrier =
+            relation_is_between_carriers(relation, carrier, carrier);
+        const bool reflexive =
+            on_carrier && relation_is_reflexive(relation, carrier);
+        if (expr->text == "reflexive") return Value(reflexive);
+        const bool transitive = relation_is_transitive(relation);
+        if (expr->text == "equivalence") {
+          return Value(reflexive && relation_is_symmetric(relation) && transitive);
+        }
+        if (expr->text == "partial_order") {
+          return Value(reflexive && relation_is_antisymmetric(relation) &&
+                       transitive);
+        }
+        return Value(relation_is_total_order(relation, carrier));
+      }
       if (relation_operation) {
         const auto column = [&](std::size_t index) {
           return static_cast<std::size_t>(expr->children[index]->literal->as_int());
@@ -7231,6 +7502,71 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
           }
           return false;
         };
+        if (expr->text == "domain" || expr->text == "range") {
+          const ValueRelation input =
+              evaluate(expr->children[0], environment).as_relation();
+          const std::size_t column_index = expr->text == "domain" ? 0U : 1U;
+          ValueRelation output{1U, {}};
+          output.rows.reserve(input.rows.size());
+          for (const ValueTuple& row : input.rows) {
+            output.rows.push_back(ValueTuple{{row.fields[column_index]}});
+          }
+          return Value(std::move(output));
+        }
+        if (expr->text == "identity") {
+          const std::vector<Value> carrier = unary_collection_values(
+              evaluate(expr->children[0], environment));
+          ValueRelation output{2U, {}};
+          output.rows.reserve(carrier.size());
+          for (const Value& item : carrier) {
+            output.rows.push_back(ValueTuple{{item, item}});
+          }
+          return Value(std::move(output));
+        }
+        if (expr->text == "image" || expr->text == "preimage") {
+          const ValueRelation relation =
+              evaluate(expr->children[0], environment).as_relation();
+          const std::vector<Value> input = unary_collection_values(
+              evaluate(expr->children[1], environment));
+          const std::size_t input_column = expr->text == "image" ? 0U : 1U;
+          const std::size_t output_column = expr->text == "image" ? 1U : 0U;
+          ValueRelation output{1U, {}};
+          std::size_t work = 0;
+          for (const ValueTuple& row : relation.rows) {
+            if (std::any_of(input.begin(), input.end(), [&](const Value& item) {
+                  if (++work > relation_work_limit) {
+                    throw Error("relation image exceeds work budget");
+                  }
+                  return equal_values(item, row.fields[input_column]);
+                })) {
+              output.rows.push_back(ValueTuple{{row.fields[output_column]}});
+            }
+          }
+          return Value(std::move(output));
+        }
+        if (expr->text == "product") {
+          const ValueRelation left =
+              evaluate(expr->children[0], environment).as_relation();
+          const ValueRelation right =
+              evaluate(expr->children[1], environment).as_relation();
+          ValueRelation output{left.arity + right.arity, {}};
+          std::size_t work = 0;
+          for (const ValueTuple& lhs : left.rows) {
+            for (const ValueTuple& rhs : right.rows) {
+              if (++work > relation_work_limit) {
+                throw Error("relation product exceeds work budget");
+              }
+              ValueTuple row{lhs.fields};
+              row.fields.insert(row.fields.end(), rhs.fields.begin(),
+                                rhs.fields.end());
+              output.rows.push_back(std::move(row));
+              if (output.rows.size() > relation_row_limit) {
+                throw Error("relation product exceeds row budget");
+              }
+            }
+          }
+          return Value(std::move(output));
+        }
         if (expr->text == "project") {
           const ValueRelation input = evaluate(expr->children[0], environment).as_relation();
           ValueRelation output{expr->children.size() - 1U, {}};
@@ -7303,29 +7639,19 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
           output.rows.assign(unique_rows.begin(), unique_rows.end());
           return Value(std::move(output));
         }
-        ValueRelation current = evaluate(expr->children[0], environment).as_relation();
-        std::size_t work = 0;
-        for (;;) {
-          std::vector<ValueTuple> additions;
-          for (const ValueTuple& left : current.rows) {
-            for (const ValueTuple& right : current.rows) {
-              if (++work > relation_work_limit) throw Error("relation closure exceeds work budget");
-              if (!equal_values(left.fields[1], right.fields[0])) continue;
-              ValueTuple candidate{{left.fields[0], right.fields[1]}};
-              if (!std::binary_search(current.rows.begin(), current.rows.end(), candidate,
-                                      row_less)) {
-                additions.push_back(std::move(candidate));
-              }
-            }
+        ValueRelation current = relation_transitive_closure(
+            evaluate(expr->children[0], environment).as_relation());
+        if (expr->text == "reflexive_closure") {
+          std::vector<Value> carrier;
+          for (const ValueTuple& row : current.rows) {
+            carrier.push_back(row.fields[0]);
+            carrier.push_back(row.fields[1]);
           }
-          if (additions.empty()) return Value(std::move(current));
-          current.rows.insert(current.rows.end(), additions.begin(), additions.end());
-          const Value normalized(std::move(current));
-          current = normalized.as_relation();
-          if (current.rows.size() > relation_row_limit) {
-            throw Error("relation closure exceeds row budget");
+          for (const Value& item : carrier) {
+            current.rows.push_back(ValueTuple{{item, item}});
           }
         }
+        return Value(std::move(current));
       }
       const std::string identity = type_identity(*expr->resolved_type);
       if (expr->text == "none") return Value(ValueVariant{identity, "none", {}});
