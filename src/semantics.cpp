@@ -77,11 +77,13 @@ PropertyDecision evaluate_instant_property(const ExprPtr& expression,
 DataType verify_relation_match(Expr& expression, const DataType& left,
                                const DataType& right) {
   if (expression.text == "in" || expression.text == "~") {
-    const bool set_member = right.kind == DataType::Kind::Set && left == *right.first;
+    const bool set_member = right.kind == DataType::Kind::Set &&
+        same_base_type(left, *right.first);
     const bool relation_row = right.kind == DataType::Kind::Relation &&
         (right.direct_relation_row
-             ? left == right.elements.front()
-             : left == DataType(DataType::Kind::Tuple, right.elements));
+             ? same_base_type(left, right.elements.front())
+             : same_base_type(
+                   left, DataType(DataType::Kind::Tuple, right.elements)));
     expression.direct_relation_binding = right.kind == DataType::Kind::Relation &&
                                          right.direct_relation_row;
     if (!set_member && !relation_row) {
@@ -93,7 +95,7 @@ DataType verify_relation_match(Expr& expression, const DataType& left,
   const bool mixed_numeric =
       (left.kind == DataType::Kind::Int || left.kind == DataType::Kind::Rational) &&
       (right.kind == DataType::Kind::Int || right.kind == DataType::Kind::Rational);
-  if (left != right && !mixed_numeric) {
+  if (!same_base_type(left, right) && !mixed_numeric) {
     throw Error("comparison operands have different types");
   }
   if ((expression.text == "<" || expression.text == "<=" ||

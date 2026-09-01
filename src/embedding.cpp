@@ -228,6 +228,87 @@ std::string embedding_digest(const Embedding& embedding,
   return sha256(encode_embedding(embedding, limits));
 }
 
+EmbeddingDelta diff_embedding(const Embedding& before,
+                               const Embedding& after) {
+  EmbeddingDelta result;
+  const auto controls = [&](const auto& left, const auto& right) {
+    auto l = left.begin();
+    auto r = right.begin();
+    while (l != left.end() || r != right.end()) {
+      if (r == right.end() || (l != left.end() && l->first < r->first)) {
+        result.controls.push_back(
+            ControlSlotDelta{l->first, l->second, std::nullopt});
+        ++l;
+      } else if (l == left.end() || r->first < l->first) {
+        result.controls.push_back(
+            ControlSlotDelta{r->first, std::nullopt, r->second});
+        ++r;
+      } else {
+        if (l->second != r->second) {
+          result.controls.push_back(
+              ControlSlotDelta{l->first, l->second, r->second});
+        }
+        ++l;
+        ++r;
+      }
+    }
+  };
+  const auto values = [&](const auto& left, const auto& right) {
+    auto l = left.begin();
+    auto r = right.begin();
+    while (l != left.end() || r != right.end()) {
+      if (r == right.end() || (l != left.end() && l->first < r->first)) {
+        result.values.push_back(ValueSlotDelta{l->first, l->second, std::nullopt});
+        ++l;
+      } else if (l == left.end() || r->first < l->first) {
+        result.values.push_back(ValueSlotDelta{r->first, std::nullopt, r->second});
+        ++r;
+      } else {
+        if (l->second != r->second) {
+          result.values.push_back(ValueSlotDelta{l->first, l->second, r->second});
+        }
+        ++l;
+        ++r;
+      }
+    }
+  };
+  controls(before.control_slots, after.control_slots);
+  values(before.values, after.values);
+  return result;
+}
+
+Embedding apply_embedding_delta(const Embedding& before,
+                                 const EmbeddingDelta& delta) {
+  Embedding result = before;
+  const auto apply = []<typename Map, typename Change>(
+                         Map& target, const std::vector<Change>& changes,
+                         std::string_view kind) {
+    std::string previous_path;
+    for (const Change& change : changes) {
+      if (!previous_path.empty() && change.path <= previous_path) {
+        throw Error("EmbeddingDelta " + std::string(kind) +
+                    " paths are not strictly ordered");
+      }
+      previous_path = change.path;
+      const auto found = target.find(change.path);
+      if (change.before) {
+        if (found == target.end() || found->second != *change.before) {
+          throw Error("EmbeddingDelta " + std::string(kind) +
+                      " precondition mismatch at '" + change.path + "'");
+        }
+      } else if (found != target.end()) {
+        throw Error("EmbeddingDelta " + std::string(kind) +
+                    " expected absent path '" + change.path + "'");
+      }
+      if (change.after) target.insert_or_assign(change.path, *change.after);
+      else target.erase(change.path);
+    }
+  };
+  apply(result.control_slots, delta.controls, "control");
+  apply(result.values, delta.values, "value");
+  return result;
+}
+
 std::size_t RawKeyMap::add(RawSlotKind kind, std::string semantic_path) {
   const auto key = std::pair{kind, semantic_path};
   if (const auto found = offsets_.find(key); found != offsets_.end()) {
@@ -248,7 +329,7 @@ std::optional<std::size_t> RawKeyMap::offset_of(
 
 EmbeddingStore::InsertResult EmbeddingStore::insert(
     Embedding embedding, std::optional<std::size_t> witness_parent,
-    std::string transition) {
+    std::string transition, EmbeddingDelta witness_delta) {
   if (witness_parent && *witness_parent >= nodes_.size()) {
     throw Error("embedding witness parent is out of range");
   }
@@ -261,8 +342,23 @@ EmbeddingStore::InsertResult EmbeddingStore::insert(
   const std::size_t index = nodes_.size();
   const std::size_t depth =
       witness_parent ? nodes_[*witness_parent].depth + 1U : 0U;
+  if (!witness_parent && !witness_delta.empty()) {
+    throw Error("root embedding cannot carry a witness delta");
+  }
+  if (witness_parent) {
+    if (witness_delta.empty() && nodes_[*witness_parent].embedding != embedding) {
+      witness_delta = diff_embedding(nodes_[*witness_parent].embedding,
+                                     embedding);
+    }
+    const Embedding reconstructed = apply_embedding_delta(
+        nodes_[*witness_parent].embedding, witness_delta);
+    if (reconstructed != embedding) {
+      throw Error("embedding witness delta does not reconstruct its child");
+    }
+  }
   nodes_.push_back(EmbeddingRecord{digest, raw_key, std::move(embedding),
-                                   witness_parent, std::move(transition), depth});
+                                   witness_parent, std::move(transition),
+                                   std::move(witness_delta), depth});
   raw_content_index_.emplace(std::move(raw_key), index);
   return {index, true};
 }

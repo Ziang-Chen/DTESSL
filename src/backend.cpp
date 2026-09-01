@@ -75,6 +75,9 @@ void collect_action_features(const std::shared_ptr<ActionExpr>& action,
 }
 
 void collect_type_features(const DataType& type, FeatureSet& features) {
+  if (!type.specific_trait.empty() || type.finite_domain) {
+    features.insert(LanguageFeature::FiniteDomains);
+  }
   if (type.kind == DataType::Kind::List || type.kind == DataType::Kind::Set ||
       type.kind == DataType::Kind::Map || type.kind == DataType::Kind::Bag) {
     features.insert(LanguageFeature::FiniteCollections);
@@ -321,6 +324,7 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::TransitionObligation: return "transition-obligation";
     case LanguageFeature::RecursiveStateSchema: return "recursive-state-schema";
     case LanguageFeature::RelationExpression: return "relation-expression";
+    case LanguageFeature::FiniteDomains: return "finite-domains";
   }
   return "unknown";
 }

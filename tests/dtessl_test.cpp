@@ -282,7 +282,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.0", "compiled version must be v0.4.0");
+  require(dtessl::version == "0.4.1", "compiled version must be v0.4.1");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1692,6 +1692,18 @@ procedure broken idle & inject go;
               embedding_root.index == embedding_duplicate.index &&
               embedding_store.path_to(embedding_root.index).size() == 1U,
           "EmbeddingStore did not deduplicate an exact Embedding");
+  dtessl::Embedding child_embedding = embedding;
+  child_embedding.values.insert_or_assign("scheduler.credits",
+                                          dtessl::Value(std::int64_t{3}));
+  const auto embedding_child = embedding_store.insert(
+      child_embedding, embedding_root.index, "RaiseCredits");
+  require(embedding_child.inserted &&
+              !embedding_store.at(embedding_child.index).witness_delta.empty() &&
+              dtessl::apply_embedding_delta(
+                  embedding_store.at(embedding_root.index).embedding,
+                  embedding_store.at(embedding_child.index).witness_delta) ==
+                  child_embedding,
+          "EmbeddingStore did not derive a reconstructable witness delta");
 
   constexpr std::string_view recursive_embedding_source = R"DTESSL(
 name WorkerId
@@ -1772,6 +1784,114 @@ transition TurnOn():
       compact_recursive_engine.step_transition({"TurnOn", {}});
   require(compact_recursive_step.state.at("local.changes").as_int() == 1,
           "compact recursive state did not lower through the formal runtime");
+
+  constexpr std::string_view case_axis_source = R"DTESSL(
+name WorkerId
+
+state CaseScheduler @ session initial:
+  retries: int32[0:1:2] = 0
+  case Phase:
+    Idle
+    | Running(worker: WorkerId{WorkerId(a), WorkerId(b)} = WorkerId(a), case Step: Prepare | Execute)
+    | Done
+
+transition Start():
+  case begin (CaseScheduler(Phase.Idle) @ session) -> (CaseScheduler(Phase.Running.Step.Prepare) @ session):
+    set @ session:
+      retries = before.session.retries + 1
+
+transition Advance():
+  case execute (CaseScheduler(Phase.Running.Step.Prepare) @ session) -> (CaseScheduler(Phase.Running.Step.Execute) @ session):
+    where:
+      true
+
+transition SetRetry(next: int32[0:1:2]):
+  case update (CaseScheduler @ session) -> (CaseScheduler @ session):
+    set @ session:
+      retries = next
+
+procedure CaseScheduling @ session:
+  initial (CaseScheduler @ session)
+
+Claim RetryBound @ procedure CaseScheduling @ (session):
+  always(session.retries <= 2)
+)DTESSL";
+  const dtessl::Program case_axis_program = dtessl::parse(case_axis_source);
+  require(dtessl::required_features(case_axis_program).contains(
+              dtessl::LanguageFeature::FiniteDomains),
+          "finite domain feature was not negotiated with backends");
+  dtessl::Engine case_axis_engine(case_axis_program);
+  const dtessl::StepResult case_axis_step =
+      case_axis_engine.step_transition({"Start", {}});
+  const dtessl::Embedding case_axis_before{
+      case_axis_step.before_active_states, case_axis_step.before_state};
+  const dtessl::Embedding case_axis_after{
+      case_axis_step.active_states, case_axis_step.state};
+  require(case_axis_engine.current_states().at(
+              "session::CaseScheduler.Phase") ==
+              "CaseScheduler.Phase.Running" &&
+              case_axis_engine.current_states().at(
+                  "session::CaseScheduler.Phase.Running.Step") ==
+                  "CaseScheduler.Phase.Running.Step.Prepare",
+          "state case did not lower to explicit nested choice axes");
+  require(!case_axis_step.delta.empty() &&
+              dtessl::apply_embedding_delta(case_axis_before,
+                                            case_axis_step.delta) ==
+                  case_axis_after &&
+              case_axis_step.before_embedding_digest ==
+                  dtessl::embedding_digest(case_axis_before) &&
+              case_axis_step.embedding_digest ==
+                  dtessl::embedding_digest(case_axis_after),
+          "runtime trace delta did not reconstruct and authenticate its embedding");
+  const dtessl::StepResult nested_axis_step =
+      case_axis_engine.step_transition({"Advance", {}});
+  require(nested_axis_step.delta.controls.size() == 1U &&
+              nested_axis_step.delta.controls.front().path ==
+                  "session::CaseScheduler.Phase.Running.Step",
+          "nested case-axis rewrite changed more than its explicit axis");
+  const dtessl::ClaimSolveResult finite_solver_result =
+      dtessl::Solver(case_axis_program).verify_claim("RetryBound");
+  require(finite_solver_result.status != dtessl::ClaimSolveStatus::Inconclusive,
+          "finite transition domain was not exhaustively generated by Solver");
+
+  constexpr std::string_view compact_case_axis_source = R"DTESSL(
+state CompactCase @ local = changes: int8[0:3] = 0, case Mode: Off | On(case Level: Low | High);
+)DTESSL";
+  static_cast<void>(dtessl::parse(compact_case_axis_source));
+
+  constexpr std::string_view product_case_source = R"DTESSL(
+state ProductCase @ local initial:
+  case Shape:
+    (A, B)
+    | C
+
+transition Fold():
+  case both (ProductCase(Shape.A, Shape.B) @ local) -> (ProductCase(Shape.C) @ local):
+    where:
+      true
+)DTESSL";
+  dtessl::Engine product_case_engine(dtessl::parse(product_case_source));
+  const dtessl::StepResult product_case_step =
+      product_case_engine.step_transition({"Fold", {}});
+  require(product_case_step.delta.controls.size() == 1U &&
+              product_case_step.delta.controls.front().path ==
+                  "local::ProductCase.Shape" &&
+              product_case_engine.current_states().at(
+                  "local::ProductCase.Shape") == "ProductCase.Shape.C",
+          "parenthesized product branch did not match as one case alternative");
+
+  constexpr std::string_view invalid_finite_initial = R"DTESSL(
+state InvalidFinite initial:
+  value: int32[0:2:4] = 3
+)DTESSL";
+  bool invalid_finite_initial_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(invalid_finite_initial));
+  } catch (const dtessl::Error&) {
+    invalid_finite_initial_rejected = true;
+  }
+  require(invalid_finite_initial_rejected,
+          "state value outside its finite static constraint was accepted");
 
   constexpr std::string_view duplicate_recursive_state = R"DTESSL(
 state Invalid initial:

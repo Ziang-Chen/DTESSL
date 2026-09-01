@@ -398,8 +398,12 @@ ParallelStepResult Engine::step_inputs_at(
         for (const Assignment& assignment : target.assignments) {
           Value value = evaluate(assignment.value, environment);
           const Field& field = find_field(target_state, assignment.field);
-          if (!value_matches_type(value, field.type, program.types)) {
+          if (!value_matches_base_type(value, field.type, program.types)) {
             throw Error("assignment to '" + assignment.field + "' has the wrong type");
+          }
+          if (!static_type_constraint_accepts(value, field.type, program.types)) {
+            throw Error("assignment to '" + assignment.field +
+                        "' leaves its finite domain");
           }
           decision.writes.insert_or_assign(
               single_context ? assignment.field
@@ -583,6 +587,15 @@ ParallelStepResult Engine::step_inputs_at(
   ParallelStepResult result;
   result.round = round_id;
   result.state = next;
+  const Embedding before_embedding{active_states_, values_};
+  const Embedding after_embedding{next_active, next};
+  const EmbeddingDelta round_delta =
+      diff_embedding(before_embedding, after_embedding);
+  const std::string before_digest = embedding_digest(before_embedding);
+  const std::string after_digest = embedding_digest(after_embedding);
+  if (apply_embedding_delta(before_embedding, round_delta) != after_embedding) {
+    throw Error("internal EmbeddingDelta round reconstruction failed");
+  }
   result.transitions.reserve(prepared.size());
   for (std::size_t index = 0; index < prepared.size(); ++index) {
     Prepared& decision = prepared[index];
@@ -602,6 +615,9 @@ ParallelStepResult Engine::step_inputs_at(
     step_result.active_states = next_active;
     step_result.before_state = values_;
     step_result.state = next;
+    step_result.before_embedding_digest = before_digest;
+    step_result.embedding_digest = after_digest;
+    step_result.delta = round_delta;
     step_result.actions = std::move(decision.actions);
     step_result.reads = *decision.read_set;
     step_result.writes = *decision.write_set;

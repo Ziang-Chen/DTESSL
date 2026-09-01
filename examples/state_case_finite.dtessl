@@ -1,0 +1,32 @@
+// Named state case axes, recursive branch-local payload, finite constraints,
+// and explicit transition rewrites. `case` declares legal configurations;
+// only transition declarations create edges between them.
+name WorkerId
+
+state CaseScheduler @ session initial:
+  retries: int32[0:1:2] = 0
+  case Phase:
+    Idle
+    | Running(worker: WorkerId{WorkerId(a), WorkerId(b)} = WorkerId(a), case Step: Prepare | Execute)
+    | Done
+
+transition Start():
+  case begin (CaseScheduler(Phase.Idle) @ session) -> (CaseScheduler(Phase.Running.Step.Prepare) @ session):
+    set @ session:
+      retries = before.session.retries + 1
+
+transition Advance():
+  case execute (CaseScheduler(Phase.Running.Step.Prepare) @ session) -> (CaseScheduler(Phase.Running.Step.Execute) @ session):
+    where:
+      true
+
+transition SetRetry(next: int32[0:1:2]):
+  case update (CaseScheduler @ session) -> (CaseScheduler @ session):
+    set @ session:
+      retries = next
+
+procedure CaseScheduling @ session:
+  initial (CaseScheduler @ session)
+
+Claim RetryBound @ procedure CaseScheduling @ (session):
+  always(session.retries <= 2)

@@ -36,7 +36,8 @@ struct Token {
 SyntaxClass identifier_syntax(std::string_view text) {
   static const std::unordered_set<std::string_view> builtin_types{
       "bool", "int", "rational", "string", "list", "set", "map", "bag",
-      "tuple", "relation", "option", "result"};
+      "tuple", "relation", "option", "result", "typetrait", "int8",
+      "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"};
   static const std::unordered_set<std::string_view> keywords{
       "name", "record", "variant", "enum", "newtype", "port", "state", "initial",
       "invariant", "transition", "from", "to", "where", "do", "merge",
@@ -245,6 +246,18 @@ std::vector<Token> lex(std::string_view source,
   return result;
 }
 
+struct FiniteDomainSpec {
+  enum class Kind { Enumeration, IntegerRange };
+  Kind kind{Kind::Enumeration};
+  std::vector<Value> values;
+  ExactInt begin{0};
+  ExactInt stride{1};
+  ExactInt end{0};
+
+  friend bool operator==(const FiniteDomainSpec&,
+                         const FiniteDomainSpec&) = default;
+};
+
 struct DataType {
   enum class Kind {
     Bool,
@@ -268,6 +281,10 @@ struct DataType {
   std::shared_ptr<DataType> second;
   std::vector<DataType> elements;
   bool direct_relation_row{false};
+  // Empty means the canonical unbounded/exact DTESSL representation. Fixed
+  // machine traits remain logical refinements; they never change Value bytes.
+  std::string specific_trait;
+  std::shared_ptr<FiniteDomainSpec> finite_domain;
 
   explicit DataType(Kind value = Kind::Bool) : kind(value) {}
   DataType(Kind value, DataType nested)
@@ -282,12 +299,16 @@ struct DataType {
 
   friend bool operator==(const DataType& left, const DataType& right) {
     if (left.kind != right.kind || left.name != right.name ||
+        left.specific_trait != right.specific_trait ||
         left.direct_relation_row != right.direct_relation_row ||
         left.elements != right.elements) return false;
     if (static_cast<bool>(left.first) != static_cast<bool>(right.first) ||
         static_cast<bool>(left.second) != static_cast<bool>(right.second)) return false;
-    return (!left.first || *left.first == *right.first) &&
-           (!left.second || *left.second == *right.second);
+    if ((left.first && *left.first != *right.first) ||
+        (left.second && *left.second != *right.second)) return false;
+    if (static_cast<bool>(left.finite_domain) !=
+        static_cast<bool>(right.finite_domain)) return false;
+    return !left.finite_domain || *left.finite_domain == *right.finite_domain;
   }
 };
 
@@ -451,6 +472,9 @@ struct State {
   // Active semantic ancestors for a recursively declared control state.
   // They are expanded into transition patterns during verification.
   std::vector<std::string> ancestors;
+  // Structural controls implied by one product branch. They are source-level
+  // aliases for this executable choice value, not additional runtime axes.
+  std::vector<std::string> aliases;
   std::vector<Field> fields;
   std::vector<ExprPtr> invariants;
   CaptureBindings captures;
@@ -469,6 +493,7 @@ struct StateSchemaNode {
   std::vector<StateSchemaNode> children;
   std::optional<Field> value;
   std::vector<ExprPtr> invariants;
+  bool product_branch{false};
   std::size_t line{0};
   std::size_t column{0};
 };
@@ -1593,6 +1618,7 @@ struct Program::Impl {
   std::map<std::string, ContextId, std::less<>> context_index;
   std::vector<std::string> context_names;
   std::map<std::string, StateId, std::less<>> state_index;
+  std::map<std::string, StateId, std::less<>> state_alias_index;
   std::vector<std::size_t> state_positions_by_id;
   RawKeyMap raw_key_map;
   std::map<std::string, TransitionId, std::less<>> transition_index;
@@ -1618,17 +1644,206 @@ class FunctionScope {
   const FunctionRegistry* previous_;
 };
 
+std::optional<std::pair<ExactInt, ExactInt>> integer_trait_bounds(
+    std::string_view trait) {
+  const auto bounds = [&](std::string_view minimum,
+                          std::string_view maximum) {
+    return std::optional<std::pair<ExactInt, ExactInt>>{
+        std::pair{ExactInt::parse(minimum), ExactInt::parse(maximum)}};
+  };
+  if (trait == "int8") return bounds("-128", "127");
+  if (trait == "uint8") return bounds("0", "255");
+  if (trait == "int16") return bounds("-32768", "32767");
+  if (trait == "uint16") return bounds("0", "65535");
+  if (trait == "int32") return bounds("-2147483648", "2147483647");
+  if (trait == "uint32") return bounds("0", "4294967295");
+  if (trait == "int64") {
+    return bounds("-9223372036854775808", "9223372036854775807");
+  }
+  if (trait == "uint64") return bounds("0", "18446744073709551615");
+  return std::nullopt;
+}
+
+bool same_base_type(const DataType& left, const DataType& right) {
+  if (left.kind != right.kind || left.name != right.name ||
+      left.direct_relation_row != right.direct_relation_row ||
+      left.elements.size() != right.elements.size()) {
+    return false;
+  }
+  if (static_cast<bool>(left.first) != static_cast<bool>(right.first) ||
+      static_cast<bool>(left.second) != static_cast<bool>(right.second)) {
+    return false;
+  }
+  if (left.first && !same_base_type(*left.first, *right.first)) return false;
+  if (left.second && !same_base_type(*left.second, *right.second)) return false;
+  for (std::size_t index = 0; index < left.elements.size(); ++index) {
+    if (!same_base_type(left.elements[index], right.elements[index])) return false;
+  }
+  return true;
+}
+
+bool finite_trait_accepts(const Value& value, const DataType& type,
+                          const TypeRegistry& types) {
+  if (type.specific_trait.empty()) return true;
+  if (const auto bounds = integer_trait_bounds(type.specific_trait)) {
+    return value.kind() == Value::Kind::Int &&
+        compare(value.as_exact_int(), bounds->first) >= 0 &&
+        compare(value.as_exact_int(), bounds->second) <= 0;
+  }
+  if (type.specific_trait == "bool") {
+    return value.kind() == Value::Kind::Bool;
+  }
+  const auto definition = types.find(type.specific_trait);
+  if (definition == types.end() || type.kind != DataType::Kind::Named ||
+      type.name != type.specific_trait ||
+      value.kind() != Value::Kind::Variant ||
+      value.as_variant().type_id != type.name) {
+    return false;
+  }
+  return std::any_of(
+      definition->second.constructors.begin(),
+      definition->second.constructors.end(),
+      [&](const VariantConstructor& constructor) {
+        return !constructor.payload &&
+            constructor.name == value.as_variant().constructor &&
+            value.as_variant().payload.empty();
+      });
+}
+
+// Executable static-constraint admission shared by declarations, runtime
+// rewrites, and Solver candidate generation. A finite domain is the enumerable
+// fragment of the same constraint profile; invariants/where clauses further
+// filter candidates through the ordinary predicate evaluator.
+bool static_type_constraint_accepts(const Value& value, const DataType& type,
+                                    const TypeRegistry& types) {
+  if (!finite_trait_accepts(value, type, types)) return false;
+  if (!type.finite_domain) return true;
+  if (type.finite_domain->kind == FiniteDomainSpec::Kind::Enumeration) {
+    return std::binary_search(
+        type.finite_domain->values.begin(), type.finite_domain->values.end(), value,
+        [](const Value& left, const Value& right) {
+          return canonical_compare(left, right) < 0;
+        });
+  }
+  if (value.kind() != Value::Kind::Int) return false;
+  const ExactInt& item = value.as_exact_int();
+  const ExactInt& begin = type.finite_domain->begin;
+  const ExactInt& stride = type.finite_domain->stride;
+  const ExactInt& end = type.finite_domain->end;
+  if (stride.is_zero()) return false;
+  if (!stride.is_negative()) {
+    if (compare(item, begin) < 0 || compare(item, end) > 0) return false;
+  } else if (compare(item, begin) > 0 || compare(item, end) < 0) {
+    return false;
+  }
+  return ((item - begin) % stride).is_zero();
+}
+
+std::optional<std::vector<Value>> generate_static_constraint_domain(
+    const DataType& type, const TypeRegistry& types) {
+  if (type.finite_domain &&
+      type.finite_domain->kind == FiniteDomainSpec::Kind::Enumeration) {
+    return type.finite_domain->values;
+  }
+  if (type.finite_domain &&
+      type.finite_domain->kind == FiniteDomainSpec::Kind::IntegerRange) {
+    std::vector<Value> result;
+    ExactInt value = type.finite_domain->begin;
+    const auto within = [&]() {
+      return type.finite_domain->stride.is_negative()
+                 ? compare(value, type.finite_domain->end) >= 0
+                 : compare(value, type.finite_domain->end) <= 0;
+    };
+    while (within()) {
+      if (result.size() == finite_domain_value_limit) return std::nullopt;
+      result.emplace_back(value);
+      value = value + type.finite_domain->stride;
+    }
+    return result;
+  }
+  if (type.specific_trait == "bool") {
+    return std::vector<Value>{Value(false), Value(true)};
+  }
+  if (const auto bounds = integer_trait_bounds(type.specific_trait)) {
+    const ExactInt count = bounds->second - bounds->first + ExactInt(1);
+    if (!count.fits_int64() || count.to_int64() < 0 ||
+        static_cast<std::uint64_t>(count.to_int64()) >
+            finite_domain_value_limit) {
+      return std::nullopt;
+    }
+    std::vector<Value> result;
+    for (ExactInt value = bounds->first;
+         compare(value, bounds->second) <= 0;
+         value = value + ExactInt(1)) {
+      result.emplace_back(value);
+    }
+    return result;
+  }
+  if (!type.specific_trait.empty() && type.kind == DataType::Kind::Named) {
+    const auto definition = types.find(type.name);
+    if (definition == types.end() ||
+        definition->second.constructors.size() > finite_domain_value_limit ||
+        std::any_of(definition->second.constructors.begin(),
+                    definition->second.constructors.end(),
+                    [](const VariantConstructor& constructor) {
+                      return constructor.payload.has_value();
+                    })) {
+      return std::nullopt;
+    }
+    std::vector<Value> result;
+    for (const VariantConstructor& constructor :
+         definition->second.constructors) {
+      result.emplace_back(ValueVariant{type.name, constructor.name, {}});
+    }
+    return result;
+  }
+  return std::nullopt;
+}
+
 DataType Parser::type() {
-  if (match("bool")) return bool_type();
-  if (match("int")) return int_type();
-  if (match("rational")) return rational_type();
-  if (match("string")) return string_type();
-  if (match("[")) {
+  DataType result;
+  if (match("typetrait")) {
+    expect("<");
+    const Token trait = take();
+    if (trait.kind != TokenKind::Identifier) {
+      fail(trait, "typetrait requires a finite specific type");
+    }
+    expect(">");
+    if (trait.text == "bool") {
+      result = bool_type();
+    } else if (integer_trait_bounds(trait.text)) {
+      result = int_type();
+    } else {
+      const auto definition = types_.find(trait.text);
+      if (definition == types_.end() ||
+          definition->second.kind != TypeDefinition::Kind::Variant ||
+          std::any_of(definition->second.constructors.begin(),
+                      definition->second.constructors.end(),
+                      [](const VariantConstructor& constructor) {
+                        return constructor.payload.has_value();
+                      })) {
+        fail(trait, "typetrait requires bool, a fixed-width integer, or a payload-free enum");
+      }
+      result = DataType(DataType::Kind::Named, trait.text);
+    }
+    result.specific_trait = trait.text;
+  } else if (match("bool")) {
+    result = bool_type();
+  } else if (match("int")) {
+    result = int_type();
+  } else if (at(TokenKind::Identifier) && integer_trait_bounds(peek().text)) {
+    const std::string trait = take().text;
+    result = int_type();
+    result.specific_trait = trait;
+  } else if (match("rational")) {
+    result = rational_type();
+  } else if (match("string")) {
+    result = string_type();
+  } else if (match("[")) {
     DataType item = type();
     expect("]");
-    return DataType(DataType::Kind::Option, std::move(item));
-  }
-  if (match("~")) {
+    result = DataType(DataType::Kind::Option, std::move(item));
+  } else if (match("~")) {
     std::vector<DataType> elements;
     if (match("(")) {
       do {
@@ -1642,51 +1857,43 @@ DataType Parser::type() {
       elements.push_back(type());
     }
     const bool direct = elements.size() == 1U;
-    DataType relation(DataType::Kind::Relation, std::move(elements));
-    relation.direct_relation_row = direct;
-    return relation;
-  }
-  if (match("list")) {
+    result = DataType(DataType::Kind::Relation, std::move(elements));
+    result.direct_relation_row = direct;
+  } else if (match("list")) {
     expect("<");
     DataType item = type();
     expect(">");
-    return DataType(DataType::Kind::List, std::move(item));
-  }
-  if (match("set")) {
+    result = DataType(DataType::Kind::List, std::move(item));
+  } else if (match("set")) {
     expect("<");
     DataType item = type();
     expect(">");
-    return DataType(DataType::Kind::Set, std::move(item));
-  }
-  if (match("map")) {
+    result = DataType(DataType::Kind::Set, std::move(item));
+  } else if (match("map")) {
     expect("<");
     DataType key = type();
     expect(",");
     DataType item = type();
     expect(">");
-    return DataType(DataType::Kind::Map, std::move(key), std::move(item));
-  }
-  if (match("bag")) {
+    result = DataType(DataType::Kind::Map, std::move(key), std::move(item));
+  } else if (match("bag")) {
     expect("<");
     DataType item = type();
     expect(">");
-    return DataType(DataType::Kind::Bag, std::move(item));
-  }
-  if (match("option")) {
+    result = DataType(DataType::Kind::Bag, std::move(item));
+  } else if (match("option")) {
     expect("<");
     DataType item = type();
     expect(">");
-    return DataType(DataType::Kind::Option, std::move(item));
-  }
-  if (match("result")) {
+    result = DataType(DataType::Kind::Option, std::move(item));
+  } else if (match("result")) {
     expect("<");
     DataType item = type();
     expect(",");
     DataType error = type();
     expect(">");
-    return DataType(DataType::Kind::Result, std::move(item), std::move(error));
-  }
-  if (match("tuple")) {
+    result = DataType(DataType::Kind::Result, std::move(item), std::move(error));
+  } else if (match("tuple")) {
     expect("<");
     std::vector<DataType> elements;
     do {
@@ -1696,9 +1903,8 @@ DataType Parser::type() {
       }
     } while (match(","));
     expect(">");
-    return DataType(DataType::Kind::Tuple, std::move(elements));
-  }
-  if (match("relation")) {
+    result = DataType(DataType::Kind::Tuple, std::move(elements));
+  } else if (match("relation")) {
     std::vector<DataType> elements;
     bool direct = true;
     if (match("<")) {
@@ -1714,16 +1920,85 @@ DataType Parser::type() {
     if (elements.empty() || elements.size() > relation_arity_limit) {
       fail(peek(), "relation type exceeds arity limit");
     }
-    DataType relation(DataType::Kind::Relation, std::move(elements));
-    relation.direct_relation_row = direct && relation.elements.size() == 1U;
-    return relation;
-  }
-  if (at(TokenKind::Identifier)) {
+    result = DataType(DataType::Kind::Relation, std::move(elements));
+    result.direct_relation_row = direct && result.elements.size() == 1U;
+  } else if (at(TokenKind::Identifier)) {
     const Token name = take();
     if (!types_.contains(name.text)) fail(name, "unknown nominal type '" + name.text + "'");
-    return DataType(DataType::Kind::Named, name.text);
+    result = DataType(DataType::Kind::Named, name.text);
+  } else {
+    fail(peek(), "expected a primitive, collection, tuple, relation, option, result, nominal type, or finite type");
   }
-  fail(peek(), "expected a primitive, collection, tuple, relation, option, result, or nominal type");
+
+  if (match("{")) {
+    auto domain = std::make_shared<FiniteDomainSpec>();
+    domain->kind = FiniteDomainSpec::Kind::Enumeration;
+    DataType item_type = result;
+    item_type.finite_domain.reset();
+    if (!match("}")) {
+      do {
+        if (domain->values.size() == finite_domain_value_limit) {
+          fail(peek(), "finite enumeration exceeds value limit");
+        }
+        domain->values.push_back(initial_value(item_type));
+      } while (match(","));
+      expect("}");
+    }
+    if (domain->values.empty()) fail(peek(), "finite enumeration cannot be empty");
+    std::sort(domain->values.begin(), domain->values.end(),
+              [](const Value& left, const Value& right) {
+                return canonical_compare(left, right) < 0;
+              });
+    const auto duplicate = std::adjacent_find(domain->values.begin(),
+                                              domain->values.end());
+    if (duplicate != domain->values.end()) {
+      fail(peek(), "finite enumeration repeats a value");
+    }
+    for (const Value& value : domain->values) {
+      if (!finite_trait_accepts(value, item_type, types_)) {
+        fail(peek(), "finite enumeration value violates its specific type trait");
+      }
+    }
+    result.finite_domain = std::move(domain);
+  } else if (match("[")) {
+    if (result.kind != DataType::Kind::Int) {
+      fail(peek(), "finite range requires an integer type");
+    }
+    const auto signed_integer = [&]() {
+      const bool negative = match("-");
+      if (!at(TokenKind::Integer)) fail(peek(), "finite range requires an integer bound");
+      ExactInt value = ExactInt::parse(take().text);
+      return negative ? -value : value;
+    };
+    auto domain = std::make_shared<FiniteDomainSpec>();
+    domain->kind = FiniteDomainSpec::Kind::IntegerRange;
+    domain->begin = signed_integer();
+    expect(":");
+    ExactInt middle = signed_integer();
+    if (match(":")) {
+      domain->stride = std::move(middle);
+      domain->end = signed_integer();
+    } else {
+      domain->stride = ExactInt(1);
+      domain->end = std::move(middle);
+    }
+    expect("]");
+    if (domain->stride.is_zero()) fail(peek(), "finite range stride cannot be zero");
+    if ((!domain->stride.is_negative() &&
+         compare(domain->begin, domain->end) > 0) ||
+        (domain->stride.is_negative() &&
+         compare(domain->begin, domain->end) < 0)) {
+      fail(peek(), "finite range stride points away from its end");
+    }
+    DataType trait_only = result;
+    trait_only.finite_domain.reset();
+    if (!finite_trait_accepts(Value(domain->begin), trait_only, types_) ||
+        !finite_trait_accepts(Value(domain->end), trait_only, types_)) {
+      fail(peek(), "finite range bound violates its specific type trait");
+    }
+    result.finite_domain = std::move(domain);
+  }
+  return result;
 }
 
 TypeDefinition Parser::type_definition() {
@@ -1838,24 +2113,54 @@ std::string type_identity(const DataType& type) {
     }
     return result + ">";
   };
+  std::string result;
   switch (type.kind) {
-    case DataType::Kind::Bool: return "bool";
-    case DataType::Kind::Int: return "int";
-    case DataType::Kind::Rational: return "rational";
-    case DataType::Kind::String: return "string";
-    case DataType::Kind::Named: return type.name;
-    case DataType::Kind::List: return "list<" + type_identity(*type.first) + ">";
-    case DataType::Kind::Set: return "set<" + type_identity(*type.first) + ">";
-    case DataType::Kind::Bag: return "bag<" + type_identity(*type.first) + ">";
-    case DataType::Kind::Option: return "option<" + type_identity(*type.first) + ">";
-    case DataType::Kind::Tuple: return variadic_identity("tuple");
-    case DataType::Kind::Relation: return variadic_identity("relation");
+    case DataType::Kind::Bool: result = "bool"; break;
+    case DataType::Kind::Int: result = "int"; break;
+    case DataType::Kind::Rational: result = "rational"; break;
+    case DataType::Kind::String: result = "string"; break;
+    case DataType::Kind::Named: result = type.name; break;
+    case DataType::Kind::List:
+      result = "list<" + type_identity(*type.first) + ">";
+      break;
+    case DataType::Kind::Set:
+      result = "set<" + type_identity(*type.first) + ">";
+      break;
+    case DataType::Kind::Bag:
+      result = "bag<" + type_identity(*type.first) + ">";
+      break;
+    case DataType::Kind::Option:
+      result = "option<" + type_identity(*type.first) + ">";
+      break;
+    case DataType::Kind::Tuple: result = variadic_identity("tuple"); break;
+    case DataType::Kind::Relation: result = variadic_identity("relation"); break;
     case DataType::Kind::Map:
-      return "map<" + type_identity(*type.first) + "," + type_identity(*type.second) + ">";
+      result = "map<" + type_identity(*type.first) + "," +
+          type_identity(*type.second) + ">";
+      break;
     case DataType::Kind::Result:
-      return "result<" + type_identity(*type.first) + "," + type_identity(*type.second) + ">";
+      result = "result<" + type_identity(*type.first) + "," +
+          type_identity(*type.second) + ">";
+      break;
   }
-  throw Error("invalid type");
+  if (!type.specific_trait.empty()) {
+    result = "typetrait<" + type.specific_trait + ">";
+  }
+  if (type.finite_domain) {
+    if (type.finite_domain->kind == FiniteDomainSpec::Kind::Enumeration) {
+      result += "{";
+      for (std::size_t index = 0; index < type.finite_domain->values.size(); ++index) {
+        if (index != 0U) result += ",";
+        result += value_text(type.finite_domain->values[index]);
+      }
+      result += "}";
+    } else {
+      result += "[" + type.finite_domain->begin.text() + ":" +
+          type.finite_domain->stride.text() + ":" +
+          type.finite_domain->end.text() + "]";
+    }
+  }
+  return result;
 }
 
 Value Parser::initial_value(DataType expected_type) {
@@ -2231,6 +2536,9 @@ ParsedStateDeclaration Parser::state() {
     field.type = type();
     expect("=");
     field.initial = initial_value(field.type);
+    if (!static_type_constraint_accepts(field.initial, field.type, types_)) {
+      fail(field_start, "initial value is outside the declared finite domain");
+    }
     if (match("merge")) {
       if (match("equal")) field.merge = Field::Merge::Equal;
       else if (match("union")) field.merge = Field::Merge::Union;
@@ -2269,8 +2577,12 @@ ParsedStateDeclaration Parser::state() {
     return result;
   };
 
+  std::size_t anonymous_case_index = 0U;
+  std::size_t composite_branch_index = 0U;
   std::function<StateSchemaNode()> choice_group;
   std::function<StateSchemaNode()> control;
+  std::function<StateSchemaNode(bool)> case_group;
+  std::function<void(StateSchemaNode&)> block_members;
   control = [&]() {
     const Token node_start = peek();
     StateSchemaNode node;
@@ -2282,6 +2594,7 @@ ParsedStateDeclaration Parser::state() {
       if (match(")")) fail(node_start, "nested control state cannot be empty");
       do {
         if (at("invariant")) node.invariants.push_back(inline_invariant());
+        else if (at("case")) node.children.push_back(case_group(false));
         else if (peek(1).text == ":") node.children.push_back(field_node());
         else node.children.push_back(choice_group());
       } while (match(","));
@@ -2306,12 +2619,91 @@ ParsedStateDeclaration Parser::state() {
     return group;
   };
 
+  block_members = [&](StateSchemaNode& owner) {
+    while (!at(TokenKind::Dedent)) {
+      if (match("invariant")) {
+        expect(":");
+        owner.invariants.push_back(block_expression());
+        continue;
+      }
+      if (at("case")) {
+        owner.children.push_back(case_group(true));
+        continue;
+      }
+      if (peek(1).text == ":") {
+        owner.children.push_back(field_node());
+        newline();
+        continue;
+      }
+      owner.children.push_back(choice_group());
+      static_cast<void>(match(","));
+      newline();
+    }
+  };
+  case_group = [&](bool allow_block) {
+    const Token case_start = peek();
+    expect("case");
+    StateSchemaNode group;
+    group.kind = StateSchemaNode::Kind::Choice;
+    group.line = case_start.line;
+    group.column = case_start.column;
+    group.name = at(":")
+        ? "case" + std::to_string(++anonymous_case_index)
+        : identifier();
+    expect(":");
+
+    const auto branch = [&]() {
+      if (!match("(")) {
+        StateSchemaNode item = control();
+        if (allow_block && match(":")) {
+          newline();
+          indent();
+          block_members(item);
+          dedent();
+        }
+        return item;
+      }
+      const Token branch_start = tokens_.at(cursor_ - 1U);
+      StateSchemaNode item;
+      item.kind = StateSchemaNode::Kind::Control;
+      item.name = "branch" + std::to_string(++composite_branch_index);
+      item.product_branch = true;
+      item.line = branch_start.line;
+      item.column = branch_start.column;
+      if (match(")")) fail(branch_start, "composite state branch cannot be empty");
+      do item.children.push_back(control()); while (match(","));
+      expect(")");
+      return item;
+    };
+
+    const bool block = allow_block && at(TokenKind::Newline);
+    if (block) {
+      newline();
+      indent();
+      group.children.push_back(branch());
+      newline();
+      while (match("|")) {
+        group.children.push_back(branch());
+        newline();
+      }
+      dedent();
+    } else {
+      group.children.push_back(branch());
+      while (match("|")) group.children.push_back(branch());
+    }
+    if (group.children.size() < 2U) {
+      fail(case_start, "state case needs at least two alternatives");
+    }
+    return group;
+  };
+
   const bool compact = match("=");
   if (compact) {
     schema.initial = true;
     if (at(";")) fail(peek(), "compact recursive state cannot be empty");
     do {
       if (at("invariant")) schema.invariants.push_back(inline_invariant());
+      else if (at("case")) schema.root.children.push_back(case_group(false));
       else if (peek(1).text == ":") schema.root.children.push_back(field_node());
       else schema.root.children.push_back(choice_group());
     } while (match(","));
@@ -2327,7 +2719,11 @@ ParsedStateDeclaration Parser::state() {
         schema.invariants.push_back(block_expression());
         continue;
       }
-      if (peek(1).text == ":") schema.root.children.push_back(field_node());
+      if (at("case")) {
+        schema.root.children.push_back(case_group(true));
+        continue;
+      }
+      else if (peek(1).text == ":") schema.root.children.push_back(field_node());
       else schema.root.children.push_back(choice_group());
       static_cast<void>(match(","));
       newline();
@@ -2392,9 +2788,34 @@ ParsedStateDeclaration Parser::state() {
   root.captures = schema.captures;
   root.line = schema.line;
   root.column = schema.column;
-  for (const StateSchemaNode& child : schema.root.children) {
-    if (child.kind == StateSchemaNode::Kind::Value) root.fields.push_back(*child.value);
-  }
+  const auto append_owned_members = [&](const StateSchemaNode& owner,
+                                        State& lowered) {
+    std::function<void(const StateSchemaNode&, std::string)> visit =
+        [&](const StateSchemaNode& node, std::string prefix) {
+          if (node.kind == StateSchemaNode::Kind::Choice) return;
+          if (node.kind == StateSchemaNode::Kind::Value) {
+            Field field = *node.value;
+            if (!prefix.empty()) field.name = prefix + "." + field.name;
+            lowered.fields.push_back(std::move(field));
+            return;
+          }
+          lowered.invariants.insert(lowered.invariants.end(),
+                                    node.invariants.begin(),
+                                    node.invariants.end());
+          for (const StateSchemaNode& child : node.children) {
+            std::string child_prefix = prefix;
+            if (child.kind == StateSchemaNode::Kind::Control) {
+              child_prefix += (child_prefix.empty() ? "" : ".") + child.name;
+            }
+            visit(child, std::move(child_prefix));
+          }
+        };
+    for (const StateSchemaNode& child : owner.children) {
+      if (child.kind == StateSchemaNode::Kind::Choice) continue;
+      visit(child, {});
+    }
+  };
+  append_owned_members(schema.root, root);
   result.lowered_states.push_back(std::move(root));
 
   std::function<void(const StateSchemaNode&, std::vector<std::string>)> lower =
@@ -2412,9 +2833,24 @@ ParsedStateDeclaration Parser::state() {
         state.column = alternative.column;
         state.invariants = alternative.invariants;
         state.captures = schema.captures;
-        for (const StateSchemaNode& child : alternative.children) {
-          if (child.kind == StateSchemaNode::Kind::Value) state.fields.push_back(*child.value);
+        if (alternative.product_branch) {
+          std::function<void(const StateSchemaNode&)> collect_aliases =
+              [&](const StateSchemaNode& structural) {
+                if (structural.kind == StateSchemaNode::Kind::Choice) return;
+                if (structural.kind == StateSchemaNode::Kind::Control) {
+                  const std::string relative = structural.canonical_path.substr(
+                      alternative.canonical_path.size());
+                  state.aliases.push_back(node.canonical_path + relative);
+                }
+                for (const StateSchemaNode& child : structural.children) {
+                  collect_aliases(child);
+                }
+              };
+          for (const StateSchemaNode& child : alternative.children) {
+            collect_aliases(child);
+          }
         }
+        append_owned_members(alternative, state);
         result.lowered_states.push_back(std::move(state));
         auto child_ancestors = ancestors;
         child_ancestors.push_back(alternative.canonical_path);
@@ -2534,7 +2970,7 @@ Transition Parser::transition() {
     while (!at(TokenKind::Dedent)) {
       Assignment assignment;
       const Token assignment_start = peek();
-      assignment.field = identifier();
+      assignment.field = qualified_identifier();
       assignment.line = assignment_start.line;
       assignment.column = assignment_start.column;
       expect("=");
@@ -2548,7 +2984,7 @@ Transition Parser::transition() {
     while (!at(TokenKind::Dedent)) {
       Assignment assignment;
       const Token assignment_start = peek();
-      assignment.field = identifier();
+      assignment.field = qualified_identifier();
       assignment.line = assignment_start.line;
       assignment.column = assignment_start.column;
       expect("=");
@@ -3837,11 +4273,15 @@ std::shared_ptr<Program::Impl> Parser::program() {
 
 const State& find_state(const Program::Impl& program, std::string_view name) {
   if (!program.state_index.empty()) {
-    const auto indexed = program.state_index.find(name);
-    if (indexed == program.state_index.end()) {
-      throw Error("unknown state '" + std::string(name) + "'");
+    if (const auto indexed = program.state_index.find(name);
+        indexed != program.state_index.end()) {
+      return program.states.at(program.state_positions_by_id.at(indexed->second));
     }
-    return program.states.at(program.state_positions_by_id.at(indexed->second));
+    if (const auto alias = program.state_alias_index.find(name);
+        alias != program.state_alias_index.end()) {
+      return program.states.at(program.state_positions_by_id.at(alias->second));
+    }
+    throw Error("unknown state '" + std::string(name) + "'");
   }
   const auto found = std::find_if(program.states.begin(), program.states.end(),
                                   [&](const State& state) { return state.name == name; });
@@ -3910,7 +4350,10 @@ DataType value_type(const Value& value) {
 }
 
 bool value_matches_type(const Value& value, const DataType& type,
-                        const TypeRegistry& types) {
+                        const TypeRegistry& types);
+
+bool value_matches_base_type(const Value& value, const DataType& type,
+                             const TypeRegistry& types) {
   switch (type.kind) {
     case DataType::Kind::Bool: return value.kind() == Value::Kind::Bool;
     case DataType::Kind::Int: return value.kind() == Value::Kind::Int;
@@ -4014,6 +4457,12 @@ bool value_matches_type(const Value& value, const DataType& type,
       return true;
   }
   return false;
+}
+
+bool value_matches_type(const Value& value, const DataType& type,
+                        const TypeRegistry& types) {
+  return value_matches_base_type(value, type, types) &&
+      static_type_constraint_accepts(value, type, types);
 }
 
 const Field& find_field(const State& state, std::string_view name) {
@@ -4863,6 +5312,16 @@ void verify_program(Program::Impl& program) {
     state.state_id = program.state_index.at(state.name);
     program.state_positions_by_id[state.state_id] = position;
   }
+  program.state_alias_index.clear();
+  for (const State& state : program.states) {
+    for (const std::string& alias : state.aliases) {
+      if (program.state_index.contains(alias) ||
+          !program.state_alias_index.emplace(alias, state.state_id).second) {
+        throw Error("structural state alias is duplicated: '" + alias + "'",
+                    state.line, state.column);
+      }
+    }
+  }
   program.raw_key_map = RawKeyMap{};
   for (const std::string& context : program.context_names) {
     static_cast<void>(program.raw_key_map.add(RawSlotKind::Control, context));
@@ -4930,6 +5389,46 @@ void verify_program(Program::Impl& program) {
     std::vector<TransitionAlternative> expanded_routes;
     for (const TransitionAlternative& raw : raw_routes) {
       TransitionAlternative recursive = raw;
+      const auto normalize_structural_aliases =
+          [&](std::vector<StateBinding>& bindings) {
+            std::vector<StateBinding> normalized;
+            for (StateBinding binding : bindings) {
+              if (binding.state != "_") {
+                binding.state = find_state(program, binding.state).name;
+              }
+              if (std::none_of(normalized.begin(), normalized.end(),
+                               [&](const StateBinding& item) {
+                                 return item.state == binding.state &&
+                                     item.context == binding.context;
+                               })) {
+                normalized.push_back(std::move(binding));
+              }
+            }
+            bindings = std::move(normalized);
+          };
+      normalize_structural_aliases(recursive.from);
+      {
+        std::vector<TransitionTarget> normalized;
+        for (TransitionTarget target : recursive.to) {
+          target.binding.state =
+              find_state(program, target.binding.state).name;
+          const auto existing = std::find_if(
+              normalized.begin(), normalized.end(),
+              [&](const TransitionTarget& item) {
+                return item.binding.state == target.binding.state &&
+                    item.binding.context == target.binding.context;
+              });
+          if (existing == normalized.end()) {
+            normalized.push_back(std::move(target));
+          } else {
+            existing->assignments.insert(
+                existing->assignments.end(),
+                std::make_move_iterator(target.assignments.begin()),
+                std::make_move_iterator(target.assignments.end()));
+          }
+        }
+        recursive.to = std::move(normalized);
+      }
       const auto expand_source_ancestors = [&](std::vector<StateBinding>& bindings) {
         std::vector<StateBinding> expanded;
         for (const StateBinding& binding : bindings) {
@@ -5211,8 +5710,10 @@ void verify_program(Program::Impl& program) {
                         assignment.line, assignment.column);
           }
           assignment.value->resolved_type = field.type;
-        } else if (infer_type(assignment.value, local_types, event_types, {}, program.types) !=
-                   field.type) {
+        } else if (!same_base_type(
+                       infer_type(assignment.value, local_types, event_types, {},
+                                  program.types),
+                       field.type)) {
           throw Error("assignment to '" + assignment.field + "' has the wrong type",
                       assignment.line, assignment.column);
         }
@@ -6667,6 +7168,20 @@ std::string result_text(const StepResult& result) {
   }
   out << "}\n";
   out << "transition " << result.transition << '\n';
+  out << "embedding " << result.before_embedding_digest << " -> "
+      << result.embedding_digest << '\n';
+  out << "delta {\n";
+  for (const ControlSlotDelta& change : result.delta.controls) {
+    out << "  control " << change.path << ": "
+        << (change.before ? *change.before : "<absent>") << " -> "
+        << (change.after ? *change.after : "<absent>") << '\n';
+  }
+  for (const ValueSlotDelta& change : result.delta.values) {
+    out << "  value " << change.path << ": "
+        << (change.before ? value_text(*change.before) : "<absent>") << " -> "
+        << (change.after ? value_text(*change.after) : "<absent>") << '\n';
+  }
+  out << "}\n";
   if (result.optimized_score) {
     out << "optimized_score " << value_text(*result.optimized_score)
         << " @ " << result.optimization_scope << '\n';

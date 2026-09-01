@@ -42,6 +42,10 @@ struct EmbeddingCodecLimits {
     EmbeddingCodecLimits limits = {});
 [[nodiscard]] std::string embedding_digest(
     const Embedding& embedding, EmbeddingCodecLimits limits = {});
+[[nodiscard]] EmbeddingDelta diff_embedding(const Embedding& before,
+                                             const Embedding& after);
+[[nodiscard]] Embedding apply_embedding_delta(const Embedding& before,
+                                               const EmbeddingDelta& delta);
 
 enum class RawSlotKind { Control, Value };
 
@@ -79,6 +83,7 @@ struct EmbeddingRecord {
   // reachable graph. Back-edges and joins are stored by the Solver separately.
   std::optional<std::size_t> witness_parent;
   std::string transition;
+  EmbeddingDelta witness_delta;
   std::size_t depth{0};
 };
 
@@ -92,7 +97,8 @@ class EmbeddingStore {
 
   [[nodiscard]] InsertResult insert(Embedding embedding,
                                     std::optional<std::size_t> witness_parent = {},
-                                    std::string transition = {});
+                                    std::string transition = {},
+                                    EmbeddingDelta witness_delta = {});
   [[nodiscard]] const EmbeddingRecord& at(std::size_t index) const;
   [[nodiscard]] std::optional<std::size_t> find(const Embedding& embedding) const;
   [[nodiscard]] std::vector<std::size_t> path_to(std::size_t index) const;
@@ -121,6 +127,7 @@ struct CounterexampleFrame {
   std::size_t depth{0};
   std::string embedding_digest;
   std::string transition;
+  EmbeddingDelta delta;
   Embedding embedding;
 };
 

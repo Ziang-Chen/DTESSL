@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; current recursive embedding candidate: `v0.4.0`.
+`v0.2.3`; current state-case/finite-domain candidate: `v0.4.1`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -55,6 +55,7 @@ ordered workflow steps. Static topology and dynamic `where` remain distinct.
 | `v0.3.4` | Built-in Solver seam | Frontend/backend-independent semantic layer, dense transition-group matching, canonical dynamic Embedding encoding, content deduplication, EmbeddingExpand graph, bounded safety/eventuality counterexample search and reference/dense parity benchmarks |
 | `v0.3.5` | Temporal ClaimMonitor product | Typed `trace/state/procedure` Claim targets, `always/eventually/until/within/since`, derived `never/before/weak_until`, procedure-local anonymous transition edges, transition obligations, EmbeddingExpand × ClaimMonitor search, finite/deadlock/lasso counterexamples and cross-context examples |
 | `v0.4.0` | Recursive StateSchema, Embedding and RelationMatch | General/compact recursive `A(B)` state declarations, `,` product and `|` choice, recursively typed values/invariants, structural transition matching, semantic `Embedding`/`EmbeddingExpand`, schema-path `RawKeyMap`, unified comparison/membership `RelationMatch`, recursive `subject ~ relation-expression`, `(a,b) ~ happens_before` trace relations, distributed State/Transition/Procedure seed relations aggregated by Trace/Session, occurrence-owned causal and eventually-interval closure, generic typed `TraceArtifact` replay, and immutable per-RoundId occurrence input plus before/after typed state evidence; derived/shared state remains a later v0.4.x slice |
+| `v0.4.1` | State case, finite constraints, delta witnesses | Named/anonymous recursive `case` axes with no inferred edges, compact/full syntax parity, `typetrait<T>`, enumeration and integer-range constraints, bounded parameter generation through ordinary guard/invariant admission, runtime and Solver `EmbeddingDelta` plus parent/child digest verification |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |
 | `v0.7.0` | Monitor automata and assurance | Compile existing claims/invariants to monitor automata, trace redaction, evidence metadata and refinement-oriented statuses |

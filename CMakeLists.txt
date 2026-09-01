@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.4.0)
+set(DTESSL_VERSION 0.4.1)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -335,6 +335,19 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/recursive_embedding.dtessl)
   set_tests_properties(dtessl.recursive_relation_features PROPERTIES
                        PASS_REGULAR_EXPRESSION "recursive-state-schema.*relation-expression")
+  add_test(NAME dtessl.state_case_finite_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/state_case_finite.dtessl)
+  set_tests_properties(dtessl.state_case_finite_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.state_case_finite_solver
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   verify-claim
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/state_case_finite.dtessl
+                   RetryBound)
+  set_tests_properties(dtessl.state_case_finite_solver PROPERTIES
+                       PASS_REGULAR_EXPRESSION "verified claim=RetryBound embeddings=9")
   add_test(NAME dtessl.occurrence_capture_check
            COMMAND $<TARGET_FILE:dtessl_cli>
                    check

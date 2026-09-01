@@ -1,4 +1,4 @@
-# DTESSL v0.4.0
+# DTESSL v0.4.1
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -19,6 +19,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [Core Logic Surface](docs/CORE_LOGIC_SYNTAX.md)
 - [SemanticDescriptor Projection v1](docs/SEMANTIC_DESCRIPTOR_V1.md)
 - [Language Service 与 REPL](docs/LANGUAGE_SERVICE.md)
+- [State case、有限域与 Delta](docs/STATE_CASE_AND_FINITE_DOMAINS.md)
 - [变更记录](CHANGELOG.md)
 
 ## v0 的闭环
@@ -26,7 +27,7 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 一个程序的闭环由六类定义组成：
 
 - `record / variant / enum / newtype` 定义代数与名义领域类型；
-- `state` 以 `,`（合取）、`|`（选择）和 `A(B)`（嵌套）递归定义有类型状态空间；
+- `state` 以命名/匿名 `case`、`,`（合取）、`|`（互斥选择）和括号递归定义有类型状态空间；
 - `transition` 的 `case (source-set) -> (target-set)` 定义原子状态集重写；
 - `procedure` 定义持久自动机实例的初态/上下文，并可内联定义匿名局部 transition；
 - `trace` 定义原生静态事件序列或按 `@context` 捕获的动态执行投影；
@@ -36,6 +37,8 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 语义上，`StateSchema` 是递归静态结构，`Embedding` 是它在一个时刻的具体嵌入，
 `EmbeddingExpand` 是以 Embedding 为节点的可达图。执行 lowering 使用 `RawKeyMap`
 把控制/值语义路径映射到原始 embedding 向量偏移；digest 只作证据，不作节点身份。
+`state case` 本身不生成边，只有 transition 能显式重写一个或多个 case 轴。每条运行时/
+solver witness 边都携带可重构并校验 digest 的 `EmbeddingDelta`。
 
 执行器以一组可并行事件为一个离散 `round`。同一 round 的 transition 都读取同一个
 before snapshot；写集不冲突时原子合并，冲突而没有显式 merge relation 时拒绝整组事件。
@@ -58,10 +61,14 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 
 ```dtessl
 state Scheduler @ session initial:
-  Phase(Idle | Running(Stage(Reserving | Committing), attempts: int = 0,
-                         invariant(attempts >= 0)))
-  Health(Healthy | Degraded)
-  credits: int = 2
+  case Phase:
+    Idle
+    | Running(attempts: int32[0:3] = 0,
+              case Stage: Reserving | Committing,
+              invariant(attempts >= 0))
+  case Health:
+    Healthy | Degraded
+  credits: int32[0:10] = 2
   workers: relation WorkerId = {WorkerId(a), WorkerId(b)}
   invariant:
     credits >= 0
@@ -537,7 +544,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.0 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.1 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

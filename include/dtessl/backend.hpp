@@ -47,6 +47,7 @@ enum class LanguageFeature {
   TransitionObligation,
   RecursiveStateSchema,
   RelationExpression,
+  FiniteDomains,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

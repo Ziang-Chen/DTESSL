@@ -45,8 +45,9 @@ longer compiled by constructing a synthetic Claim declaration.
 
 ## Names and ownership
 
-- A source `StateSchema` recursively composes product children, choice
-  alternatives and typed value leaves. It is not a changing search node.
+- A source `StateSchema` recursively composes product children, named or
+  anonymous `case` choice axes, and typed value leaves. A `case` enumerates
+  legal alternatives but creates no transition edge by itself.
 - An `Embedding` is dynamic: the active location on each `@context` axis plus
   the current typed variable valuation.
 - `EmbeddingExpand` is the reachable directed graph formed by expanding enabled
@@ -66,7 +67,9 @@ longer compiled by constructing a synthetic Claim declaration.
 - `RawKeyMap` maps recursive semantic control/value paths to offsets in the
   lowered raw embedding vector. It is representation metadata, not identity.
 - `EmbeddingStore` canonically encodes and content-deduplicates nodes by exact
-  raw bytes. Digest is evidence only and cannot merge nodes.
+  raw bytes. Digest is evidence only and cannot merge nodes. Every witness edge
+  stores a canonical `EmbeddingDelta`; insertion reapplies that patch to the
+  parent and rejects it unless it reconstructs the exact child Embedding.
 - A witness parent stored with an Embedding is only one discovery path used
   to print a counterexample. It does not turn EmbeddingExpand into a tree.
 
@@ -79,13 +82,19 @@ Embedding the Solver:
 
 1. finds candidate transition groups by TransitionId;
 2. narrows routes by their source-context signature;
-3. evaluates dynamic `where` predicates and relation searches;
+3. generates parameter values from enumerable static constraints, then
+   evaluates dynamic `where` predicates and relation searches;
 4. applies the unique route or explicit unique optimum to produce a successor;
 5. inserts the successor Embedding into EmbeddingExpand by exact raw content.
 
-The current bounded explorer admits zero-parameter transitions. A parameterized
-transition needs an explicit finite input domain; until that language feature is
-defined, the result is `inconclusive`, never a proof.
+The bounded explorer admits zero-parameter transitions and parameterized
+transitions whose types have an enumerable static constraint: `bool`, a small
+fixed-width `typetrait`, a payload-free enum trait, `T{...}`, or
+`int[begin:stride:end]`. The enumeration profile is bounded by
+`finite_domain_value_limit`. An unconstrained/infinite parameter, or a finite
+domain above that operational limit, makes the result `inconclusive`, never a
+proof. The generated values still pass through the same typed constraint,
+`where`, relation, and invariant admission path as ordinary execution.
 Likewise, a Claim, invariant or transition that observes `round` is
 `inconclusive` until a finite logical-time component is explicitly included in
 the product. The Solver never silently folds different times into one digest.

@@ -8,8 +8,8 @@ Updated: 2026-09-01, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.0` occurrence-owned causal/temporal
-  capture and generic typed replay slice
+- Current target: validate the `v0.4.1` state-case, finite-constraint and
+  authenticated Embedding-delta slice
 - Stop orders: none
 
 ## Current state
@@ -57,6 +57,13 @@ and generic `:replay-artifact` through those same public runtime APIs. Standard,
 `-Werror`, and ASan/UBSan builds each pass 45/45 tests; real PTY history and the
 declared/live occurrence demo pass.
 
+The state-space refinement adds named/anonymous recursive `case` axes without
+inferring transition edges, enumerable `typetrait`/enumeration/range static
+constraints, finite parameter generation in Solver, and authenticated
+`EmbeddingDelta` witness edges. General/compact syntax, nested axis rewrites,
+domain rejection and finite Claim closure are covered. Standard, `-Werror`, and
+ASan/UBSan builds each pass 47/47 tests.
+
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
@@ -92,7 +99,7 @@ declared/live occurrence demo pass.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.4.0` | Built CLI reports `v0.4.0` | pass |
+| Version identity | CMake/generated header target `0.4.1` | Built CLI reports `v0.4.1` | pass |
 | Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
@@ -101,6 +108,9 @@ declared/live occurrence demo pass.
 | Unified RelationMatch path | Equality/order/membership and recursive `~` lower to one typed AST/evaluator; runtime and ClaimMonitor atoms call it without private predicate evaluation | Existing comparison corpus plus nested tuple relation and canonical-render tests pass | pass |
 | Trace relation syntax | `(a,b) ~ happens_before` has a distinct trace-domain AST case; compatibility `before(a,b)` shares it; finite nesting executes and unsupported Solver nesting is inconclusive | Procedure Product verifies strict ordering; closed trace satisfies nested `eventually(RelationMatch)` | pass |
 | Recursive StateSchema | General/compact recursive declaration, duplicate/path/depth checks, local typed fields/invariants and structural transition matching | Nested scheduler and switch examples execute and Claim search reaches three Embeddings | pass |
+| State case axes | Named/anonymous cases lower to recursive Choice nodes; declaration order creates no edge and transitions rewrite only explicit axes | `state_case_finite.dtessl` changes Phase then one nested Step slot | pass |
+| Finite static constraints | `typetrait<T>`, `T{...}`, and inclusive integer ranges share declaration/runtime admission and bounded Solver generation | Invalid stride member rejects; finite Retry Claim closes over 9 Embeddings and 32 edges | pass |
+| Authenticated Embedding delta | Runtime decisions and Solver witnesses carry ordered control/value patches plus parent/child digests; insertion reapplies and checks each patch | Nested axis delta contains exactly one control path and reconstructs the target Embedding | pass |
 | RawKeyMap lowering | Stable control/value semantic paths map to raw embedding-vector offsets; exact raw content owns graph identity | Solver API exposes Phase/Stage/value offsets and digest remains evidence-only | pass |
 | Bracket options | `[T]`, `[]`, `[value]`, empty-context rejection and exhaustive option-pattern test | Choose/reset two-step model exercises present/absent states | pass |
 | Explicit list literals | `list[...]` parse and canonical rendering | Scheduler fixture contains typed logical-name list | pass |

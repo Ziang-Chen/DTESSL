@@ -20,6 +20,7 @@ inline constexpr std::size_t relation_row_limit = 4096;
 inline constexpr std::size_t relation_work_limit = 1'000'000;
 inline constexpr std::size_t event_trace_round_limit = 100'000;
 inline constexpr std::size_t event_batch_size_limit = 4096;
+inline constexpr std::size_t finite_domain_value_limit = 4096;
 
 class Value;
 struct ValueList;
@@ -237,6 +238,38 @@ struct OccurrenceInput {
   friend bool operator==(const OccurrenceInput&, const OccurrenceInput&) = default;
 };
 
+// Canonical semantic patch between two immutable StateSchema embeddings.
+// Missing `before`/`after` denotes insertion/removal.  Paths are schema paths,
+// never raw vector offsets, so traces remain stable across backend layouts.
+struct ControlSlotDelta {
+  std::string path;
+  std::optional<std::string> before;
+  std::optional<std::string> after;
+
+  friend bool operator==(const ControlSlotDelta&,
+                         const ControlSlotDelta&) = default;
+};
+
+struct ValueSlotDelta {
+  std::string path;
+  std::optional<Value> before;
+  std::optional<Value> after;
+
+  friend bool operator==(const ValueSlotDelta&,
+                         const ValueSlotDelta&) = default;
+};
+
+struct EmbeddingDelta {
+  std::vector<ControlSlotDelta> controls;
+  std::vector<ValueSlotDelta> values;
+
+  [[nodiscard]] bool empty() const noexcept {
+    return controls.empty() && values.empty();
+  }
+
+  friend bool operator==(const EmbeddingDelta&, const EmbeddingDelta&) = default;
+};
+
 struct StepResult {
   // A round is one atomic simulation batch, not a per-transition clock.
   // Independent transitions in the same batch share this value.
@@ -273,6 +306,12 @@ struct StepResult {
   std::map<std::string, std::string, std::less<>> active_states;
   std::map<std::string, Value, std::less<>> before_state;
   std::map<std::string, Value, std::less<>> state;
+  // Primary replay evidence. Full before/after maps above remain materialized
+  // API views; persisted traces may retain only a checkpoint plus these
+  // patches and verify both digests during replay.
+  std::string before_embedding_digest;
+  std::string embedding_digest;
+  EmbeddingDelta delta;
   ActionPlan actions;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;

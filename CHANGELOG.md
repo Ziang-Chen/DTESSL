@@ -3,6 +3,15 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.1
+
+- Add named and anonymous recursive state `case` axes while keeping all
+  behavior edges explicit in transition declarations.
+- Add finite static constraints through `typetrait<T>`, `T{...}`, and inclusive
+  integer range syntax, including bounded Solver parameter generation.
+- Add canonical control/value `EmbeddingDelta` records with parent/child digest
+  verification to runtime decisions and Solver witnesses.
+
 ## v0.4.0
 
 - **Breaking correction:** capture closure is occurrence-owned, not

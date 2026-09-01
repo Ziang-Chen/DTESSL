@@ -93,15 +93,20 @@ bool program_observes_round(const Program::Impl& program) {
 // node index is the matching EmbeddingStore index; it is deliberately not
 // a tree because transitions may join or form cycles.
 struct EmbeddingExpand {
-  using Edge = std::pair<std::size_t, std::string>;
+  struct Edge {
+    std::size_t target{0};
+    std::string transition;
+    EmbeddingDelta delta;
+  };
 
   explicit EmbeddingExpand(std::size_t initial_nodes)
       : outgoing_edges(initial_nodes) {}
 
   void add_node() { outgoing_edges.emplace_back(); }
   void add_edge(std::size_t source, std::size_t target,
-                std::string transition) {
-    outgoing_edges.at(source).emplace_back(target, std::move(transition));
+                std::string transition, EmbeddingDelta delta) {
+    outgoing_edges.at(source).push_back(
+        Edge{target, std::move(transition), std::move(delta)});
   }
   [[nodiscard]] const std::vector<Edge>& outgoing(std::size_t node) const {
     return outgoing_edges.at(node);
@@ -304,7 +309,8 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
   nodes.push_back(ProductNode{root.index, std::move(initial_monitor),
                               std::move(initial_obligations), {}, {}, 0U});
   EmbeddingExpand state_expand(1U);
-  std::vector<std::vector<EmbeddingExpand::Edge>> product_edges(1U);
+  using ProductEdge = std::pair<std::size_t, std::string>;
+  std::vector<std::vector<ProductEdge>> product_edges(1U);
   std::map<std::pair<std::size_t, std::string>, std::size_t> product_index;
   product_index.emplace(
       std::pair{root.index,
@@ -328,6 +334,7 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
           embeddings.at(node.embedding);
       frames.push_back(CounterexampleFrame{node.depth, embedding.digest,
                                             node.transition,
+                                            embedding.witness_delta,
                                             embedding.embedding});
     }
     return frames;
@@ -394,88 +401,117 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
            transition.procedure_scope != claim->target)) {
         continue;
       }
-      if (!transition.parameters.empty()) {
-        parameterized_inputs = true;
-        continue;
-      }
-      Engine successor = embedding_engines.at(nodes[cursor].embedding);
-      StepResult step;
-      try {
-        step = successor.step_transition(TransitionInput{transition.name, {}});
-      } catch (const Error& error) {
-        if (unavailable_transition(error)) continue;
-        result.status = ClaimSolveStatus::Inconclusive;
-        update_counts();
-        result.detail = "transition expansion stopped: " +
-                        std::string(error.what());
-        return result;
-      }
-      enabled_any = true;
-      ++result.explored_edges;
-      Embedding embedding = embedding_of(successor);
-      std::size_t embedding_index = 0;
-      if (const auto existing = embeddings.find(embedding)) {
-        embedding_index = *existing;
-      } else {
-        if (nodes.size() >= limits.max_embeddings) {
-          embedding_limited = true;
-          continue;
+      std::vector<std::map<std::string, Value, std::less<>>> finite_inputs(1U);
+      for (const Parameter& parameter : transition.parameters) {
+        const std::optional<std::vector<Value>> domain =
+            generate_static_constraint_domain(parameter.type, program.types);
+        if (!domain) {
+          parameterized_inputs = true;
+          finite_inputs.clear();
+          break;
         }
-        const auto inserted = embeddings.insert(
-            std::move(embedding), nodes[cursor].embedding,
-            step.transition);
-        embedding_index = inserted.index;
-        if (embedding_index != embedding_engines.size()) {
-          throw Error("EmbeddingStore and executable snapshot table diverged");
+        if (domain->empty() ||
+            finite_inputs.size() > finite_domain_value_limit / domain->size()) {
+          parameterized_inputs = true;
+          finite_inputs.clear();
+          break;
         }
-        embedding_engines.push_back(successor);
-        state_expand.add_node();
+        std::vector<std::map<std::string, Value, std::less<>>> expanded;
+        expanded.reserve(finite_inputs.size() * domain->size());
+        for (const auto& fields : finite_inputs) {
+          for (const Value& value : *domain) {
+            auto item = fields;
+            item.emplace(parameter.name, value);
+            expanded.push_back(std::move(item));
+          }
+        }
+        finite_inputs = std::move(expanded);
       }
-      state_expand.add_edge(nodes[cursor].embedding, embedding_index,
-                            step.transition);
-      ClaimMonitorState successor_monitor = advance_monitor(
-          monitor, nodes[cursor].monitor, successor, step.transition);
-      std::vector<ActiveObligation> successor_obligations =
-          advance_obligations(obligation_specs, nodes[cursor].obligations,
-                              successor, step.transition);
-      const std::string next_monitor_key = monitor_key(successor_monitor) +
-          obligation_key(successor_obligations);
-      monitor_states.insert(next_monitor_key);
-      const auto key = std::pair{embedding_index, next_monitor_key};
-      std::size_t successor_index = 0;
-      if (const auto existing = product_index.find(key);
-          existing != product_index.end()) {
-        successor_index = existing->second;
-      } else {
-        if (nodes.size() >= limits.max_embeddings) {
-          embedding_limited = true;
-          continue;
-        }
-        successor_index = nodes.size();
-        product_index.emplace(key, successor_index);
-        nodes.push_back(ProductNode{embedding_index, std::move(successor_monitor),
-                                    std::move(successor_obligations), cursor,
-                                    step.transition, nodes[cursor].depth + 1U});
-        product_edges.emplace_back();
-        const bool claim_counterexample =
-            nodes.back().monitor.phase == MonitorPhase::Violated &&
-            decide_property(claim_use, PropertyTruth::Violated).disposition ==
-                PropertyDisposition::Counterexample;
-        const bool ensure_violation = obligation_has_disposition(
-            obligation_specs, nodes.back().obligations,
-            PropertyDisposition::RecordViolation);
-        if (claim_counterexample || ensure_violation) {
-          result.status = ClaimSolveStatus::Counterexample;
-          result.counterexample = counterexample(successor_index);
-          result.max_depth_reached = nodes.back().depth;
-          result.detail = claim_counterexample
-                              ? "reachable Product state is a Claim counterexample"
-                              : "reachable Product state violates transition ensure";
+      for (const auto& fields : finite_inputs) {
+        Engine successor = embedding_engines.at(nodes[cursor].embedding);
+        StepResult step;
+        try {
+          step = successor.step_transition(
+              TransitionInput{transition.name, fields});
+        } catch (const Error& error) {
+          if (unavailable_transition(error) ||
+              std::string_view(error.what()).find("leaves its finite domain") !=
+                  std::string_view::npos) {
+            continue;
+          }
+          result.status = ClaimSolveStatus::Inconclusive;
           update_counts();
+          result.detail = "transition expansion stopped: " +
+                          std::string(error.what());
           return result;
         }
+        enabled_any = true;
+        ++result.explored_edges;
+        Embedding embedding = embedding_of(successor);
+        std::size_t embedding_index = 0;
+        if (const auto existing = embeddings.find(embedding)) {
+          embedding_index = *existing;
+        } else {
+          if (nodes.size() >= limits.max_embeddings) {
+            embedding_limited = true;
+            continue;
+          }
+          const auto inserted = embeddings.insert(
+              std::move(embedding), nodes[cursor].embedding,
+              step.transition, step.delta);
+          embedding_index = inserted.index;
+          if (embedding_index != embedding_engines.size()) {
+            throw Error("EmbeddingStore and executable snapshot table diverged");
+          }
+          embedding_engines.push_back(successor);
+          state_expand.add_node();
+        }
+        state_expand.add_edge(nodes[cursor].embedding, embedding_index,
+                              step.transition, step.delta);
+        ClaimMonitorState successor_monitor = advance_monitor(
+            monitor, nodes[cursor].monitor, successor, step.transition);
+        std::vector<ActiveObligation> successor_obligations =
+            advance_obligations(obligation_specs, nodes[cursor].obligations,
+                                successor, step.transition);
+        const std::string next_monitor_key = monitor_key(successor_monitor) +
+            obligation_key(successor_obligations);
+        monitor_states.insert(next_monitor_key);
+        const auto key = std::pair{embedding_index, next_monitor_key};
+        std::size_t successor_index = 0;
+        if (const auto existing = product_index.find(key);
+            existing != product_index.end()) {
+          successor_index = existing->second;
+        } else {
+          if (nodes.size() >= limits.max_embeddings) {
+            embedding_limited = true;
+            continue;
+          }
+          successor_index = nodes.size();
+          product_index.emplace(key, successor_index);
+          nodes.push_back(ProductNode{embedding_index, std::move(successor_monitor),
+                                      std::move(successor_obligations), cursor,
+                                      step.transition, nodes[cursor].depth + 1U});
+          product_edges.emplace_back();
+          const bool claim_counterexample =
+              nodes.back().monitor.phase == MonitorPhase::Violated &&
+              decide_property(claim_use, PropertyTruth::Violated).disposition ==
+                  PropertyDisposition::Counterexample;
+          const bool ensure_violation = obligation_has_disposition(
+              obligation_specs, nodes.back().obligations,
+              PropertyDisposition::RecordViolation);
+          if (claim_counterexample || ensure_violation) {
+            result.status = ClaimSolveStatus::Counterexample;
+            result.counterexample = counterexample(successor_index);
+            result.max_depth_reached = nodes.back().depth;
+            result.detail = claim_counterexample
+                                ? "reachable Product state is a Claim counterexample"
+                                : "reachable Product state violates transition ensure";
+            update_counts();
+            return result;
+          }
+        }
+        product_edges[cursor].emplace_back(successor_index, step.transition);
       }
-      product_edges[cursor].emplace_back(successor_index, step.transition);
     }
     const bool pending_claim = needs_acceptance_cycle(monitor.goal) &&
         nodes[cursor].monitor.phase == MonitorPhase::Waiting;
@@ -554,13 +590,14 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
             embeddings.at(nodes[cycle_nodes[index]].embedding);
         result.counterexample.push_back(CounterexampleFrame{
             result.counterexample.back().depth + 1U, embedding.digest,
-            cycle_transitions[index - 1U], embedding.embedding});
+            cycle_transitions[index - 1U], embedding.witness_delta,
+            embedding.embedding});
       }
       const EmbeddingRecord& target =
           embeddings.at(nodes[cycle_nodes.front()].embedding);
       result.counterexample.push_back(CounterexampleFrame{
           result.counterexample.back().depth + 1U, target.digest,
-          cycle_transitions.back(), target.embedding});
+          cycle_transitions.back(), target.witness_delta, target.embedding});
       result.detail =
           "pending temporal obligation has a reachable accepting-cycle counterexample";
       update_counts();
