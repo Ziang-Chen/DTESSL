@@ -46,7 +46,8 @@ Engine::Engine(Program program,
   if (program_.empty()) throw Error("cannot construct an engine from an empty program");
   const Program::Impl& implementation = *program_.implementation();
   active_state_ids_.assign(implementation.context_names.size(), invalid_dense_id);
-  FunctionScope function_scope(implementation.functions);
+  FunctionScope function_scope(implementation.functions, &implementation.relations,
+                               &implementation.types);
   const std::size_t initial_count = static_cast<std::size_t>(std::count_if(
       implementation.states.begin(), implementation.states.end(),
       [](const State& state) { return state.initial; }));
@@ -205,7 +206,7 @@ ParallelStepResult Engine::step_inputs_at(
     throw Error("causal RoundId must advance monotonically for an Engine");
   }
   const Program::Impl& program = *program_.implementation();
-  FunctionScope function_scope(program.functions);
+  FunctionScope function_scope(program.functions, &program.relations, &program.types);
   struct Prepared {
     const Transition* transition;
     const std::string* case_name;
@@ -1743,7 +1744,7 @@ ClaimStatus claim_status(const PropertyDecision& decision) {
 
 std::vector<ClaimEvaluation> evaluate_trace_claims(
     const Program::Impl& program, const TraceSnapshot& trace) {
-  FunctionScope function_scope(program.functions);
+  FunctionScope function_scope(program.functions, &program.relations, &program.types);
   std::map<std::string, Value, std::less<>> initial_state;
   const auto declaration = std::find_if(
       program.traces.begin(), program.traces.end(),

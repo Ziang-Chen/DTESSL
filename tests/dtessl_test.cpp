@@ -232,6 +232,28 @@ transition Clear @ Reset():
     had_choice = match before.chosen { [] -> false, [worker] -> worker.capacity > 0 }
 )DTESSL";
 
+constexpr std::string_view anonymous_relation_source = R"DTESSL(
+state Model initial:
+  A: set<int> = {1, 2}
+  B: set<int> = {2, 3}
+  union_ab: set<int> = {}
+  union_ba: set<int> = {}
+  grouped: set<int> = {}
+
+relation P1(x: int):
+  x != 2
+
+relation P2(x: int):
+  x >= 2
+
+transition Derive @ Go():
+  from Model
+  to Model:
+    union_ab = {a: a in before.A, a ~ P1, b: b in before.B, b ~ P2}
+    union_ba = {b: b in before.B, b ~ P2, a: a in before.A, a ~ P1}
+    grouped = {a: a in before.A, (a ~ P1 or a = 2) and not (a = 3)}
+)DTESSL";
+
 [[noreturn]] void fail(const std::string& message) {
   std::cerr << "dtessl test failed: " << message << '\n';
   std::exit(1);
@@ -282,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.1", "compiled version must be v0.4.1");
+  require(dtessl::version == "0.4.2", "compiled version must be v0.4.2");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -855,6 +877,26 @@ int main() {
   }
   require(budget_error && bounded_search.current_round() == 0,
           "relation work budget must reject expansion without committing state");
+
+  const dtessl::Program anonymous_relation_program =
+      dtessl::parse(anonymous_relation_source);
+  const auto anonymous_plans = dtessl::search_plans(anonymous_relation_program);
+  require(std::count_if(anonymous_plans.begin(), anonymous_plans.end(),
+                        [](const auto& plan) {
+                          return plan.operation == "typed-relation-membership";
+                        }) == 2,
+          "typed decidable relations were not exposed as membership plans");
+  dtessl::Engine anonymous_relation_engine(anonymous_relation_program);
+  const dtessl::StepResult anonymous_result =
+      anonymous_relation_engine.step(dtessl::Event{"Go", {}});
+  require(anonymous_result.state.at("union_ab") ==
+              anonymous_result.state.at("union_ba") &&
+              anonymous_result.state.at("union_ab").as_set().values.size() == 3U,
+          "unordered anonymous relation union depends on source branch order");
+  require(anonymous_result.state.at("grouped").as_set().values ==
+              std::vector<dtessl::Value>{dtessl::Value(std::int64_t{1}),
+                                         dtessl::Value(std::int64_t{2})},
+          "parenthesized anonymous-relation filter precedence is wrong");
 
   const dtessl::SemanticDescriptor semantic = semantic_fixture();
   const std::string canonical_descriptor = dtessl::print_semantic_descriptor(semantic);
@@ -1716,7 +1758,7 @@ state Scheduler @ session initial:
   primary: relation WorkerId = {WorkerId(a)}
   fallback: relation WorkerId = {WorkerId(b)}
   invariant:
-    WorkerId(a) ~ workers, (primary | fallback)
+    WorkerId(a) ~ workers and (WorkerId(a) ~ primary or WorkerId(a) ~ fallback)
 
 transition Start():
   case reserve (Scheduler(Phase.Idle, Health.Healthy) @ session) -> (Scheduler(Phase.Running.Stage.Reserving) @ session):
@@ -1726,18 +1768,21 @@ transition Start():
 transition Commit():
   case commit (Scheduler(Phase.Running.Stage.Reserving) @ session) -> (Scheduler(Phase.Running.Stage.Committing) @ session):
     where:
-      (WorkerId(a), WorkerId(b)) ~ before.session.links, (before.session.links | before.session.backup)
-      and ((WorkerId(a), WorkerId(b)), WorkerId(a)) ~ before.session.nested,
-          (before.session.nested | before.session.nested_backup)
+      <WorkerId(a), WorkerId(b)> ~ before.session.links
+      and (<WorkerId(a), WorkerId(b)> ~ before.session.links or
+           <WorkerId(a), WorkerId(b)> ~ before.session.backup)
+      and <<WorkerId(a), WorkerId(b)>, WorkerId(a)> ~ before.session.nested
+      and (<<WorkerId(a), WorkerId(b)>, WorkerId(a)> ~ before.session.nested or
+           <<WorkerId(a), WorkerId(b)>, WorkerId(a)> ~ before.session.nested_backup)
 )DTESSL";
   // Add binary relations separately so the recursive relation-expression also
   // checks tuple subjects and nested AND/OR.
   std::string recursive_source(recursive_embedding_source);
   const std::string relation_fields =
-      "  links: relation (WorkerId, WorkerId) = {(WorkerId(a), WorkerId(b))}\n"
+      "  links: relation (WorkerId, WorkerId) = {<WorkerId(a), WorkerId(b)>}\n"
       "  backup: relation (WorkerId, WorkerId) = {}\n"
       "  nested: relation (tuple<WorkerId, WorkerId>, WorkerId) = "
-      "{((WorkerId(a), WorkerId(b)), WorkerId(a))}\n"
+      "{<<WorkerId(a), WorkerId(b)>, WorkerId(a)>}\n"
       "  nested_backup: relation (tuple<WorkerId, WorkerId>, WorkerId) = {}\n";
   recursive_source.insert(recursive_source.find("  invariant:"), relation_fields);
   const dtessl::Program recursive_program = dtessl::parse(recursive_source);
@@ -1912,7 +1957,7 @@ state Invalid initial:
   present: relation Item = {Item(a)}
   absent: relation Item = {}
   invariant:
-    Item(a) ~ present, absent
+    Item(a) ~ present and Item(a) ~ absent
 )DTESSL";
   bool recursive_relation_rejected = false;
   try {

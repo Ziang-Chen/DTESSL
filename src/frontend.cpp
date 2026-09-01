@@ -338,51 +338,7 @@ struct TypeDefinition {
 
 using TypeRegistry = std::map<std::string, TypeDefinition, std::less<>>;
 
-struct Expr;
-using ExprPtr = std::shared_ptr<Expr>;
-
-struct MatchArm {
-  std::string constructor;
-  std::string binding;
-  bool wildcard{false};
-  ExprPtr body;
-};
-
-struct Expr {
-  enum class Kind {
-    Literal,
-    Name,
-    Unary,
-    Binary,
-    RelationMatch,
-    Exists,
-    Count,
-    SetInsert,
-    SetErase,
-    ForAll,
-    Select,
-    OptionLiteral,
-    NameConstruct,
-    Construct,
-    RecordConstruct,
-    Match,
-  };
-  Kind kind{Kind::Literal};
-  std::optional<Value> literal;
-  std::string text;
-  std::shared_ptr<Expr> left;
-  std::shared_ptr<Expr> right;
-  std::shared_ptr<Expr> third;
-  std::vector<ExprPtr> children;
-  std::vector<std::string> names;
-  std::vector<MatchArm> arms;
-  std::optional<DataType> type_argument;
-  std::optional<DataType> resolved_type;
-  std::size_t line{0};
-  std::size_t column{0};
-  bool direct_relation_binding{false};
-  bool relation_expression{false};
-};
+#include "frontend_ast.cpp"
 
 ExprPtr make_literal(Value value, std::size_t line = 0, std::size_t column = 0) {
   auto expr = std::make_shared<Expr>();
@@ -520,6 +476,22 @@ struct Parameter {
   std::size_t line{0};
   std::size_t column{0};
 };
+
+// A declared relation is a typed, lazy relational plan.  Membership can run
+// its predicate directly; consumers that need rows enumerate its generators
+// only on demand.  No declaration owns mutable rows.
+struct RelationDeclaration {
+  std::string name;
+  std::vector<Parameter> parameters;
+  std::vector<ComprehensionClause> clauses;
+  DataType type;
+  bool enumerable{false};
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+using RelationRegistry =
+    std::map<std::string, RelationDeclaration, std::less<>>;
 
 struct FunctionDeclaration {
   std::string name;
@@ -728,9 +700,22 @@ struct CompactStateDeclaration {
 };
 
 struct CompactTransitionDeclaration {
+  struct Update {
+    std::string state;
+    std::string field;
+    ExprPtr value;
+    std::size_t line{0};
+    std::size_t column{0};
+  };
   std::string family;
   std::string from;
   std::string to;
+  std::vector<std::string> from_states;
+  std::vector<std::string> to_states;
+  bool unordered_from{false};
+  bool unordered_to{false};
+  std::shared_ptr<AnonymousRelationPattern> anonymous_relation;
+  std::vector<Update> updates;
   ExprPtr condition{make_literal(Value(true))};
   std::size_t line{0};
   std::size_t column{0};
@@ -765,7 +750,32 @@ class FlatParser {
   FlatParser(std::vector<Token> tokens, const TypeRegistry& types)
       : tokens_(std::move(tokens)), types_(types) {}
 
-  ExprPtr expression() { return parse_implication(); }
+  ExprPtr expression() { return parse_clause_chain(); }
+
+  ComprehensionClause comprehension_clause() {
+    ComprehensionClause clause;
+    clause.line = peek().line;
+    clause.column = peek().column;
+    if (peek().kind == TokenKind::Identifier &&
+        cursor_ + 1U < tokens_.size() && tokens_[cursor_ + 1U].text == "in") {
+      clause.kind = ComprehensionClause::Kind::Generator;
+      clause.binding = identifier().text;
+      expect("in");
+      clause.expression = parse_implication();
+    } else {
+      clause.kind = ComprehensionClause::Kind::Predicate;
+      clause.expression = parse_implication();
+    }
+    return clause;
+  }
+
+  std::vector<ComprehensionClause> comprehension_clauses() {
+    std::vector<ComprehensionClause> result;
+    do {
+      result.push_back(comprehension_clause());
+    } while (match(","));
+    return result;
+  }
 
   std::shared_ptr<ActionExpr> action() {
     auto result = parse_parallel();
@@ -875,6 +885,15 @@ class FlatParser {
       expect("]");
       return DataType(DataType::Kind::Option, std::move(item));
     }
+    if (match("<")) {
+      std::vector<DataType> elements;
+      do elements.push_back(parse_type()); while (match(","));
+      expect(">");
+      if (elements.empty() || elements.size() > relation_arity_limit) {
+        fail(peek(), "tuple type exceeds arity limit");
+      }
+      return DataType(DataType::Kind::Tuple, std::move(elements));
+    }
     if (match("~")) {
       std::vector<DataType> elements;
       if (match("(")) {
@@ -947,7 +966,26 @@ class FlatParser {
     }
     Token name = identifier();
     if (!types_.contains(name.text)) fail(name, "unknown nominal type '" + name.text + "'");
-    return DataType(DataType::Kind::Named, std::move(name.text));
+    DataType result(DataType::Kind::Named, std::move(name.text));
+    if (match("<")) {
+      do result.elements.push_back(parse_type()); while (match(","));
+      expect(">");
+      if (types_.at(result.name).kind != TypeDefinition::Kind::Name) {
+        fail(name, "type arguments currently require a name/typed-class declaration");
+      }
+    }
+    return result;
+  }
+
+  // A comma at expression-block level is the compact spelling of logical
+  // conjunction.  Commas inside <...>, calls and declarations are consumed by
+  // those structural grammars before this rule sees them.
+  ExprPtr parse_clause_chain() {
+    ExprPtr result = parse_implication();
+    while (match(",")) {
+      result = make_binary("and", std::move(result), parse_implication());
+    }
+    return result;
   }
 
   ExprPtr parse_implication() {
@@ -979,52 +1017,30 @@ class FlatParser {
     auto left = parse_add();
     static const std::unordered_set<std::string> operators{
         "=", "==", "!=", "<", "<=", ">", ">=", "in"};
-    if (!at_end() && operators.contains(peek().text)) {
+    if (!at_end() && operators.contains(peek().text) &&
+        !(peek().text == ">" && tuple_literal_depth_ != 0U)) {
       const std::string op = take().text;
       return make_relation_match(op, std::move(left), parse_add());
     }
     if (match("~")) {
-      // `subject ~ R1, (R2 | R3)` recursively lowers to
-      // subject~R1 and (subject~R2 or subject~R3).  The subject AST is shared
-      // immutably; relation expressions never bind or search implicitly.
+      // Composite runtime filter:
+      //   <a,b> ~ (a ~ Pa, b ~ Pb) ~ Pab
+      // lowers to `(a~Pa and b~Pb) and (<a,b>~Pab)`.  The original subject is
+      // retained for every trailing relation match.
       const ExprPtr subject = left;
-      std::size_t relation_depth = 0U;
-      std::size_t relation_nodes = 0U;
-      std::function<ExprPtr()> relation_or;
-      std::function<ExprPtr()> relation_and;
-      std::function<ExprPtr()> relation_atom;
-      relation_atom = [&]() {
-        constexpr std::size_t relation_depth_limit = 64U;
-        constexpr std::size_t relation_node_limit = 4096U;
-        if (++relation_nodes > relation_node_limit) {
-          fail(peek(), "relation expression exceeds node limit");
+      ExprPtr result;
+      if (match("(")) {
+        result = parse_clause_chain();
+        expect(")");
+        if (!match("~")) {
+          fail(peek(), "composite relation filter needs a trailing '~ relation'");
         }
-        if (match("(")) {
-          if (++relation_depth > relation_depth_limit) {
-            fail(peek(), "relation expression exceeds recursion depth limit");
-          }
-          ExprPtr nested = relation_or();
-          expect(")");
-          --relation_depth;
-          return nested;
-        }
-        return make_relation_match("~", subject, parse_add());
-      };
-      relation_and = [&]() {
-        ExprPtr result = relation_atom();
-        while (match(",")) {
-          result = make_binary("and", std::move(result), relation_atom());
-        }
-        return result;
-      };
-      relation_or = [&]() {
-        ExprPtr result = relation_and();
-        while (match("|")) {
-          result = make_binary("or", std::move(result), relation_and());
-        }
-        return result;
-      };
-      ExprPtr result = relation_or();
+      }
+      do {
+        ExprPtr match_expr = make_relation_match("~", subject, parse_add());
+        result = result ? make_binary("and", std::move(result), std::move(match_expr))
+                        : std::move(match_expr);
+      } while (match("~"));
       result->relation_expression = true;
       return result;
     }
@@ -1062,6 +1078,9 @@ class FlatParser {
   ExprPtr parse_primary() {
     if (match("(")) {
       auto first = parse_implication();
+      // v0 migration input.  Canonical tuple literals use <...>; retaining
+      // this parser arm keeps old artifacts readable without leaving an
+      // ambiguity in the new relation-filter grammar.
       if (match(",")) {
         auto tuple = std::make_shared<Expr>();
         tuple->kind = Expr::Kind::Construct;
@@ -1075,6 +1094,57 @@ class FlatParser {
       }
       expect(")");
       return first;
+    }
+    if (match("<")) {
+      const Token start = tokens_.at(cursor_ - 1U);
+      auto tuple = std::make_shared<Expr>();
+      tuple->kind = Expr::Kind::Construct;
+      tuple->text = "tuple";
+      tuple->line = start.line;
+      tuple->column = start.column;
+      if (match(">")) fail(start, "tuple literal cannot be empty");
+      ++tuple_literal_depth_;
+      do tuple->children.push_back(parse_implication()); while (match(","));
+      --tuple_literal_depth_;
+      expect(">");
+      return tuple;
+    }
+    if (match("{")) {
+      const Token start = tokens_.at(cursor_ - 1U);
+      const auto branch = [&](ExprPtr projection) {
+        auto item = std::make_shared<Expr>();
+        item->kind = Expr::Kind::Comprehension;
+        item->text = "set";
+        item->line = start.line;
+        item->column = start.column;
+        item->left = std::move(projection);
+        return item;
+      };
+      std::vector<ExprPtr> branches;
+      ExprPtr current = branch(parse_implication());
+      expect(":");
+      current->clauses.push_back(comprehension_clause());
+      while (match(",")) {
+        if (peek().kind == TokenKind::Identifier &&
+            cursor_ + 1U < tokens_.size() && tokens_[cursor_ + 1U].text == ":") {
+          const Token projection = identifier();
+          branches.push_back(std::move(current));
+          current = branch(make_name(projection.text, projection.line,
+                                     projection.column));
+          expect(":");
+        }
+        current->clauses.push_back(comprehension_clause());
+      }
+      branches.push_back(std::move(current));
+      expect("}");
+      if (branches.size() == 1U) return branches.front();
+      auto result = std::make_shared<Expr>();
+      result->kind = Expr::Kind::Comprehension;
+      result->text = "set_union";
+      result->line = start.line;
+      result->column = start.column;
+      result->children = std::move(branches);
+      return result;
     }
     if (peek().text == "exists" || peek().text == "E" || peek().text == "all" ||
         peek().text == "A") {
@@ -1219,8 +1289,24 @@ class FlatParser {
     }
     std::optional<DataType> type_argument;
     if (begins_type_argument() && match("<")) {
-      type_argument = parse_type();
+      std::vector<DataType> arguments;
+      do arguments.push_back(parse_type()); while (match(","));
       expect(">");
+      type_argument = arguments.size() == 1U
+                          ? arguments.front()
+                          : DataType(DataType::Kind::Tuple, std::move(arguments));
+    }
+    if (path == "relation" && match("{")) {
+      auto result = std::make_shared<Expr>();
+      result->kind = Expr::Kind::Comprehension;
+      result->text = "relation";
+      result->line = name.line;
+      result->column = name.column;
+      result->left = parse_implication();
+      expect(":");
+      result->clauses = comprehension_clauses();
+      expect("}");
+      return result;
     }
     if (match("{")) {
       auto result = std::make_shared<Expr>();
@@ -1348,6 +1434,7 @@ class FlatParser {
   std::size_t cursor_{0};
   std::size_t expression_depth_{0};
   std::size_t type_depth_{0};
+  std::size_t tuple_literal_depth_{0};
 };
 
 // Compact functional temporal syntax, for example
@@ -1557,6 +1644,7 @@ class Parser {
   DataType type();
   Value initial_value(DataType type);
   TypeDefinition type_definition();
+  RelationDeclaration relation_declaration();
   FunctionDeclaration function_declaration();
   ActionPortDeclaration action_port_declaration();
   ParsedStateDeclaration state();
@@ -1608,6 +1696,7 @@ struct DenseRouteStateIndexBucket {
 struct Program::Impl {
   TypeRegistry types;
   FunctionRegistry functions;
+  RelationRegistry relations;
   std::vector<ActionPortDeclaration> action_ports;
   std::vector<State> states;
   std::vector<StateSchema> state_schemas;
@@ -1631,17 +1720,30 @@ struct Program::Impl {
 namespace {
 
 thread_local const FunctionRegistry* active_functions = nullptr;
+thread_local const RelationRegistry* active_relations = nullptr;
+thread_local const TypeRegistry* active_types = nullptr;
 
 class FunctionScope {
  public:
-  explicit FunctionScope(const FunctionRegistry& functions)
-      : previous_(active_functions) {
+  explicit FunctionScope(const FunctionRegistry& functions,
+                         const RelationRegistry* relations = nullptr,
+                         const TypeRegistry* types = nullptr)
+      : previous_(active_functions), previous_relations_(active_relations),
+        previous_types_(active_types) {
     active_functions = &functions;
+    if (relations != nullptr) active_relations = relations;
+    if (types != nullptr) active_types = types;
   }
-  ~FunctionScope() { active_functions = previous_; }
+  ~FunctionScope() {
+    active_functions = previous_;
+    active_relations = previous_relations_;
+    active_types = previous_types_;
+  }
 
  private:
   const FunctionRegistry* previous_;
+  const RelationRegistry* previous_relations_;
+  const TypeRegistry* previous_types_;
 };
 
 std::optional<std::pair<ExactInt, ExactInt>> integer_trait_bounds(
@@ -1843,6 +1945,14 @@ DataType Parser::type() {
     DataType item = type();
     expect("]");
     result = DataType(DataType::Kind::Option, std::move(item));
+  } else if (match("<")) {
+    std::vector<DataType> elements;
+    do elements.push_back(type()); while (match(","));
+    expect(">");
+    if (elements.empty() || elements.size() > relation_arity_limit) {
+      fail(peek(), "tuple type exceeds arity limit");
+    }
+    result = DataType(DataType::Kind::Tuple, std::move(elements));
   } else if (match("~")) {
     std::vector<DataType> elements;
     if (match("(")) {
@@ -1926,6 +2036,13 @@ DataType Parser::type() {
     const Token name = take();
     if (!types_.contains(name.text)) fail(name, "unknown nominal type '" + name.text + "'");
     result = DataType(DataType::Kind::Named, name.text);
+    if (match("<")) {
+      do result.elements.push_back(type()); while (match(","));
+      expect(">");
+      if (types_.at(result.name).kind != TypeDefinition::Kind::Name) {
+        fail(name, "type arguments currently require a name/typed-class declaration");
+      }
+    }
   } else {
     fail(peek(), "expected a primitive, collection, tuple, relation, option, result, nominal type, or finite type");
   }
@@ -2056,6 +2173,92 @@ TypeDefinition Parser::type_definition() {
   return result;
 }
 
+RelationDeclaration Parser::relation_declaration() {
+  const Token start = peek();
+  expect("relation");
+  RelationDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  const bool compact = match("<");
+
+  if (!compact) {
+    result.name = identifier();
+    expect("(");
+  }
+  std::set<std::string, std::less<>> parameter_names;
+  if ((compact && !at(">")) || (!compact && !at(")"))) {
+    do {
+      Parameter parameter;
+      const Token parameter_start = peek();
+      parameter.name = identifier();
+      parameter.line = parameter_start.line;
+      parameter.column = parameter_start.column;
+      if (!parameter_names.insert(parameter.name).second) {
+        fail(parameter_start, "duplicate relation parameter");
+      }
+      expect(":");
+      parameter.type = type();
+      result.parameters.push_back(std::move(parameter));
+    } while (match(","));
+  }
+  expect(compact ? ">" : ")");
+  if (result.parameters.empty()) {
+    fail(start, "relation declaration needs at least one typed parameter");
+  }
+  if (result.parameters.size() > relation_arity_limit) {
+    fail(start, "relation declaration exceeds arity limit");
+  }
+  if (compact) {
+    expect("~");
+    result.name = identifier();
+  }
+  expect(":");
+
+  std::vector<Token> body;
+  if (compact) {
+    while (!at(";")) {
+      if (at(TokenKind::End) || at(TokenKind::Newline)) {
+        fail(peek(), "compact relation must end with ';' on one line");
+      }
+      body.push_back(take());
+    }
+    expect(";");
+    newline();
+  } else {
+    body = take_block_tokens();
+  }
+  if (body.empty()) fail(start, "relation declaration needs a rule body");
+  FlatParser body_parser(std::move(body), types_);
+  result.clauses = body_parser.comprehension_clauses();
+  body_parser.expect_end();
+
+  std::vector<DataType> columns;
+  columns.reserve(result.parameters.size());
+  for (const Parameter& parameter : result.parameters) {
+    columns.push_back(parameter.type);
+  }
+  result.type = DataType(DataType::Kind::Relation, std::move(columns));
+  result.type.direct_relation_row = result.parameters.size() == 1U;
+
+  std::set<std::string, std::less<>> generated;
+  for (const ComprehensionClause& clause : result.clauses) {
+    if (clause.kind == ComprehensionClause::Kind::Generator) {
+      if (!parameter_names.contains(clause.binding)) {
+        fail(start, "relation generator binds unknown parameter '" +
+                        clause.binding + "'");
+      }
+      generated.insert(clause.binding);
+    }
+  }
+  result.enumerable = std::all_of(
+      result.parameters.begin(), result.parameters.end(),
+      [&](const Parameter& parameter) {
+        return generated.contains(parameter.name) ||
+               generate_static_constraint_domain(parameter.type, types_).has_value();
+      });
+  return result;
+}
+
 ActionPortDeclaration Parser::action_port_declaration() {
   const Token start = peek();
   expect("port");
@@ -2119,7 +2322,17 @@ std::string type_identity(const DataType& type) {
     case DataType::Kind::Int: result = "int"; break;
     case DataType::Kind::Rational: result = "rational"; break;
     case DataType::Kind::String: result = "string"; break;
-    case DataType::Kind::Named: result = type.name; break;
+    case DataType::Kind::Named:
+      result = type.name;
+      if (!type.elements.empty()) {
+        result += "<";
+        for (std::size_t index = 0; index < type.elements.size(); ++index) {
+          if (index != 0U) result += ",";
+          result += type_identity(type.elements[index]);
+        }
+        result += ">";
+      }
+      break;
     case DataType::Kind::List:
       result = "list<" + type_identity(*type.first) + ">";
       break;
@@ -2132,7 +2345,14 @@ std::string type_identity(const DataType& type) {
     case DataType::Kind::Option:
       result = "option<" + type_identity(*type.first) + ">";
       break;
-    case DataType::Kind::Tuple: result = variadic_identity("tuple"); break;
+    case DataType::Kind::Tuple:
+      result = "<";
+      for (std::size_t index = 0; index < type.elements.size(); ++index) {
+        if (index != 0U) result += ",";
+        result += type_identity(type.elements[index]);
+      }
+      result += ">";
+      break;
     case DataType::Kind::Relation: result = variadic_identity("relation"); break;
     case DataType::Kind::Map:
       result = "map<" + type_identity(*type.first) + "," +
@@ -2241,13 +2461,14 @@ Value Parser::initial_value(DataType expected_type) {
     return Value(std::move(value));
   }
   if (expected_type.kind == DataType::Kind::Tuple) {
-    expect("(");
+    const bool canonical = match("<");
+    if (!canonical) expect("(");
     ValueTuple tuple;
     for (std::size_t index = 0; index < expected_type.elements.size(); ++index) {
       if (index != 0) expect(",");
       tuple.fields.push_back(initial_value(expected_type.elements[index]));
     }
-    expect(")");
+    expect(canonical ? ">" : ")");
     return Value(std::move(tuple));
   }
   if (expected_type.kind == DataType::Kind::Relation) {
@@ -2277,11 +2498,25 @@ Value Parser::initial_value(DataType expected_type) {
   if (expected_type.kind == DataType::Kind::Named) {
     const TypeDefinition& definition = types_.at(expected_type.name);
     expect(definition.name);
+    if (!expected_type.elements.empty()) {
+      expect("<");
+      for (std::size_t index = 0; index < expected_type.elements.size(); ++index) {
+        if (index != 0U) expect(",");
+        const DataType argument = type();
+        if (argument != expected_type.elements[index]) {
+          fail(peek(), "typed-class constructor type argument mismatch");
+        }
+      }
+      expect(">");
+    }
     if (definition.kind == TypeDefinition::Kind::Name) {
       expect("(");
       const std::string atom = identifier();
       expect(")");
-      return Value(ValueName{definition.name, atom});
+      DataType runtime_type = expected_type;
+      runtime_type.finite_domain.reset();
+      runtime_type.specific_trait.clear();
+      return Value(ValueName{type_identity(runtime_type), atom});
     }
     if (definition.kind == TypeDefinition::Kind::Newtype) {
       expect("(");
@@ -3758,12 +3993,146 @@ CompactTransitionDeclaration Parser::compact_transition() {
   const std::string first = identifier();
   if (match(":")) {
     result.family = first;
-    result.from = identifier();
+    if (!at("<") && !at("{")) result.from = identifier();
   } else {
     result.from = first;
   }
-  expect("->");
-  result.to = identifier();
+  if (at("<") || at("{")) {
+    const auto element_tokens = [&](std::string_view close) {
+      std::vector<Token> tokens;
+      std::size_t nested = 0;
+      while (!(at(",") && nested == 0U) && !(at(close) && nested == 0U)) {
+        if (at(TokenKind::End) || at(TokenKind::Newline)) {
+          fail(peek(), "compact pattern container must stay on one line");
+        }
+        Token token = take();
+        if (token.text == "(" || token.text == "[" || token.text == "{" ||
+            token.text == "<") {
+          ++nested;
+        } else if (token.text == ")" || token.text == "]" || token.text == "}" ||
+                   token.text == ">") {
+          if (nested == 0U) fail(token, "unbalanced compact pattern element");
+          --nested;
+        }
+        tokens.push_back(std::move(token));
+      }
+      return tokens;
+    };
+
+    const auto add_pattern = [&](std::vector<Token> tokens) {
+      if (tokens.empty() || tokens.front().kind != TokenKind::Identifier) {
+        fail(peek(), "compact transition pattern needs a leading state name");
+      }
+      const std::string state = tokens.front().text;
+      if (std::find(result.from_states.begin(), result.from_states.end(), state) ==
+          result.from_states.end()) {
+        result.from_states.push_back(state);
+      }
+      FlatParser parser(std::move(tokens), types_);
+      ExprPtr predicate = parser.expression();
+      parser.expect_end();
+      auto leaf = std::make_shared<AnonymousRelationPattern>();
+      leaf->kind = AnonymousRelationPattern::Kind::Predicate;
+      leaf->predicate = predicate;
+      result.condition = result.from_states.size() == 1U &&
+                                 result.condition->kind == Expr::Kind::Literal &&
+                                 result.condition->literal->as_bool()
+                             ? predicate
+                             : make_binary("and", std::move(result.condition),
+                                           predicate);
+      return leaf;
+    };
+    std::function<std::shared_ptr<AnonymousRelationPattern>()> pattern_group = [&]() {
+      const std::string open = take().text;
+      const std::string close = open == "<" ? ">" : "}";
+      auto group = std::make_shared<AnonymousRelationPattern>();
+      group->kind = open == "<" ? AnonymousRelationPattern::Kind::Product
+                                  : AnonymousRelationPattern::Kind::Union;
+      if (match(close)) return group;
+      do {
+        group->children.push_back(at("<") || at("{")
+                                      ? pattern_group()
+                                      : add_pattern(element_tokens(close)));
+      } while (match(","));
+      expect(close);
+      if (group->kind == AnonymousRelationPattern::Kind::Union) {
+        std::sort(group->children.begin(), group->children.end(),
+                  [](const auto& left, const auto& right) {
+                    const std::string left_key = left->predicate ? left->predicate->text : "";
+                    const std::string right_key = right->predicate ? right->predicate->text : "";
+                    return left_key < right_key;
+                  });
+      }
+      return group;
+    };
+    result.unordered_from = at("{");
+    result.anonymous_relation = pattern_group();
+    if (result.unordered_from) {
+      std::sort(result.from_states.begin(), result.from_states.end());
+    }
+    if (result.from_states.empty()) fail(start, "compact pattern cannot be empty");
+    result.from = result.from_states.front();
+    expect("->");
+    if (!at("<") && !at("{")) {
+      fail(peek(), "compact pattern transition needs a target container");
+    }
+    const auto add_update = [&](std::vector<Token> tokens) {
+      if (tokens.empty()) fail(start, "compact update needs a value expression");
+      std::size_t local_cursor = 0;
+      const auto local_take = [&]() -> const Token& {
+        if (local_cursor >= tokens.size()) fail(start, "incomplete compact update");
+        return tokens[local_cursor++];
+      };
+      CompactTransitionDeclaration::Update update;
+      const Token item = local_take();
+      if (item.kind != TokenKind::Identifier) {
+        fail(item, "compact update needs a leading state name");
+      }
+      update.line = item.line;
+      update.column = item.column;
+      update.state = item.text;
+      if (local_take().text != ".") fail(item, "compact update needs 'state.field'");
+      const Token field = local_take();
+      if (field.kind != TokenKind::Identifier) fail(field, "compact update needs a field name");
+      update.field = field.text;
+      if (local_take().text != "=") fail(item, "compact update needs '='");
+      std::vector<Token> value_tokens;
+      while (local_cursor < tokens.size()) {
+        value_tokens.push_back(std::move(tokens[local_cursor++]));
+      }
+      if (value_tokens.empty()) fail(item, "compact update needs a value expression");
+      FlatParser parser(std::move(value_tokens), types_);
+      update.value = parser.expression();
+      parser.expect_end();
+      if (std::find(result.to_states.begin(), result.to_states.end(), update.state) ==
+          result.to_states.end()) {
+        result.to_states.push_back(update.state);
+      }
+      result.updates.push_back(std::move(update));
+    };
+    std::function<void()> update_group = [&]() {
+      const std::string open = take().text;
+      const std::string close = open == "<" ? ">" : "}";
+      if (match(close)) return;
+      do {
+        if (at("<") || at("{")) update_group();
+        else add_update(element_tokens(close));
+      } while (match(","));
+      expect(close);
+    };
+    result.unordered_to = at("{");
+    update_group();
+    if (result.unordered_to) {
+      std::sort(result.to_states.begin(), result.to_states.end());
+    }
+    if (result.to_states.empty()) fail(start, "compact update container cannot be empty");
+    result.to = result.to_states.front();
+  } else {
+    result.from_states.push_back(result.from);
+    expect("->");
+    result.to = identifier();
+    result.to_states.push_back(result.to);
+  }
   if (match("when")) {
     std::vector<Token> expression_tokens;
     std::size_t depth = 0;
@@ -3784,8 +4153,10 @@ CompactTransitionDeclaration Parser::compact_transition() {
     }
     if (expression_tokens.empty()) fail(start, "compact trans when clause is empty");
     FlatParser parser(std::move(expression_tokens), types_);
-    result.condition = parser.expression();
+    ExprPtr condition = parser.expression();
     parser.expect_end();
+    result.condition = make_binary("and", std::move(result.condition),
+                                   std::move(condition));
   }
   expect(";");
   newline();
@@ -3924,14 +4295,35 @@ void Parser::lower_compact(
     }
   };
   for (const CompactTransitionDeclaration& transition : transitions) {
-    require_state(transition.from, transition.line, transition.column);
-    require_state(transition.to, transition.line, transition.column);
-    const std::string left = find_root(transition.from);
-    const std::string right = find_root(transition.to);
-    if (left != right) {
-      const std::string keep = std::min(left, right);
-      const std::string merge = std::max(left, right);
-      parent[merge] = keep;
+    for (const std::string& state : transition.from_states) {
+      require_state(state, transition.line, transition.column);
+    }
+    for (const std::string& state : transition.to_states) {
+      require_state(state, transition.line, transition.column);
+    }
+    if (transition.from_states.size() != transition.to_states.size()) {
+      throw Error("compact pattern/update containers must cover the same state axes",
+                  transition.line, transition.column);
+    }
+    if (transition.unordered_from || transition.unordered_to) {
+      std::set<std::string, std::less<>> sources(transition.from_states.begin(),
+                                                 transition.from_states.end());
+      std::set<std::string, std::less<>> targets(transition.to_states.begin(),
+                                                 transition.to_states.end());
+      if (sources != targets) {
+        throw Error("unordered compact containers pair state axes by name",
+                    transition.line, transition.column);
+      }
+      continue;
+    }
+    for (std::size_t index = 0; index < transition.from_states.size(); ++index) {
+      const std::string left = find_root(transition.from_states[index]);
+      const std::string right = find_root(transition.to_states[index]);
+      if (left != right) {
+        const std::string keep = std::min(left, right);
+        const std::string merge = std::max(left, right);
+        parent[merge] = keep;
+      }
     }
   }
   for (auto& [name, root] : parent) root = find_root(name);
@@ -3990,6 +4382,23 @@ void Parser::lower_compact(
 
   const std::function<void(const ExprPtr&)> rewrite_names = [&](const ExprPtr& expression) {
     if (!expression) return;
+    if (expression->kind == Expr::Kind::RelationMatch && expression->text == "~" &&
+        expression->left && expression->left->kind == Expr::Kind::Name &&
+        parent.contains(expression->left->text) && expression->right &&
+        expression->right->kind == Expr::Kind::Name) {
+      if (const auto relation = program.relations.find(expression->right->text);
+          relation != program.relations.end() &&
+          relation->second.type.direct_relation_row &&
+          relation->second.type.elements.front().kind == DataType::Kind::Named &&
+          relation->second.type.elements.front().elements.empty() &&
+          types_.at(relation->second.type.elements.front().name).kind ==
+              TypeDefinition::Kind::Name) {
+        expression->left = make_literal(
+            Value(ValueName{relation->second.type.elements.front().name,
+                            expression->left->text}),
+            expression->line, expression->column);
+      }
+    }
     if (expression->kind == Expr::Kind::Name) {
       const std::size_t dot = expression->text.find('.');
       if (dot != std::string::npos) {
@@ -4006,9 +4415,15 @@ void Parser::lower_compact(
     rewrite_names(expression->third);
     for (const ExprPtr& child : expression->children) rewrite_names(child);
     for (const MatchArm& arm : expression->arms) rewrite_names(arm.body);
+    for (const ComprehensionClause& clause : expression->clauses) {
+      rewrite_names(clause.expression);
+    }
   };
   for (const CompactTransitionDeclaration& transition : transitions) {
     rewrite_names(transition.condition);
+    for (const CompactTransitionDeclaration::Update& update : transition.updates) {
+      rewrite_names(update.value);
+    }
   }
 
   std::set<std::string, std::less<>> explicit_families;
@@ -4060,10 +4475,20 @@ void Parser::lower_compact(
       if (ordinal != 1U) route_name += "_" + std::to_string(ordinal);
       TransitionAlternative route;
       route.name = std::move(route_name);
-      route.from.push_back(StateBinding{compact.from, context_for(compact.from),
-                                        compact.line, compact.column});
-      route.to.push_back(TransitionTarget{
-          StateBinding{compact.to, context_for(compact.to), compact.line, compact.column}, {}});
+      for (const std::string& state : compact.from_states) {
+        route.from.push_back(StateBinding{state, context_for(state),
+                                          compact.line, compact.column});
+      }
+      for (const std::string& state : compact.to_states) {
+        TransitionTarget target{
+            StateBinding{state, context_for(state), compact.line, compact.column}, {}};
+        for (const CompactTransitionDeclaration::Update& update : compact.updates) {
+          if (update.state != state) continue;
+          target.assignments.push_back(
+              Assignment{update.field, update.value, update.line, update.column});
+        }
+        route.to.push_back(std::move(target));
+      }
       route.condition = compact.condition;
       if (index == 0) {
         family.case_name = std::move(route.name);
@@ -4223,6 +4648,11 @@ std::shared_ptr<Program::Impl> Parser::program() {
       if (!result->functions.emplace(function.name, std::move(function)).second) {
         fail(peek(), "duplicate function declaration");
       }
+    } else if (at("relation")) {
+      RelationDeclaration relation = relation_declaration();
+      if (!result->relations.emplace(relation.name, std::move(relation)).second) {
+        fail(peek(), "duplicate relation declaration");
+      }
     } else if (at("state")) {
       if (peek(2).text == "," || peek(2).text == ";") {
         compact_states.push_back(compact_state());
@@ -4261,7 +4691,7 @@ std::shared_ptr<Program::Impl> Parser::program() {
     } else if (at("Claim")) {
       result->claims.push_back(claim());
     } else {
-      fail(peek(), "expected type, name, port, function, state, trans, transition, procedure, trace, or Claim declaration");
+      fail(peek(), "expected type, name, relation, port, function, state, trans, transition, procedure, trace, or Claim declaration");
     }
   }
   lower_compact(*result, compact_states, compact_transitions, compact_procedures,
@@ -4405,8 +4835,11 @@ bool value_matches_base_type(const Value& value, const DataType& type,
                                   *definition->second.underlying, types);
       }
       if (definition->second.kind == TypeDefinition::Kind::Name) {
+        DataType runtime_type = type;
+        runtime_type.finite_domain.reset();
+        runtime_type.specific_trait.clear();
         return value.kind() == Value::Kind::Name &&
-               value.as_name().type_id == type.name;
+               value.as_name().type_id == type_identity(runtime_type);
       }
       if (value.kind() != Value::Kind::Variant || value.as_variant().type_id != type.name) {
         return false;
@@ -4537,6 +4970,12 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         }
         if (found_root) cursor = matched == path.size() ? path.size() : matched + 1U;
       }
+      if (!found_root && !before && path == root && active_relations != nullptr) {
+        if (const auto relation = active_relations->find(root);
+            relation != active_relations->end()) {
+          return relation->second.type;
+        }
+      }
       if (!found_root) throw Error("unknown value '" + root + "'");
       while (cursor < path.size()) {
         const std::string field_name = next_component();
@@ -4614,6 +5053,12 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
     }
     case Expr::Kind::Exists:
     case Expr::Kind::ForAll: {
+      if (expr->left->kind == Expr::Kind::Name && active_relations != nullptr) {
+        if (const auto relation = active_relations->find(expr->left->text);
+            relation != active_relations->end() && !relation->second.enumerable) {
+          throw Error("quantifier needs an enumerable relation; add finite generators");
+        }
+      }
       const DataType domain = infer_type(expr->left, state, event, locals, types);
       if (domain.kind == DataType::Kind::Set) {
         locals.insert_or_assign(expr->text, *domain.first);
@@ -4641,6 +5086,12 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
       }
       return int_type();
     case Expr::Kind::Select: {
+      if (expr->left->kind == Expr::Kind::Name && active_relations != nullptr) {
+        if (const auto relation = active_relations->find(expr->left->text);
+            relation != active_relations->end() && !relation->second.enumerable) {
+          throw Error("select needs an enumerable relation; add finite generators");
+        }
+      }
       const DataType domain = infer_type(expr->left, state, event, locals, types);
       if (domain.kind != DataType::Kind::Relation) {
         throw Error("select needs a finite relation domain");
@@ -4681,7 +5132,7 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
       return result;
     }
     case Expr::Kind::NameConstruct: {
-      if (expr->children.size() != 1U || expr->type_argument ||
+      if (expr->children.size() != 1U ||
           expr->children.front()->kind != Expr::Kind::Literal ||
           !expr->children.front()->literal ||
           expr->children.front()->literal->kind() != Value::Kind::String) {
@@ -4692,6 +5143,11 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         throw Error("unknown name type '" + expr->text + "'");
       }
       DataType result(DataType::Kind::Named, expr->text);
+      if (expr->type_argument) {
+        result.elements = expr->type_argument->kind == DataType::Kind::Tuple
+                              ? expr->type_argument->elements
+                              : std::vector<DataType>{*expr->type_argument};
+      }
       expr->resolved_type = result;
       return result;
     }
@@ -4703,6 +5159,58 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         throw Error("insert/erase item type must match finite set element type");
       }
       return collection;
+    }
+    case Expr::Kind::Comprehension: {
+      if (expr->text == "set_union") {
+        if (expr->children.empty()) throw Error("set union comprehension has no branches");
+        std::optional<DataType> result;
+        for (const ExprPtr& branch : expr->children) {
+          const DataType branch_type = infer_type(branch, state, event, locals, types);
+          if (branch_type.kind != DataType::Kind::Set) {
+            throw Error("set union comprehension branch is not a set");
+          }
+          if (!result) result = branch_type;
+          else if (*result != branch_type) {
+            throw Error("set union comprehension branches have different element types");
+          }
+        }
+        expr->resolved_type = *result;
+        return *result;
+      }
+      TypeEnvironment scope = std::move(locals);
+      for (const ComprehensionClause& clause : expr->clauses) {
+        if (clause.kind == ComprehensionClause::Kind::Generator) {
+          const DataType domain = infer_type(clause.expression, state, event, scope, types);
+          DataType item;
+          if (domain.kind == DataType::Kind::Set) {
+            item = *domain.first;
+          } else if (domain.kind == DataType::Kind::Relation) {
+            item = domain.direct_relation_row
+                       ? domain.elements.front()
+                       : DataType(DataType::Kind::Tuple, domain.elements);
+          } else {
+            throw Error("comprehension generator needs a finite set or relation",
+                        clause.line, clause.column);
+          }
+          scope.insert_or_assign(clause.binding, std::move(item));
+        } else if (infer_type(clause.expression, state, event, scope, types).kind !=
+                   DataType::Kind::Bool) {
+          throw Error("comprehension filter must be bool", clause.line, clause.column);
+        }
+      }
+      const DataType projection = infer_type(expr->left, state, event, scope, types);
+      DataType result;
+      if (expr->text == "set") {
+        result = DataType(DataType::Kind::Set, projection);
+      } else {
+        std::vector<DataType> columns = projection.kind == DataType::Kind::Tuple
+                                            ? projection.elements
+                                            : std::vector<DataType>{projection};
+        result = DataType(DataType::Kind::Relation, std::move(columns));
+        result.direct_relation_row = projection.kind != DataType::Kind::Tuple;
+      }
+      expr->resolved_type = result;
+      return result;
     }
     case Expr::Kind::RecordConstruct: {
       const auto definition = types.find(expr->text);
@@ -4774,6 +5282,13 @@ DataType infer_type_impl(const ExprPtr& expr, const TypeEnvironment& state,
         if (expr->type_argument) throw Error("relation operation cannot take a type argument");
         const auto argument_type = [&](std::size_t index) {
           if (index >= expr->children.size()) throw Error("relation operation has too few arguments");
+          if (expr->children[index]->kind == Expr::Kind::Name &&
+              active_relations != nullptr) {
+            if (const auto relation = active_relations->find(expr->children[index]->text);
+                relation != active_relations->end() && !relation->second.enumerable) {
+              throw Error("relation algebra needs an enumerable relation; add finite generators");
+            }
+          }
           return infer_type(expr->children[index], state, event, locals, types);
         };
         const auto literal_index = [&](std::size_t index) {
@@ -5060,6 +5575,19 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
                    std::set<std::string, std::less<>>& reads) {
   if (!expr) return;
   if (expr->kind == Expr::Kind::Name) {
+    if (active_relations != nullptr) {
+      if (const auto relation = active_relations->find(expr->text);
+          relation != active_relations->end()) {
+        auto relation_shadowed = shadowed;
+        for (const Parameter& parameter : relation->second.parameters) {
+          relation_shadowed.insert(parameter.name);
+        }
+        for (const ComprehensionClause& clause : relation->second.clauses) {
+          collect_reads(clause.expression, state, relation_shadowed, reads);
+        }
+        return;
+      }
+    }
     std::string path = expr->text.starts_with("before.") ? expr->text.substr(7) : expr->text;
     std::string best;
     for (const auto& [key, type] : state) {
@@ -5095,6 +5623,17 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
       if (!arm.binding.empty()) arm_shadowed.insert(arm.binding);
       collect_reads(arm.body, state, std::move(arm_shadowed), reads);
     }
+    return;
+  }
+  if (expr->kind == Expr::Kind::Comprehension) {
+    auto comprehension_shadowed = shadowed;
+    for (const ComprehensionClause& clause : expr->clauses) {
+      collect_reads(clause.expression, state, comprehension_shadowed, reads);
+      if (clause.kind == ComprehensionClause::Kind::Generator) {
+        comprehension_shadowed.insert(clause.binding);
+      }
+    }
+    collect_reads(expr->left, state, std::move(comprehension_shadowed), reads);
     return;
   }
   collect_reads(expr->left, state, shadowed, reads);
@@ -5216,17 +5755,108 @@ void inspect_function_body(const ExprPtr& expr, const FunctionRegistry& function
   inspect_function_body(expr->third, functions, calls);
   for (const ExprPtr& child : expr->children) inspect_function_body(child, functions, calls);
   for (const MatchArm& arm : expr->arms) inspect_function_body(arm.body, functions, calls);
+  for (const ComprehensionClause& clause : expr->clauses) {
+    inspect_function_body(clause.expression, functions, calls);
+  }
 }
 
 void verify_program(Program::Impl& program) {
   if (program.states.empty()) throw Error("program must define at least one state");
-  FunctionScope function_scope(program.functions);
+  FunctionScope function_scope(program.functions, &program.relations, &program.types);
   static const std::set<std::string, std::less<>> reserved_functions{
       "tuple", "project", "join", "compose", "inverse", "closure",
       "union", "intersection", "difference", "none", "some", "ok", "err"};
   std::map<std::string, std::set<std::string, std::less<>>, std::less<>> call_graph;
+  std::map<std::string, std::set<std::string, std::less<>>, std::less<>> relation_graph;
+  TypeEnvironment relation_state_types;
+  const bool one_initial_state = std::count_if(
+      program.states.begin(), program.states.end(),
+      [](const State& state) { return state.initial; }) == 1;
+  for (const State& state : program.states) {
+    for (const Field& field : state.fields) {
+      relation_state_types.insert_or_assign(state_key(state.context, field.name), field.type);
+      if (one_initial_state) relation_state_types.insert_or_assign(field.name, field.type);
+    }
+  }
+  const std::function<void(const ExprPtr&, std::set<std::string, std::less<>>&)> collect_relations =
+      [&](const ExprPtr& expression, std::set<std::string, std::less<>>& found) {
+        if (!expression) return;
+        if (expression->kind == Expr::Kind::Name &&
+            program.relations.contains(expression->text)) {
+          found.insert(expression->text);
+        }
+        collect_relations(expression->left, found);
+        collect_relations(expression->right, found);
+        collect_relations(expression->third, found);
+        for (const ExprPtr& child : expression->children) collect_relations(child, found);
+        for (const MatchArm& arm : expression->arms) collect_relations(arm.body, found);
+        for (const ComprehensionClause& clause : expression->clauses) {
+          collect_relations(clause.expression, found);
+        }
+      };
+  for (const auto& [name, relation] : program.relations) {
+    if (program.types.contains(name) || reserved_functions.contains(name) ||
+        program.functions.contains(name)) {
+      throw Error("relation name '" + name + "' conflicts with a type, function, or builtin",
+                  relation.line, relation.column);
+    }
+    TypeEnvironment parameters;
+    for (const Parameter& parameter : relation.parameters) {
+      parameters.emplace(parameter.name, parameter.type);
+    }
+    for (const ComprehensionClause& clause : relation.clauses) {
+      collect_relations(clause.expression, relation_graph[name]);
+      if (clause.kind == ComprehensionClause::Kind::Predicate) {
+        if (infer_type(clause.expression, relation_state_types, {}, parameters,
+                       program.types).kind !=
+            DataType::Kind::Bool) {
+          throw Error("relation rule clause must be bool", clause.line, clause.column);
+        }
+        continue;
+      }
+      const DataType domain = infer_type(clause.expression, relation_state_types, {},
+                                         parameters, program.types);
+      DataType item;
+      if (domain.kind == DataType::Kind::Set) {
+        item = *domain.first;
+      } else if (domain.kind == DataType::Kind::Relation) {
+        item = domain.direct_relation_row
+                   ? domain.elements.front()
+                   : DataType(DataType::Kind::Tuple, domain.elements);
+      } else {
+        throw Error("relation generator needs a finite set or relation",
+                    clause.line, clause.column);
+      }
+      if (item != parameters.at(clause.binding)) {
+        throw Error("relation generator item type does not match parameter '" +
+                        clause.binding + "'",
+                    clause.line, clause.column);
+      }
+    }
+  }
+  std::set<std::string, std::less<>> relation_visiting;
+  std::set<std::string, std::less<>> relation_visited;
+  std::function<void(const std::string&)> reject_relation_cycle =
+      [&](const std::string& name) {
+        if (relation_visiting.contains(name)) {
+          throw Error("recursive relation rule cycle contains '" + name +
+                      "'; use closure/compose for finite recursion");
+        }
+        if (relation_visited.contains(name)) return;
+        relation_visiting.insert(name);
+        for (const std::string& dependency : relation_graph[name]) {
+          reject_relation_cycle(dependency);
+        }
+        relation_visiting.erase(name);
+        relation_visited.insert(name);
+      };
+  for (const auto& [name, relation] : program.relations) {
+    static_cast<void>(relation);
+    reject_relation_cycle(name);
+  }
   for (const auto& [name, function] : program.functions) {
-    if (program.types.contains(name) || reserved_functions.contains(name)) {
+    if (program.types.contains(name) || program.relations.contains(name) ||
+        reserved_functions.contains(name)) {
       throw Error("function name '" + name + "' conflicts with a type or builtin",
                   function.line, function.column);
     }
@@ -6296,11 +6926,20 @@ Value resolve_name(const std::string& name, const Environment& environment) {
   return value;
 }
 
+#include "relation_semantics.cpp"
+
 Value evaluate(const ExprPtr& expr, Environment& environment) {
   if (!expr) throw Error("missing expression");
   switch (expr->kind) {
     case Expr::Kind::Literal: return *expr->literal;
-    case Expr::Kind::Name: return resolve_name(expr->text, environment);
+    case Expr::Kind::Name:
+      if (active_relations != nullptr) {
+        if (const auto relation = active_relations->find(expr->text);
+            relation != active_relations->end()) {
+          return materialize_relation(relation->second, environment);
+        }
+      }
+      return resolve_name(expr->text, environment);
     case Expr::Kind::Unary: {
       const Value operand = evaluate(expr->left, environment);
       if (expr->text == "not") return Value(!operand.as_bool());
@@ -6347,12 +6986,30 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       // Runtime guards, invariants, functions and ClaimMonitor leaves all call
       // evaluate(), so none may implement equality/order/membership separately.
       const Value left = evaluate(expr->left, environment);
+      if (expr->text == "~" && expr->right->kind == Expr::Kind::Name &&
+          active_relations != nullptr) {
+        if (const auto relation = active_relations->find(expr->right->text);
+            relation != active_relations->end()) {
+          return Value(relation_membership(relation->second, left, environment));
+        }
+      }
+      if ((expr->text == "~" || expr->text == "in") &&
+          expr->right->kind == Expr::Kind::Comprehension) {
+        bool present = false;
+        std::size_t work = 0;
+        visit_collection_expression(
+            expr->right, environment,
+            [&](const Value& item) {
+              present = equal_values(left, item);
+              return present;
+            }, work);
+        return Value(present);
+      }
       const Value right = evaluate(expr->right, environment);
       return evaluate_relation_match(*expr, left, right);
     }
     case Expr::Kind::Exists:
     case Expr::Kind::ForAll: {
-      const Value domain_value = evaluate(expr->left, environment);
       const auto previous = environment.locals.find(expr->text);
       const std::optional<Value> saved = previous == environment.locals.end()
                                              ? std::nullopt
@@ -6373,36 +7030,26 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         }
         return false;
       };
-      if (domain_value.kind() == Value::Kind::StringSet) {
-        for (const std::string& item : domain_value.as_string_set().values) {
-          if (accept(Value(item))) break;
-        }
-      } else if (domain_value.kind() == Value::Kind::Set) {
-        for (const Value& item : domain_value.as_set().values) {
-          if (accept(item)) break;
-        }
-      } else {
-        for (const ValueTuple& row : domain_value.as_relation().rows) {
-          const Value item = expr->direct_relation_binding ? row.fields.front() : Value(row);
-          if (accept(item)) break;
-        }
-      }
+      std::size_t enumeration_work = 0;
+      visit_collection_expression(expr->left, environment, accept, enumeration_work);
       if (saved) environment.locals.insert_or_assign(expr->text, *saved);
       else environment.locals.erase(expr->text);
       return Value(result);
     }
     case Expr::Kind::Select: {
-      const Value domain = evaluate(expr->left, environment);
       const auto previous = environment.locals.find(expr->text);
       const std::optional<Value> saved = previous == environment.locals.end()
                                              ? std::nullopt
                                              : std::optional<Value>(previous->second);
       std::optional<ValueTuple> selected;
       std::vector<Value> selected_score;
-      for (const ValueTuple& row : domain.as_relation().rows) {
-        const Value item = expr->direct_relation_binding ? row.fields.front() : Value(row);
+      std::size_t work = 0;
+      visit_collection_expression(expr->left, environment, [&](const Value& item) {
+        const ValueTuple row = expr->direct_relation_binding
+                                   ? ValueTuple{{item}}
+                                   : item.as_tuple();
         environment.locals.insert_or_assign(expr->text, item);
-        if (!evaluate(expr->right, environment).as_bool()) continue;
+        if (!evaluate(expr->right, environment).as_bool()) return false;
         std::vector<Value> score;
         score.reserve(expr->children.size());
         for (const ExprPtr& component : expr->children) {
@@ -6411,7 +7058,7 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         if (!selected) {
           selected = row;
           selected_score = std::move(score);
-          continue;
+          return false;
         }
         int order = 0;
         for (std::size_t index = 0; index < score.size(); ++index) {
@@ -6425,7 +7072,8 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
           selected = row;
           selected_score = std::move(score);
         }
-      }
+        return false;
+      }, work);
       if (saved) environment.locals.insert_or_assign(expr->text, *saved);
       else environment.locals.erase(expr->text);
       const std::string identity = type_identity(*expr->resolved_type);
@@ -6436,6 +7084,19 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
       return Value(ValueVariant{identity, "some", {selected_value}});
     }
     case Expr::Kind::Count: {
+      if (expr->left->kind == Expr::Kind::Comprehension ||
+          (expr->left->kind == Expr::Kind::Name && active_relations != nullptr &&
+           active_relations->contains(expr->left->text))) {
+        std::size_t size = 0;
+        std::size_t work = 0;
+        visit_collection_expression(
+            expr->left, environment,
+            [&](const Value&) {
+              ++size;
+              return false;
+            }, work);
+        return Value(static_cast<std::int64_t>(size));
+      }
       const Value collection = evaluate(expr->left, environment);
       std::size_t size = 0;
       switch (collection.kind()) {
@@ -6459,6 +7120,36 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
         throw Error("set size exceeds int range");
       }
       return Value(static_cast<std::int64_t>(size));
+    }
+    case Expr::Kind::Comprehension: {
+      if (!expr->resolved_type) throw Error("unverified comprehension");
+      std::size_t work = 0;
+      if (expr->text == "set" || expr->text == "set_union") {
+        ValueSet output;
+        visit_collection_expression(
+            expr, environment,
+            [&](const Value& item) {
+              output.values.push_back(item);
+              if (output.values.size() > relation_row_limit) {
+                throw Error("set comprehension exceeds row budget");
+              }
+              return false;
+            }, work);
+        return Value(std::move(output));
+      }
+      ValueRelation output{expr->resolved_type->elements.size(), {}};
+      visit_comprehension(
+          expr, environment,
+          [&](const Value& item) {
+            output.rows.push_back(expr->resolved_type->direct_relation_row
+                                      ? ValueTuple{{item}}
+                                      : item.as_tuple());
+            if (output.rows.size() > relation_row_limit) {
+              throw Error("relation comprehension exceeds row budget");
+            }
+            return false;
+          }, work);
+      return Value(std::move(output));
     }
     case Expr::Kind::SetInsert:
     case Expr::Kind::SetErase: {
@@ -6501,7 +7192,7 @@ Value evaluate(const ExprPtr& expr, Environment& environment) {
           !expr->children.front()->literal) {
         throw Error("unverified name constructor");
       }
-      return Value(ValueName{expr->text,
+      return Value(ValueName{type_identity(*expr->resolved_type),
                              expr->children.front()->literal->as_string()});
     case Expr::Kind::Construct: {
       if (!expr->resolved_type) throw Error("unverified constructor expression");
@@ -6892,7 +7583,32 @@ Value::Value(ValueName value) : kind_(Kind::Name) {
              (item >= 'a' && item <= 'z') || (item >= '0' && item <= '9');
     });
   };
-  if (!valid_atom(value.type_id) || !valid_atom(value.atom)) {
+  const auto valid_type_identity = [&](std::string_view identity) {
+    if (identity.empty()) return false;
+    std::size_t prefix = 0;
+    while (prefix < identity.size() && identity[prefix] != '<') ++prefix;
+    if (!valid_atom(identity.substr(0, prefix))) return false;
+    if (prefix == identity.size()) return true;
+    int angles = 0;
+    int squares = 0;
+    int braces = 0;
+    for (std::size_t index = prefix; index < identity.size(); ++index) {
+      const char ch = identity[index];
+      if (ch == '<') { ++angles; continue; }
+      if (ch == '>') { if (--angles < 0) return false; continue; }
+      if (ch == '[') { ++squares; continue; }
+      if (ch == ']') { if (--squares < 0) return false; continue; }
+      if (ch == '{') { ++braces; continue; }
+      if (ch == '}') { if (--braces < 0) return false; continue; }
+      if (!(ch == ',' || ch == ':' || ch == '-' || ch == '_' ||
+            (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+            (ch >= '0' && ch <= '9'))) {
+        return false;
+      }
+    }
+    return angles == 0 && squares == 0 && braces == 0;
+  };
+  if (!valid_type_identity(value.type_id) || !valid_atom(value.atom)) {
     throw Error("name type and atom must be canonical identifiers");
   }
   name_value_ = std::make_shared<const ValueName>(std::move(value));
@@ -7029,7 +7745,8 @@ Program parse(std::string_view source) {
   Parser parser(lex(source));
   auto implementation = parser.program();
   verify_program(*implementation);
-  FunctionScope function_scope(implementation->functions);
+  FunctionScope function_scope(implementation->functions, &implementation->relations,
+                               &implementation->types);
 
   for (const State& state : implementation->states) {
     if (state.initial) verify_invariants(state, initial_values(state), 0);
@@ -7116,12 +7833,12 @@ std::string value_text(const Value& value) {
     case Value::Kind::Name:
       return value.as_name().type_id + "(" + value.as_name().atom + ")";
     case Value::Kind::Tuple: {
-      std::string result = "(";
+      std::string result = "<";
       for (std::size_t index = 0; index < value.as_tuple().fields.size(); ++index) {
         if (index != 0) result += ", ";
         result += value_text(value.as_tuple().fields[index]);
       }
-      return result + ")";
+      return result + ">";
     }
     case Value::Kind::Relation: {
       std::string result = "relation{";

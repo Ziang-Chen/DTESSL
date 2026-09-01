@@ -1,4 +1,4 @@
-# DTESSL v0.4.1
+# DTESSL v0.4.2
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -88,13 +88,17 @@ case (Switch(Mode.Off, Health.Good) @ local)
   -> (Switch(Mode.On.Level.Low) @ local):
 ```
 
-关系满足只有一个核心形式：`subject ~ relation-expression`：
+关系满足只有一个核心形式：`subject ~ relation`。复合筛选显式保留
+subject 与匿名 relation pattern：
 
 ```dtessl
-(stateA, stateB) ~ Equal, (SameEpoch | Migratable)
+<stateA, stateB> ~ (stateA ~ SameEpoch, stateB ~ Migratable) ~ Equal
 ```
 
-它递归降为 `Equal(subject) and (SameEpoch(subject) or Migratable(subject))`；
+`,` 在 predicate/guard 块中表示合取，在 `<...>`/`{...}` 内只是容器分隔；
+`|` 只表示并行组合，不再兼任逻辑析取，嵌套布尔逻辑使用 `and/or`。
+
+它递归降为三个 typed RelationMatch 的合取；
 普通 `~` 不引入隐式搜索，只有 `E/A/select` 和显式有限参数域会搜索。
 左侧同样是递归的 typed value pattern，可包含 tuple、record、variant 和
 embedding 字段投影。放在 transition 中时，完整匹配规范化为
@@ -277,6 +281,10 @@ relation-value = "~" "{" [ literal { "," literal } ] "}" ;
 list-value  = "list" "[" [ literal { "," literal } ] "]" ;
 
 expression  = literal | name | "round" | "before." Name
+            | "<" expression { "," expression } ">"
+            | set-comprehension
+            | "relation" "{" expression ":" comprehension-clause
+                { "," comprehension-clause } "}"
             | unary | binary
             | "count" "(" expression ")"
             | ( "insert" | "erase" ) "(" expression "," expression ")"
@@ -284,10 +292,23 @@ expression  = literal | name | "round" | "before." Name
             | ( "E" | "A" ) Name ( "in" | "~" ) expression ":" expression
             | "select" Name ( "in" | "~" ) expression "where" expression
                 "by" "lex" "(" expression { "," expression } ")"
-            | subject "~" relation-expression
+            | subject "~" relation
+            | subject "~" "(" expression { "," expression } ")"
+                "~" relation
             | constructor | record-constructor | match-expression ;
-relation-expression = relation-term { "," relation-term }
-                      { "|" relation-term { "," relation-term } } ;
+comprehension-clause = Name "in" expression | expression ;
+set-comprehension = "{" comprehension-branch
+                      { "," comprehension-branch } "}" ;
+comprehension-branch = Name ":" comprehension-clause
+                         { "," comprehension-clause }
+                     | expression ":" comprehension-clause
+                         { "," comprehension-clause } ;
+relation-declaration = "relation" Name "(" parameter { "," parameter } ")"
+                         ":" INDENT comprehension-clause
+                         { "," comprehension-clause } DEDENT
+                     | "relation" "<" parameter { "," parameter } ">"
+                         "~" Name ":" comprehension-clause
+                         { "," comprehension-clause } ";" ;
 match-expression = "match" name "{"
                      pattern "->" expression
                      { "," pattern "->" expression }
@@ -458,8 +479,8 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
 
 - `name WorkerId` 定义开放的名义逻辑名称，值写作 `WorkerId(a)`；它不是 string，
   也不是 capability 或 authority；
-- `relation Worker`/`relation (A,B)` 定义关系值，`subject ~ relation-expression`
-  递归表达关系满足；
+- `relation Worker`/`relation (A,B)` 定义关系值；顶层 `relation Name(...)`
+  定义惰性规则 relation，`subject ~ relation` 执行统一 RelationMatch；
 - `[T]`、`[]`、`[value]` 分别表示 typed option、无值和有值，列表显式写作
   `list[...]`；
 - 布尔运算 `and/or/not`；
@@ -544,7 +565,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.1 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.2 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

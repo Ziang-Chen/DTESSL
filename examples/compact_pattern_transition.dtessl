@@ -1,0 +1,12 @@
+name StateKind
+
+relation Pa(value: StateKind):
+  value = StateKind(a)
+
+relation <value: StateKind> ~ Pb: value = StateKind(b);
+
+state a, b;
+trans Step: <a ~ Pa, b ~ Pb> -> <a.val = 1, b.sub_state = 1>;
+trans Scatter: {{a ~ Pa}, <b ~ Pb>} -> {{b.sub_state = 2}, <a.val = 2>};
+procedure p a, b, a.val = 0, b.sub_state = 0 & inject Step;
+trace @p;

@@ -8,8 +8,8 @@ Updated: 2026-09-01, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.1` state-case, finite-constraint and
-  authenticated Embedding-delta slice
+- Current target: validate the `v0.4.2` typed/anonymous relation, lazy
+  comprehension and structural compact-pattern slice
 - Stop orders: none
 
 ## Current state
@@ -64,6 +64,13 @@ constraints, finite parameter generation in Solver, and authenticated
 domain rejection and finite Claim closure are covered. Standard, `-Werror`, and
 ASan/UBSan builds each pass 47/47 tests.
 
+The `v0.4.2` slice adds typed rule relations, lazy independent-branch set
+union, explicit Cartesian tuple projection, canonical `<...>` products,
+unordered `{...}` anonymous relation patterns and compact structural
+Transition updates. The frontend now has separate private AST and relation
+semantic layers. Standard, `-Werror`, and ASan/UBSan builds each pass 51/51
+tests, including branch-permutation and parenthesized-filter checks.
+
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
@@ -99,12 +106,14 @@ ASan/UBSan builds each pass 47/47 tests.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.4.1` | Built CLI reports `v0.4.1` | pass |
+| Version identity | CMake/generated header target `0.4.2` | Built CLI reports `v0.4.2` | pass |
 | Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
 | Logical names | Distinct public Value kind, nominal type check, canonical codec roundtrip and invalid-atom rejection | Scheduler renders `WorkerId(a)` without string quotes | pass |
-| Recursive relation expression | Tuple/name/value subjects plus nested comma-AND/pipe-OR parser/type/evaluator tests; false conjunction rejects initial embedding | `(a,b) ~ R1,(R2\|R3)` runs in the recursive scheduler fixture | pass |
+| Recursive relation expression | Tuple/name/value subjects plus explicit `and`/`or` parser/type/evaluator tests; false conjunction rejects initial embedding | `<a,b> ~ R1 and (<a,b> ~ R2 or <a,b> ~ R3)` runs in the recursive scheduler fixture | pass |
+| Typed relation rules | General and compact declarations share typed parameters, direct membership and bounded lazy enumeration | `typed_relations.dtessl` composes declared relations through closure/union | pass |
+| Anonymous relation containers | `<...>` preserves product order; `{...}` canonicalizes unordered union branches; nested compact Transition patterns retain structural AST | Independent set union, explicit Cartesian product, grouped filters and nested Scatter transition run | pass |
 | Unified RelationMatch path | Equality/order/membership and recursive `~` lower to one typed AST/evaluator; runtime and ClaimMonitor atoms call it without private predicate evaluation | Existing comparison corpus plus nested tuple relation and canonical-render tests pass | pass |
 | Trace relation syntax | `(a,b) ~ happens_before` has a distinct trace-domain AST case; compatibility `before(a,b)` shares it; finite nesting executes and unsupported Solver nesting is inconclusive | Procedure Product verifies strict ordering; closed trace satisfies nested `eventually(RelationMatch)` | pass |
 | Recursive StateSchema | General/compact recursive declaration, duplicate/path/depth checks, local typed fields/invariants and structural transition matching | Nested scheduler and switch examples execute and Claim search reaches three Embeddings | pass |

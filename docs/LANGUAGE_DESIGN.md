@@ -266,8 +266,11 @@ project/equijoin/compose/inverse/closure/set algebra, `E/A`, deterministic
 `select ... by lex`, typed static search-plan summaries and explicit row/work
 budgets. Its executable contract is frozen in `RELATION_SEARCH_V1.md`.
 
-The `v0.4.0` surface fixes `~` to one meaning: recursively typed
-`subject ~ relation-expression`, with comma conjunction and pipe disjunction.
+The `v0.4.2` surface fixes `~` to one meaning: recursively typed
+`subject ~ relation-expression`. Boolean disjunction is written explicitly as
+`or`; a predicate-chain comma remains conjunction/serial composition. Inside
+an explicit container, comma only separates elements and the container decides
+product (`<...>`) versus union (`{...}`).
 The typed AST names this predicate `RelationMatch`. Both its value subject and
 relation expression retain recursive structure. In a transition it combines
 with the recursive control-state selector as
@@ -330,11 +333,14 @@ state Scheduler @ fabric initial:
   providers: relation Provider = {}
 
   invariant:
-    self ~ ValidScheduler, (HasCapacity | MayQueue)
+    self ~ ValidScheduler and (self ~ HasCapacity or self ~ MayQueue)
 ```
 
-`,` is product/conjunction, `|` is choice/disjunction and `A(B)` recursively
-contains B. A typed value leaf is semantically a valued state component. A
+`<...>` is ordered product/pattern structure, `{...}` is unordered union/set
+structure, and `|` remains parallel/choice syntax where that grammar explicitly
+admits it. Outside containers, `,` is the compact conjunction/serial chain.
+`A(B)` recursively contains B. A typed
+value leaf is semantically a valued state component. A
 choice leaf is a finite control component. Both belong to the same recursive
 `StateSchema` and concrete `Embedding`, while `@context` remains the instance
 address rather than another mutable field.

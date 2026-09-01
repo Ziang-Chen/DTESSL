@@ -11,9 +11,29 @@ DTESSL `v0.4.0` supersedes only that surface: canonical source writes
 `subject ~ relation-expression`. Prefix `~T` and `~{...}` remain migration
 input; the finite relation algebra and budgets below are unchanged.
 
+DTESSL `v0.4.2` adds lazy typed relation plans. General and compact
+declarations lower to one AST:
+
+```dtessl
+relation Eligible(worker: Worker, task: Task):
+  worker in Workers,
+  task in Tasks,
+  worker ~ Active,
+  <worker, task> ~ CapabilityMatch
+
+relation <worker: Worker, task: Task> ~ Eligible:
+  worker in Workers, task in Tasks, worker ~ Active, <worker, task> ~ CapabilityMatch;
+```
+
+Membership runs the rule directly. Consumers that need rows enumerate only on
+demand, and require every parameter to have a collection generator or static
+finite type domain.
+
 ## Values and bounds
 
-- `tuple<T...>` is a positive-arity structural product.
+- `<T,...>` is the canonical positive-arity structural product type and
+  `<value,...>` its value/pattern container. The old tuple spellings remain
+  migration input.
 - `relation<T...>` is a finite set of tuples with exactly the declared arity
   and column types.
 - `relation T` is a direct unary relation whose binder is `T`;
@@ -42,6 +62,67 @@ budgets:
 - `closure(r)` returns the non-reflexive transitive closure of a homogeneous
   binary relation. Reflexive pairs occur only when implied by an actual cycle.
 - `union`, `intersection` and `difference` require identical relation types.
+
+Operands may be materialized relation values, lazy relation comprehensions,
+finite declared relations, or results of other algebra operations. A declared
+relation never has to be rewritten as a set/relation literal first.
+
+## Lazy comprehensions and pattern containers
+
+```dtessl
+{x : x in A, x ~ P}
+{x: x in A, x ~ P, y: y in B, y ~ Q}
+{x: x in A, (x ~ P or x ~ Q) and not (x ~ Rejected)}
+{<x,y> : x in A, y in B, <x,y> ~ R}
+relation {<x,y> : x in A, y in B, <x,y> ~ R}
+```
+
+The second form is an unordered lazy union of two independently generated set
+branches; it is not a Cartesian tuple. The third form explicitly requests the
+product projection. Generators and filters remain lazy until a consumer pulls
+rows; storing the result is an explicit materialization boundary. The unordered
+union itself is a canonical finite merge barrier, so permuting its source
+branches cannot change iteration order, a selected witness, or a digest.
+
+The same rule applies to anonymous relation patterns:
+
+```dtessl
+{a ~ P1, b ~ P2} == union({a ~ P1}, {b ~ P2})
+<a ~ P1, b ~ P2>  // ordered product, not the same relation
+```
+
+In particular, `{a: a in A, b: b in B}` is the union of the independently
+derived `a` and `b` sets. Only `{<a,b>: a in A, b in B}` asks for Cartesian
+enumeration and tuple projection. A branch filter is an ordinary typed logical
+expression: parentheses determine grouping and `not`, `and`, `or`, and `->`
+retain their normal precedence. The comprehension parser does not implement a
+second, weaker filter language.
+
+Compact Transition patterns use `<...>` for ordered products and `{...}` for
+unordered canonical set-patterns. Containers may nest; leaf predicates are
+conjoined and leaf updates lower to ordinary Transition assignments:
+
+```dtessl
+trans Step: <a ~ Pa, b ~ Pb> -> <a.value = 1, b.phase = 2>;
+trans Scatter: {{a ~ Pa}, <b ~ Pb>} -> {{b.phase = 2}, <a.value = 1>};
+```
+
+The whole case is an intensional binary relation over Embeddings:
+
+```text
+Rcase(before, after) := ProductPattern(before)
+                     and after = apply_atomic(before, ProductUpdate)
+```
+
+Thus `<a,b> -> <a',b'>` needs no new state-machine value kind: each side is an
+existing typed product, while the arrow is the existing Transition relation.
+The ordered RHS records a stable structural order, but every update reads the
+same `before` snapshot and the successor commits atomically. A genuinely staged
+`a-update then b-update` is `compose(Ta,Tb)` (or two explicit transition edges)
+and therefore has an observable intermediate Embedding.
+
+`<a,b> ~ (a ~ Pa, b ~ Pb) ~ Pab` lowers to
+`Pa(a) and Pb(b) and Pab(<a,b>)`.
 
 Column indices are compile-time non-negative integer literals. Invalid arity,
 column or type combinations are verifier errors, not runtime string dispatch.

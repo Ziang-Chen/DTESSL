@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.0` recursive relation-expression surface.
+Status: `v0.4.2` typed and anonymous relation surface.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -32,22 +32,51 @@ subject ~ relation-expression
 ```
 
 The subject may recursively contain logical names, typed values, embedding
-value projections, tuples, records and variants. The right side recursively
-composes named/valued relations with `,` as AND and `|` as OR:
+value projections, tuples, records and variants. Boolean relation predicates
+compose with `and`/`or`; a comma at predicate-chain level is compact `and`:
 
 ```dtessl
-(stateA, stateB) ~ Equal, (SameEpoch | Migratable)
+<stateA, stateB> ~ Equal and
+  (<stateA, stateB> ~ SameEpoch or <stateA, stateB> ~ Migratable)
 ```
 
-This means `Equal(subject) and (SameEpoch(subject) or Migratable(subject))`.
+Inside `<...>` or `{...}`, the comma is only an element separator. The outer
+container assigns product or union semantics, so it cannot be confused with
+predicate-chain conjunction.
+
 `~` never starts an implicit search; an unbound subject is legal only under an
 explicit `E`, `A`, `select`, or finite transition-parameter generator.
+
+Anonymous relation containers are structural rather than hidden boolean syntax:
+
+```dtessl
+<a ~ P1, b ~ P2>   // ordered/product relation pattern
+{a ~ P1, b ~ P2}   // unordered union of two singleton relation patterns
+```
+
+Thus `{a ~ P1, b ~ P2}` is canonically
+`{a ~ P1} union {b ~ P2}`. It does not mean `P1(a) or P2(b)`, and it is not a
+tuple product. Nesting preserves the same distinction.
+
+In a derived set, each `name:` starts an independent anonymous branch. Filters
+inside that branch are full expressions and may be grouped explicitly:
+
+```dtessl
+{a: a in A, (a ~ P1 or a ~ P3) and not (a ~ Rejected),
+ b: b in B, b ~ P2}
+```
 
 Within a transition, this is the relational half of a small matching DSL. A
 case is normalized to `StructuralPattern and RelationMatch`: the recursive
 state pattern checks which control locations are active, while `~` checks typed
 values projected from that embedding. Control-state names are deliberately not
 coerced into strings or ordinary relation rows.
+
+An ordered compact rewrite `<a,b> -> <a',b'>` is normalized as an intensional
+`relation<Embedding,Embedding>`. The left product is conjunctive matching; the
+right product constructs one atomic successor from the same before snapshot.
+If an intermediate state must be visible, write two transitions or explicitly
+compose their relations rather than relying on assignment order.
 
 A direct unary relation binds its element rather than a one-field tuple. This
 makes records the normal row schema:

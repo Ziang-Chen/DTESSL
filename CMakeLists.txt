@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.4.1)
+set(DTESSL_VERSION 0.4.2)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -11,7 +11,9 @@ option(DTESSL_BUILD_TESTS "Build DTESSL tests" ON)
 add_library(dtessl
   src/exact_numeric.cpp
   src/frontend.cpp
+  src/frontend_ast.cpp
   src/semantics.cpp
+  src/relation_semantics.cpp
   src/runtime.cpp
   src/capture_semantics.cpp
   src/trace_semantics.cpp
@@ -35,6 +37,8 @@ add_library(dtessl
 #   backend          feature/projection negotiation
 set_source_files_properties(
   src/semantics.cpp
+  src/frontend_ast.cpp
+  src/relation_semantics.cpp
   src/runtime.cpp
   src/capture_semantics.cpp
   src/trace_semantics.cpp
@@ -110,6 +114,33 @@ if(DTESSL_BUILD_TESTS)
                    Run minimum=1)
   set_tests_properties(dtessl.cli_relation_replay PROPERTIES
                        PASS_REGULAR_EXPRESSION "paths = relation")
+  add_test(NAME dtessl.typed_relation_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/typed_relations.dtessl)
+  set_tests_properties(dtessl.typed_relation_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.typed_relation_lazy_algebra
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   run
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/typed_relations.dtessl
+                   Tick)
+  set_tests_properties(dtessl.typed_relation_lazy_algebra PROPERTIES
+                       PASS_REGULAR_EXPRESSION "derived = relation.*ID<int>\\(a\\).*ID<int>\\(b\\)")
+  add_test(NAME dtessl.compact_pattern_transition
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   run
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/compact_pattern_transition.dtessl
+                   Step)
+  set_tests_properties(dtessl.compact_pattern_transition PROPERTIES
+                       PASS_REGULAR_EXPRESSION "compact_b.sub_state: 0 -> 1")
+  add_test(NAME dtessl.unordered_nested_pattern_transition
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   run
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/compact_pattern_transition.dtessl
+                   Scatter)
+  set_tests_properties(dtessl.unordered_nested_pattern_transition PROPERTIES
+                       PASS_REGULAR_EXPRESSION "compact_b.sub_state: 0 -> 2")
   add_test(NAME dtessl.cli_core_logic
            COMMAND $<TARGET_FILE:dtessl_cli>
                    replay

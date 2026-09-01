@@ -1,0 +1,39 @@
+name ID
+
+state Graph initial:
+  ids: set<ID<int>> = {ID<int>(a), ID<int>(b), ID<int>(c)}
+  active: relation ID<int> = {ID<int>(a), ID<int>(b)}
+  links: relation (ID<int>, ID<int>) = {
+    <ID<int>(a), ID<int>(b)>,
+    <ID<int>(b), ID<int>(c)>
+  }
+  selected: set<ID<int>> = {}
+  selected_union: set<ID<int>> = {}
+  selected_grouped: set<ID<int>> = {}
+  selected_pairs: set<<ID<int>, ID<int>>> = {}
+  derived: relation (ID<int>, ID<int>) = {}
+  paths: relation (ID<int>, ID<int>) = {}
+  valid: bool = true
+
+// General form: parameters are the relation row; `in` clauses are both
+// membership constraints and lazy finite generators when rows are requested.
+relation ActiveLink(a: ID<int>, b: ID<int>):
+  a in ids,
+  b in ids,
+  a ~ active,
+  b ~ active,
+  <a, b> ~ links
+
+// Compact form lowers to the same RelationDeclaration AST.
+relation <a: ID<int>, b: ID<int>> ~ ReverseActive: a in ids, b in ids, <b, a> ~ ActiveLink;
+
+transition Analyze @ Tick():
+  from Graph
+  to Graph:
+    selected = {x : x in before.ids, x ~ before.active}
+    selected_union = {x: x in before.ids, x ~ before.active, y: y in before.ids, y = ID<int>(c)}
+    selected_grouped = {x: x in before.ids, (x ~ before.active or x = ID<int>(c)) and not (x = ID<int>(b))}
+    selected_pairs = {<x, y>: x in before.ids, y in before.ids, <x, y> ~ ActiveLink}
+    derived = relation {<x, y> : x in before.ids, y in before.ids, <x, y> ~ ActiveLink}
+    paths = closure(union(ActiveLink, ReverseActive))
+    valid = <ID<int>(a), ID<int>(b)> ~ (ID<int>(a) ~ before.active, ID<int>(b) ~ before.active) ~ ActiveLink

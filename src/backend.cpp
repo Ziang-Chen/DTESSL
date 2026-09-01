@@ -43,6 +43,10 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
       features.insert(LanguageFeature::AlgebraicDataTypes);
       features.insert(LanguageFeature::ExhaustiveMatch);
       break;
+    case Expr::Kind::Comprehension:
+      features.insert(LanguageFeature::FiniteCollections);
+      features.insert(LanguageFeature::RelationAlgebra);
+      break;
     case Expr::Kind::Literal:
     case Expr::Kind::Name:
     case Expr::Kind::Unary:
@@ -55,6 +59,9 @@ void collect_features(const ExprPtr& expr, FeatureSet& features) {
   collect_features(expr->third, features);
   for (const ExprPtr& child : expr->children) collect_features(child, features);
   for (const MatchArm& arm : expr->arms) collect_features(arm.body, features);
+  for (const ComprehensionClause& clause : expr->clauses) {
+    collect_features(clause.expression, features);
+  }
 }
 
 void collect_temporal_features(const TemporalExprPtr& expression,
@@ -120,6 +127,9 @@ void collect_search_plans(const ExprPtr& expr, std::vector<SearchPlanSummary>& p
   collect_search_plans(expr->third, plans);
   for (const ExprPtr& child : expr->children) collect_search_plans(child, plans);
   for (const MatchArm& arm : expr->arms) collect_search_plans(arm.body, plans);
+  for (const ComprehensionClause& clause : expr->clauses) {
+    collect_search_plans(clause.expression, plans);
+  }
 }
 
 void collect_action_search_plans(const std::shared_ptr<ActionExpr>& action,
@@ -177,6 +187,14 @@ FeatureSet required_features(const Program& program) {
     }
     collect_type_features(function.result, result);
     collect_features(function.body, result);
+  }
+  for (const auto& [name, relation] : implementation.relations) {
+    static_cast<void>(name);
+    collect_type_features(relation.type, result);
+    result.insert(LanguageFeature::RelationAlgebra);
+    for (const ComprehensionClause& clause : relation.clauses) {
+      collect_features(clause.expression, result);
+    }
   }
   for (const Transition& transition : implementation.transitions) {
     collect_features(transition.condition, result);
@@ -253,6 +271,16 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
   for (const auto& [name, function] : implementation.functions) {
     static_cast<void>(name);
     collect_search_plans(function.body, plans);
+  }
+  for (const auto& [name, relation] : implementation.relations) {
+    static_cast<void>(name);
+    plans.push_back({relation.enumerable ? "typed-relation-enumeration"
+                                        : "typed-relation-membership",
+                     relation.enumerable ? relation_row_limit : 1U,
+                     relation_work_limit, true, false});
+    for (const ComprehensionClause& clause : relation.clauses) {
+      collect_search_plans(clause.expression, plans);
+    }
   }
   for (const Transition& transition : implementation.transitions) {
     if (transition.optimized_score) {

@@ -3,6 +3,26 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.2
+
+- Add general and single-line compact typed relation declarations. Membership
+  executes their rule directly; finite generators are enumerated lazily only
+  for `E/A`, `select`, collection consumers or relation algebra.
+- Allow declared relations and lazy relation comprehensions to feed
+  `project/join/compose/inverse/closure/union/intersection/difference` without
+  first converting them to relation literals.
+- Add lazy set/relation comprehensions with `:` separating projection from
+  generators and parenthesized boolean filters. Multiple `name:` branches in
+  one `{...}` form an unordered canonical union, not a Cartesian product.
+- Make `<...>` the canonical tuple/pattern/update container and add composite
+  runtime filtering such as `<a,b> ~ (a ~ Pa, b ~ Pb) ~ Pab`.
+- Add compact pattern/update transitions and typed-class application sugar
+  such as `ID<int>` / `ID<int>(worker)`. The canonical type application retains
+  the generated type-argument tuple for future class declarations.
+- Split private frontend AST and lazy relation semantics out of the parser
+  implementation; both continue to feed the single verifier/evaluator/Solver
+  path.
+
 ## v0.4.1
 
 - Add named and anonymous recursive state `case` axes while keeping all

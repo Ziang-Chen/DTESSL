@@ -27,6 +27,12 @@ bool observes_round(const ExprPtr& expression) {
                   observes_round)) {
     return true;
   }
+  if (std::any_of(expression->clauses.begin(), expression->clauses.end(),
+                  [](const ComprehensionClause& clause) {
+                    return observes_round(clause.expression);
+                  })) {
+    return true;
+  }
   return std::any_of(expression->arms.begin(), expression->arms.end(),
                      [](const MatchArm& arm) {
                        return observes_round(arm.body);
@@ -230,7 +236,7 @@ ClaimSolveResult Solver::verify_claim(std::string_view claim_name,
         "temporal nesting is outside the deterministic ClaimMonitor fragment";
     return result;
   }
-  FunctionScope function_scope(program.functions);
+  FunctionScope function_scope(program.functions, &program.relations, &program.types);
   const ClaimMonitorSpec& monitor = *compiled;
   const PropertyScope claim_scope =
       claim->target_kind == ClaimDeclaration::TargetKind::Trace

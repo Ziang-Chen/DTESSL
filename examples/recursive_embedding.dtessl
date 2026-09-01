@@ -10,7 +10,8 @@ state Scheduler @ session initial:
   accepted: bool = false
   invariant:
     credits >= 0
-    and WorkerId(a) ~ workers, (local | fallback)
+    and WorkerId(a) ~ workers
+    and (WorkerId(a) ~ local or WorkerId(a) ~ fallback)
 
 transition Start():
   case reserve (Scheduler(Phase.Idle, Health.Healthy) @ session) -> (Scheduler(Phase.Running.Stage.Reserving) @ session):
