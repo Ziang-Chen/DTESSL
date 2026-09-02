@@ -1,4 +1,4 @@
-# DTESSL v0.4.3
+# DTESSL v0.4.4
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -193,8 +193,9 @@ control     = Name [ "(" state-component { "," state-component }
 field       = Name ":" type "=" literal [ "merge" ( "equal" | "union" ) ] NEWLINE ;
 invariant   = "invariant" ":" INDENT expression DEDENT ;
 
-transition  = "transition" Name transition-head ":" INDENT
-                case { case }
+transition  = "transition" Name [ transition-head ] ":" INDENT
+                ( transition-relation { "|" transition-relation }
+                | case { case } )
               DEDENT ;
 transition-head = "(" [ parameter { "," parameter } ] ")"
                     [ "@" scope ] [ extensions ]
@@ -214,6 +215,21 @@ case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                 [ "do" ":" INDENT action-expression DEDENT ]
                 [ "ensure" ":" INDENT temporal-expression DEDENT ]
               DEDENT ;
+transition-relation = "<" relation-state-set "," relation-state-set ">"
+                      [ branch-extensions ]
+                      [ ":" INDENT
+                          [ "where" ":" INDENT expression DEDENT ]
+                          [ "set" [ "@" Name ] ":" INDENT
+                              { Name "=" expression NEWLINE } DEDENT ]
+                          [ "do" ":" INDENT action-expression DEDENT ]
+                          [ "ensure" ":" INDENT temporal-expression DEDENT ]
+                        DEDENT ] ;
+relation-state-set = state-binding
+                   | "{" state-binding { "," state-binding } "}" ;
+branch-extensions = "[" branch-extension { "," branch-extension } "]" ;
+branch-extension = "label" "=" Name
+                 | "where" "=" "(" expression ")"
+                 | "do" "=" "(" action-expression ")" ;
 state-pattern-set = "(" state-pattern { "," state-pattern } ")" ;
 state-pattern = ( Name | "{" Name { "," Name } "}" | "_" ) [ "@" Name ] ;
 exact-state-set = "(" state-binding { "," state-binding } ")" ;
@@ -250,7 +266,7 @@ claim       = "Claim" Name "@" [ "trace" | "state" | "procedure" | "relation" ] 
                 | "count" Name "<=" integer NEWLINE )
               DEDENT ;
 temporal-expression = expression
-                    | "(" temporal-expression "," temporal-expression ")"
+                    | "<" temporal-expression "," temporal-expression ">"
                       "~" "happens_before"
                     | "always" "(" temporal-expression ")"
                     | "eventually" "(" temporal-expression ")"
@@ -270,9 +286,9 @@ type        = "bool" | "int" | "rational" | "string"
             | "bag" "<" type ">"
             | "option" "<" type ">"
             | "result" "<" type "," type ">"
-            | "tuple" "<" type { "," type } ">"
-            | "relation" type | "relation" "(" type { "," type } ")"
-            | "relation" "<" type { "," type } ">" // v0 compatibility
+            | "tuple" "<" type { "," type } ">" // v0 compatibility
+            | "relation" type | "relation" "<" type { "," type } ">"
+            | "relation" "(" type { "," type } ")" // v0 compatibility
             | Name ;
 
 name-value  = Name "(" Name ")" ;
@@ -337,10 +353,30 @@ action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
 `from/to/where/do` 与 `set @ context:` 仍作为兼容输入。主要更新形式是一个
 `set:` 块，每行用 `field = expression @ context` 标注目标状态轴。
 
+更直接的 canonical 表面把 Transition 写成 before/after Embedding 关系：
+
+```dtessl
+transition Dispatch:
+  <{Idle @ worker, Open @ session},
+   {Busy @ worker, Closed @ session}> [label=accept]:
+    where:
+      before.worker.credits > 0
+    do:
+      accepted: $audit.emit("accepted") @ worker
+  | <{Busy @ worker, Closed @ session},
+     {Idle @ worker, Open @ session}> [label=release]
+```
+
+外层 `<before-set,after-set>` 是有序 Product，内层 `{...}` 是无序、合取的
+Embedding 配置，`|` 是 relation branch 的并集。`[label=...]` 给分支稳定路径名；
+compact `[where=(...), do=(...)]` 和块式 `where/set/do/ensure` 降到同一个
+Transition branch AST。关系只决定 successor；`do` 是选中唯一 witness 后的
+`<before,after,bindings> -> ActionPlan` lowering，不参与关系真假。
+
 `ensure:` 与 `where:` 不同：`where` 只看当前 Embedding 并决定边是否可用；
 `ensure` 在边发生后的 successor 上激活时序 obligation，由 finite Trace monitor 或
 `EmbeddingExpand × ClaimMonitor` 检查。执行器绝不会为了判断 `eventually` 而预知未来。
-时序同样使用关系表面：`(a, b) ~ happens_before` 是 trace-domain 的
+时序同样使用关系表面：`<a, b> ~ happens_before` 是 trace-domain 的
 `TraceRelationMatch`，可嵌套在 `always/eventually/until/within/since` 中；它不会进入
 只看当前 Embedding 的瞬时 evaluator。有限 trace 可直接判定完整嵌套，当前 Solver
 无法编译的 future-under-future 片段明确返回 `inconclusive`。
@@ -481,7 +517,7 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
 
 - `name WorkerId` 定义开放的名义逻辑名称，值写作 `WorkerId(a)`；它不是 string，
   也不是 capability 或 authority；
-- `relation Worker`/`relation (A,B)` 定义关系值；顶层 `relation Name(...)`
+- `relation Worker`/`relation <A,B>` 定义关系值；顶层 `relation Name(...)`
   定义惰性规则 relation，`subject ~ relation` 执行统一 RelationMatch；
 - `relation Name: relation (...) = algebra(...)` 定义依赖当前 Embedding 的
   命名派生 RelationPlan；`Claim ... @ relation Name` 使用同一 Property/Solver
@@ -502,7 +538,7 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
 `err<T>(error)` 给出 result 的另一侧类型。初值已有声明类型上下文，因此可简写为
 `none`、`some(value)`、`ok(value)`、`err(value)`。
 
-`relation T`/`relation (A,B,...)` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
+`relation T`/`relation <A,B,...>` 是独立的一等有限关系，不是隐藏的 JSON，也不是没有 schema 的 set。
 每行是同 arity 的 `tuple<T...>`，按 canonical tuple 顺序排序并去重。当前关系代数包括：
 
 - `project(r, column...)`、`join(left, li, right, ri)`；
@@ -574,7 +610,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.3 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.4 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

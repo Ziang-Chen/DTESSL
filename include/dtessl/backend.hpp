@@ -52,6 +52,7 @@ enum class LanguageFeature {
   RelationProperties,
   RelationClaims,
   HigherOrderRelations,
+  TransitionRelations,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

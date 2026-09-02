@@ -547,6 +547,9 @@ struct TransitionTarget {
 };
 
 struct TransitionAlternative {
+  // One intensional relation branch from a conjunctive before Embedding
+  // pattern to one atomically constructed after Embedding.  `action` is
+  // attached lowering metadata, not part of relation satisfaction.
   std::string name;
   std::vector<StateBinding> from;
   std::vector<TransitionTarget> to;
@@ -566,6 +569,9 @@ struct Transition {
   // extension header. It is not an Event alias or authority.
   std::string declaration_context;
   std::string event;
+  // True when the source used the canonical <before-set,after-set> union
+  // surface. Both surfaces lower to the same relation branches below.
+  bool relation_surface{false};
   std::string optimization_scope;
   ExprPtr optimized_score;
   std::vector<Parameter> parameters;
@@ -952,10 +958,13 @@ class FlatParser {
       std::vector<DataType> elements;
       bool direct = true;
       if (match("<")) {
-        direct = false;  // v0 tuple-row compatibility form
+        // Canonical multi-column Product row. A one-column Product retains
+        // the v0 tuple-row binding; canonical unary relations use `relation T`.
+        direct = false;
         do elements.push_back(parse_type()); while (match(","));
         expect(">");
       } else if (match("(")) {
+        // v0 migration spelling for a multi-column Product row.
         do elements.push_back(parse_type()); while (match(","));
         expect(")");
       } else {
@@ -1460,6 +1469,7 @@ class TemporalParser {
       std::size_t begin, std::size_t end) const {
     std::vector<std::pair<std::size_t, std::size_t>> result;
     std::size_t depth = 0;
+    std::size_t product_depth = 0;
     std::size_t item = begin;
     for (std::size_t index = begin; index < end; ++index) {
       if (tokens_[index].text == "(" || tokens_[index].text == "[" ||
@@ -1469,13 +1479,22 @@ class TemporalParser {
                  tokens_[index].text == "}") {
         if (depth == 0U) fail(tokens_[index], "unmatched temporal delimiter");
         --depth;
-      } else if (tokens_[index].text == "," && depth == 0U) {
+      } else if (tokens_[index].text == "<" &&
+                 (index == begin || tokens_[index - 1U].text == "(" ||
+                  tokens_[index - 1U].text == ",")) {
+        ++product_depth;
+      } else if (tokens_[index].text == ">" && product_depth != 0U) {
+        --product_depth;
+      } else if (tokens_[index].text == "," && depth == 0U &&
+                 product_depth == 0U) {
         if (item == index) fail(tokens_[index], "empty temporal argument");
         result.emplace_back(item, index);
         item = index + 1U;
       }
     }
-    if (depth != 0U) fail(tokens_[begin], "unterminated temporal argument");
+    if (depth != 0U || product_depth != 0U) {
+      fail(tokens_[begin], "unterminated temporal argument");
+    }
     if (item == end) fail(tokens_[end - 1U], "empty temporal argument");
     result.emplace_back(item, end);
     return result;
@@ -1515,10 +1534,15 @@ class TemporalParser {
     }
     if (relation_operator != end && relation_operator + 2U == end &&
         tokens_[relation_operator + 1U].text == "happens_before") {
-      if (relation_operator <= begin + 2U || tokens_[begin].text != "(" ||
-          tokens_[relation_operator - 1U].text != ")") {
+      const bool product_subject =
+          relation_operator > begin + 2U &&
+          ((tokens_[begin].text == "<" &&
+            tokens_[relation_operator - 1U].text == ">") ||
+           (tokens_[begin].text == "(" &&
+            tokens_[relation_operator - 1U].text == ")"));
+      if (!product_subject) {
         fail(tokens_[relation_operator],
-             "happens_before subject must be a pair '(first, second)'");
+             "happens_before subject must be an ordered pair '<first, second>'");
       }
       const auto subjects = arguments(begin + 1U, relation_operator - 1U);
       if (subjects.size() != 2U) {
@@ -3152,24 +3176,29 @@ Transition Parser::transition() {
     if (at("[")) {
       result.declaration_context = binding;
       apply_extensions(declaration_extensions(true));
-    } else {
+    } else if (at("(")) {
       // v0 compatibility: the pre-parameter @ name is the legacy Event alias.
       result.event = binding;
+    } else {
+      // Canonical parameterless relation surface: @ always binds declaration
+      // context. A legacy Event alias remains recognizable by its (...) head.
+      result.declaration_context = binding;
     }
   }
-  expect("(");
-  if (!match(")")) {
-    do {
-      Parameter parameter;
-      const Token parameter_start = peek();
-      parameter.name = identifier();
-      parameter.line = parameter_start.line;
-      parameter.column = parameter_start.column;
-      expect(":");
-      parameter.type = type();
-      result.parameters.push_back(std::move(parameter));
-    } while (match(","));
-    expect(")");
+  if (match("(")) {
+    if (!match(")")) {
+      do {
+        Parameter parameter;
+        const Token parameter_start = peek();
+        parameter.name = identifier();
+        parameter.line = parameter_start.line;
+        parameter.column = parameter_start.column;
+        expect(":");
+        parameter.type = type();
+        result.parameters.push_back(std::move(parameter));
+      } while (match(","));
+      expect(")");
+    }
   }
   if (match("@")) {
     if (!result.declaration_context.empty()) {
@@ -3324,8 +3353,213 @@ Transition Parser::transition() {
     }
     return targets;
   };
+  const auto relation_source_set = [&]() {
+    std::vector<StateBinding> sources;
+    const auto append = [&]() {
+      std::vector<StateBinding> nested = structural_bindings();
+      sources.insert(sources.end(), std::make_move_iterator(nested.begin()),
+                     std::make_move_iterator(nested.end()));
+    };
+    if (match("{")) {
+      if (match("}")) fail(peek(), "transition before-set cannot be empty");
+      do append(); while (match(","));
+      expect("}");
+    } else {
+      append();
+    }
+    return sources;
+  };
+  const auto relation_target_set = [&]() {
+    std::vector<TransitionTarget> targets;
+    const auto append = [&]() {
+      for (StateBinding& item : structural_bindings()) {
+        targets.push_back(TransitionTarget{std::move(item), {}});
+      }
+    };
+    if (match("{")) {
+      if (match("}")) fail(peek(), "transition after-set cannot be empty");
+      do append(); while (match(","));
+      expect("}");
+    } else {
+      append();
+    }
+    return targets;
+  };
+  const auto parenthesized_extension_tokens = [&](const Token& key) {
+    expect("(");
+    std::vector<Token> tokens;
+    std::size_t depth = 1U;
+    while (depth != 0U) {
+      if (at(TokenKind::End) || at(TokenKind::Newline)) {
+        fail(key, "unterminated transition branch extension");
+      }
+      Token token = take();
+      if (token.text == "(") ++depth;
+      else if (token.text == ")") --depth;
+      if (depth != 0U) tokens.push_back(std::move(token));
+    }
+    if (tokens.empty()) fail(key, "transition branch extension cannot be empty");
+    return tokens;
+  };
+  const auto relation_branch_extensions = [&](std::string& label,
+                                               ExprPtr& condition,
+                                               std::shared_ptr<ActionExpr>& action,
+                                               bool& has_where,
+                                               bool& has_action) {
+    if (!match("[")) return;
+    bool first = true;
+    bool has_label = false;
+    while (!at("]")) {
+      if (!first) expect(",");
+      first = false;
+      const Token key_token = peek();
+      const std::string key = identifier();
+      expect("=");
+      if (key == "label") {
+        if (has_label) fail(key_token, "transition branch repeats label");
+        has_label = true;
+        label = identifier();
+        continue;
+      }
+      if (key == "where") {
+        if (has_where) fail(key_token, "transition branch repeats where");
+        has_where = true;
+        FlatParser parser(parenthesized_extension_tokens(key_token), types_);
+        condition = parser.expression();
+        parser.expect_end();
+        continue;
+      }
+      if (key == "do") {
+        if (has_action) fail(key_token, "transition branch repeats do");
+        has_action = true;
+        FlatParser parser(parenthesized_extension_tokens(key_token), types_);
+        action = parser.action();
+        continue;
+      }
+      fail(key_token, "unknown transition branch extension '" + key + "'");
+    }
+    expect("]");
+    if (first) fail(peek(), "transition branch extension cannot be empty");
+  };
+  const auto route_body = [&](std::vector<TransitionTarget>& targets,
+                              ExprPtr& condition,
+                              std::shared_ptr<ActionExpr>& action,
+                              TemporalExprPtr& obligation,
+                              bool& has_where,
+                              bool& has_action) {
+    while (!at(TokenKind::Dedent)) {
+      if (match("where")) {
+        if (has_where) fail(peek(), "transition branch repeats where");
+        has_where = true;
+        expect(":");
+        condition = block_expression();
+        continue;
+      }
+      if (match("set")) {
+        const auto attach = [&](std::string_view context,
+                                const Assignment& update) {
+          const auto found = std::find_if(
+              targets.begin(), targets.end(), [&](const TransitionTarget& target) {
+                return target.binding.context == context;
+              });
+          if (found == targets.end()) {
+            fail(peek(), "set @" + std::string(context) +
+                             " has no matching path target");
+          }
+          found->assignments.push_back(update);
+        };
+        if (match("@")) {
+          const std::string context = identifier();
+          expect(":");
+          newline();
+          indent();
+          const std::vector<Assignment> updates = assignments();
+          dedent();
+          for (const Assignment& update : updates) attach(context, update);
+        } else {
+          expect(":");
+          newline();
+          indent();
+          const auto updates = scoped_assignments();
+          dedent();
+          for (const auto& [context, update] : updates) attach(context, update);
+        }
+        continue;
+      }
+      if (match("do")) {
+        if (has_action) fail(peek(), "transition branch repeats do");
+        has_action = true;
+        expect(":");
+        action = block_action();
+        continue;
+      }
+      if (match("ensure")) {
+        if (obligation) fail(peek(), "transition branch repeats ensure");
+        expect(":");
+        obligation = block_temporal_expression();
+        continue;
+      }
+      fail(peek(), "transition relation branch requires where, set, do, or ensure");
+    }
+  };
   while (!at(TokenKind::Dedent)) {
+    if (at("<") || at("|")) {
+      if (!result.from.empty() && !result.relation_surface) {
+        fail(peek(), "transition cannot mix case/from syntax with relation branches");
+      }
+      result.relation_surface = true;
+      for (;;) {
+        if (match("|")) {
+          if (result.from.empty()) {
+            fail(peek(), "transition relation union needs a left branch");
+          }
+        }
+        const Token branch_start = peek();
+        expect("<");
+        std::vector<StateBinding> sources = relation_source_set();
+        expect(",");
+        std::vector<TransitionTarget> targets = relation_target_set();
+        expect(">");
+        std::string label;
+        ExprPtr condition = make_literal(Value(true), branch_start.line,
+                                         branch_start.column);
+        std::shared_ptr<ActionExpr> action;
+        TemporalExprPtr obligation;
+        bool has_where = false;
+        bool has_action = false;
+        relation_branch_extensions(label, condition, action, has_where,
+                                   has_action);
+        if (match(":")) {
+          newline();
+          indent();
+          route_body(targets, condition, action, obligation, has_where,
+                     has_action);
+          dedent();
+        } else if (!at("|")) {
+          newline();
+        }
+
+        if (result.from.empty()) {
+          result.case_name = std::move(label);
+          result.from = std::move(sources);
+          result.to = std::move(targets);
+          result.condition = std::move(condition);
+          result.action = std::move(action);
+          result.obligation = std::move(obligation);
+        } else {
+          result.alternatives.push_back(TransitionAlternative{
+              std::move(label), std::move(sources), std::move(targets),
+              std::move(condition), std::move(action), std::move(obligation),
+              {}, {}});
+        }
+        if (!at("|")) break;
+      }
+      continue;
+    }
     if (match("case")) {
+      if (result.relation_surface) {
+        fail(peek(), "transition cannot mix relation branches with case syntax");
+      }
       bool first_route = result.from.empty();
       std::string case_name;
       if (!at("(")) case_name = identifier();
@@ -3338,55 +3572,9 @@ Transition Parser::transition() {
       ExprPtr condition = make_literal(Value(true));
       std::shared_ptr<ActionExpr> action;
       TemporalExprPtr obligation;
-      while (!at(TokenKind::Dedent)) {
-        if (match("where")) {
-          expect(":");
-          condition = block_expression();
-          continue;
-        }
-        if (match("set")) {
-          const auto attach = [&](std::string_view context,
-                                  const Assignment& update) {
-            const auto found = std::find_if(
-                targets.begin(), targets.end(), [&](const TransitionTarget& target) {
-                  return target.binding.context == context;
-                });
-            if (found == targets.end()) {
-              fail(peek(), "set @" + std::string(context) +
-                               " has no matching path target");
-            }
-            found->assignments.push_back(update);
-          };
-          if (match("@")) {
-            const std::string context = identifier();
-            expect(":");
-            newline();
-            indent();
-            const std::vector<Assignment> updates = assignments();
-            dedent();
-            for (const Assignment& update : updates) attach(context, update);
-          } else {
-            expect(":");
-            newline();
-            indent();
-            const auto updates = scoped_assignments();
-            dedent();
-            for (const auto& [context, update] : updates) attach(context, update);
-          }
-          continue;
-        }
-        if (match("do")) {
-          expect(":");
-          action = block_action();
-          continue;
-        }
-        if (match("ensure")) {
-          expect(":");
-          obligation = block_temporal_expression();
-          continue;
-        }
-        fail(peek(), "case path requires where, set, do, or ensure");
-      }
+      bool has_where = false;
+      bool has_action = false;
+      route_body(targets, condition, action, obligation, has_where, has_action);
       dedent();
       for (auto& source : sources) {
         if (first_route) {
@@ -3444,6 +3632,9 @@ Transition Parser::transition() {
       continue;
     }
     if (match("from")) {
+      if (result.relation_surface) {
+        fail(peek(), "transition relation surface already defines before-sets");
+      }
       if (match(":")) {
         newline();
         indent();
@@ -3459,6 +3650,9 @@ Transition Parser::transition() {
       continue;
     }
     if (match("to")) {
+      if (result.relation_surface) {
+        fail(peek(), "transition relation surface already defines after-sets");
+      }
       if (match(":")) {
         newline();
         indent();
@@ -3490,17 +3684,50 @@ Transition Parser::transition() {
     }
     if (match("where")) {
       expect(":");
-      result.condition = block_expression();
+      ExprPtr global_condition = block_expression();
+      if (result.relation_surface) {
+        result.condition = make_binary("and", std::move(result.condition),
+                                       global_condition);
+        for (TransitionAlternative& alternative : result.alternatives) {
+          alternative.condition = make_binary(
+              "and", std::move(alternative.condition), global_condition);
+        }
+      } else {
+        result.condition = std::move(global_condition);
+      }
       continue;
     }
     if (match("do")) {
       expect(":");
-      result.action = block_action();
+      std::shared_ptr<ActionExpr> global_action = block_action();
+      if (result.relation_surface) {
+        const bool already_attached = result.action || std::any_of(
+            result.alternatives.begin(), result.alternatives.end(),
+            [](const TransitionAlternative& alternative) {
+              return static_cast<bool>(alternative.action);
+            });
+        if (already_attached) {
+          fail(peek(), "global do cannot overwrite a branch-local ActionPlan lowering");
+        }
+        result.action = global_action;
+        for (TransitionAlternative& alternative : result.alternatives) {
+          alternative.action = global_action;
+        }
+      } else {
+        result.action = std::move(global_action);
+      }
       continue;
     }
     if (match("ensure")) {
       expect(":");
       TemporalExprPtr obligation = block_temporal_expression();
+      if (result.obligation || std::any_of(
+              result.alternatives.begin(), result.alternatives.end(),
+              [](const TransitionAlternative& alternative) {
+                return static_cast<bool>(alternative.obligation);
+              })) {
+        fail(peek(), "global ensure cannot overwrite a branch-local obligation");
+      }
       result.obligation = obligation;
       for (TransitionAlternative& alternative : result.alternatives) {
         alternative.obligation = obligation;

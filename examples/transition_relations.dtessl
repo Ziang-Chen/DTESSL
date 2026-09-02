@@ -1,0 +1,34 @@
+// A Transition is an intensional relation over before/after Embeddings plus
+// optional ActionPlan lowering. `|` unions branches; it does not schedule an
+// action in parallel.
+port audit.emit(string)
+
+state Idle @ worker initial:
+  credits: int = 1
+
+state Busy @ worker:
+  credits: int = 0
+
+state Open @ session initial:
+  accepted: bool = false
+
+state Closed @ session:
+  accepted: bool = true
+
+transition Dispatch:
+  <{Idle @ worker, Open @ session}, {Busy @ worker, Closed @ session}> [label=accept, where=(before.worker.credits > 0), do=(accepted: $audit.emit("accepted") @ worker)]:
+    set @ worker:
+      credits = before.worker.credits - 1
+    set @ session:
+      accepted = true
+  | <{Busy @ worker, Closed @ session}, {Idle @ worker, Open @ session}> [label=release]:
+    set @ worker:
+      credits = before.worker.credits + 1
+    set @ session:
+      accepted = false
+    do:
+      released: $audit.emit("released") @ worker
+
+// The same union may stay entirely on one line when no branch needs a block.
+transition Toggle:
+  <Idle @ worker, Busy @ worker> [label=forward] | <Busy @ worker, Idle @ worker> [label=back]

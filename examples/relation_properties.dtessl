@@ -4,33 +4,33 @@ state Graph initial:
   nodes: set<Node> = {Node(a), Node(b), Node(c)}
   starts: set<Node> = {Node(a)}
   ends: set<Node> = {Node(c)}
-  edges: relation (Node, Node) = relation{
+  edges: relation <Node, Node> = relation{
     <Node(a), Node(b)>,
     <Node(b), Node(c)>
   }
-  backedge: relation (Node, Node) = relation{<Node(c), Node(a)>}
-  tagged: relation (relation (Node, Node), string) = relation{
+  backedge: relation <Node, Node> = relation{<Node(c), Node(a)>}
+  tagged: relation <relation <Node, Node>, string> = relation{
     <relation{<Node(a), Node(b)>}, "base">
   }
-  reach: relation (Node, Node) = relation{}
+  reach: relation <Node, Node> = relation{}
   carriers: relation Node = relation{}
   terminal: relation Node = relation{}
   forward: relation Node = relation{}
   backward: relation Node = relation{}
-  pairs: relation (Node, Node) = relation{}
-  identities: relation (Node, Node) = relation{}
-  extracted: relation relation (Node, Node) = relation{}
+  pairs: relation <Node, Node> = relation{}
+  identities: relation <Node, Node> = relation{}
+  extracted: relation relation <Node, Node> = relation{}
   higher_count: int = 0
   valid: bool = false
 
 // A named derived RelationPlan. It is evaluated against the current Graph
 // Embedding and remains a plan until a consumer requests rows.
-relation Reachable: relation (Node, Node) = closure(edges)
+relation Reachable: relation <Node, Node> = closure(edges)
 relation Carrier: relation Node = domain(Reachable)
-relation ReachWithSelf: relation (Node, Node) = reflexive_closure(Reachable)
+relation ReachWithSelf: relation <Node, Node> = reflexive_closure(Reachable)
 
 // A relation whose row is itself a canonical finite RelationValue.
-relation TransitiveFamily(r: relation (Node, Node)):
+relation TransitiveFamily(r: relation <Node, Node>):
   r in domain(tagged),
   transitive(r)
 

@@ -241,6 +241,9 @@ FeatureSet required_features(const Program& program) {
     }
   }
   for (const Transition& transition : implementation.transitions) {
+    if (transition.relation_surface) {
+      result.insert(LanguageFeature::TransitionRelations);
+    }
     collect_features(transition.condition, result);
     collect_temporal_features(transition.obligation, result);
     if (!transition.procedure_scope.empty()) {
@@ -333,6 +336,11 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
     }
   }
   for (const Transition& transition : implementation.transitions) {
+    if (transition.relation_surface) {
+      plans.push_back({"transition-relation-union",
+                       1U + transition.alternatives.size(),
+                       1U + transition.alternatives.size(), true, false});
+    }
     if (transition.optimized_score) {
       plans.push_back({"optimized-transition-max",
                        1U + transition.alternatives.size(),
@@ -407,6 +415,7 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::RelationProperties: return "relation-properties";
     case LanguageFeature::RelationClaims: return "relation-claims";
     case LanguageFeature::HigherOrderRelations: return "higher-order-relations";
+    case LanguageFeature::TransitionRelations: return "transition-relations";
   }
   return "unknown";
 }

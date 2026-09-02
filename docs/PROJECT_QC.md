@@ -8,8 +8,8 @@ Updated: 2026-09-01, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.3` derived/higher-order relation and
-  relation-targeted Claim slice
+- Current target: validate the `v0.4.4` TransitionRelation surface and shared
+  runtime/Solver/ActionPlan lowering
 - Stop orders: none
 
 ## Current state
@@ -77,6 +77,14 @@ canonical nested RelationValues. The positive model checks every operator and
 the negative model reconstructs the exact AddCycle counterexample. Standard,
 `-Werror`, and ASan/UBSan builds each pass 56/56 tests.
 
+The `v0.4.4` slice adds canonical `<before-set,after-set>` TransitionRelation
+branches, `|` union and compact label/where/do extensions. A differential unit
+test proves relation and legacy case surfaces produce identical StepResults;
+the executable example proves composite context updates and typed ActionPlan
+lowering. Canonical relation types and trace relation subjects now use ordered
+`<>` Products while parenthesized forms remain migration input. Standard,
+`-Werror`, and ASan/UBSan builds each pass 61/61 tests.
+
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
@@ -112,7 +120,7 @@ the negative model reconstructs the exact AddCycle counterexample. Standard,
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.4.3` | Built CLI reports `v0.4.3` | pass |
+| Version identity | CMake/generated header target `0.4.4` | Built CLI reports `v0.4.4` | pass |
 | Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
@@ -124,6 +132,9 @@ the negative model reconstructs the exact AddCycle counterexample. Standard,
 | Relation property algebra | Domain/range/product/identity/image/preimage/reflexive closure plus sixteen standard properties share typed budgets | Operator fixture sets `valid=true` and renders canonical derived rows | pass |
 | Relation-targeted Claim | `Claim @ relation` validates its target and reuses the ordinary Property/ClaimMonitor Product | Transitivity verifies; AddCycle reconstructs an acyclicity counterexample | pass |
 | Higher-order RelationValue | Relation row types recurse; codec, equality, digest and algebra preserve nested canonical relation values; RelationPlan capture is forbidden in pure functions | Tagged relation fixture extracts and quantifies one nested relation | pass |
+| TransitionRelation branch surface | `<before-set,after-set>` and `|` lower to existing typed routes; differential unit test compares the complete StepResult with equivalent case syntax | `transition_relations.dtessl` executes Dispatch.accept with two context deltas and one typed action | pass |
+| Transition branch extensions | Stable `label`, inline `where` and inline `do` reuse ordinary verifier/evaluator/ActionPlan nodes; block extras remain available | Feature and plan CLI expose `transition-relations` and deterministic two-row union | pass |
+| Canonical ordered Product spelling | Relation types and trace relation subjects accept canonical `<>`; parenthesized v0 inputs remain readable | Derived/higher-order and temporal examples use the canonical form | pass |
 | Unified RelationMatch path | Equality/order/membership and recursive `~` lower to one typed AST/evaluator; runtime and ClaimMonitor atoms call it without private predicate evaluation | Existing comparison corpus plus nested tuple relation and canonical-render tests pass | pass |
 | Trace relation syntax | `(a,b) ~ happens_before` has a distinct trace-domain AST case; compatibility `before(a,b)` shares it; finite nesting executes and unsupported Solver nesting is inconclusive | Procedure Product verifies strict ordering; closed trace satisfies nested `eventually(RelationMatch)` | pass |
 | Recursive StateSchema | General/compact recursive declaration, duplicate/path/depth checks, local typed fields/invariants and structural transition matching | Nested scheduler and switch examples execute and Claim search reaches three Embeddings | pass |

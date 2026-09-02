@@ -105,11 +105,11 @@ The P0 temporal basis is `always`, `eventually`, `until`, `within` and `since`.
 Ordinary predicate leaves use the same typed expression evaluator, quantifiers,
 relations and pure functions as state invariants and transition `where` guards.
 `never` and `weak_until` are frontend definitions lowered to that basis;
-`before(p, q)` is compatibility sugar for `(p, q) ~ happens_before`. The
+`before(p, q)` is compatibility sugar for `<p, q> ~ happens_before`. The
 Solver has no duplicate search algorithm for these forms.
 
 Trace relations form a distinct typed branch under the common relation model:
-`(first, second) ~ happens_before` produces `TraceRelationMatch`, not an
+`<first, second> ~ happens_before` produces `TraceRelationMatch`, not an
 instantaneous membership test. The monitor compiler canonically lowers it to
 the temporal core. This keeps trace access out of the instantaneous evaluator
 while preserving one syntax and one solver entrance. Unsupported nested future

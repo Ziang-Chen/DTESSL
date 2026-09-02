@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.4.3)
+set(DTESSL_VERSION 0.4.4)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -174,6 +174,38 @@ if(DTESSL_BUILD_TESTS)
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/relation_properties.dtessl)
   set_tests_properties(dtessl.relation_property_features PROPERTIES
                        PASS_REGULAR_EXPRESSION "derived-relations.*relation-properties.*relation-claims.*higher-order-relations")
+  add_test(NAME dtessl.transition_relation_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/transition_relations.dtessl)
+  set_tests_properties(dtessl.transition_relation_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.transition_relation_run
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   run
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/transition_relations.dtessl
+                   Dispatch)
+  set_tests_properties(dtessl.transition_relation_run PROPERTIES
+                       PASS_REGULAR_EXPRESSION "transition Dispatch.accept")
+  add_test(NAME dtessl.transition_relation_replay
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   replay
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/transition_relations.dtessl
+                   Dispatch)
+  set_tests_properties(dtessl.transition_relation_replay PROPERTIES
+                       PASS_REGULAR_EXPRESSION "replay ok")
+  add_test(NAME dtessl.transition_relation_features
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   features
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/transition_relations.dtessl)
+  set_tests_properties(dtessl.transition_relation_features PROPERTIES
+                       PASS_REGULAR_EXPRESSION "transition-relations")
+  add_test(NAME dtessl.transition_relation_plans
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   plans
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/transition_relations.dtessl)
+  set_tests_properties(dtessl.transition_relation_plans PROPERTIES
+                       PASS_REGULAR_EXPRESSION "transition-relation-union rows=2 work=2 deterministic=yes")
   add_test(NAME dtessl.cli_core_logic
            COMMAND $<TARGET_FILE:dtessl_cli>
                    replay

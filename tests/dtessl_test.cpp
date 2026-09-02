@@ -304,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.3", "compiled version must be v0.4.3");
+  require(dtessl::version == "0.4.4", "compiled version must be v0.4.4");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -937,7 +937,7 @@ Claim Missing @ relation Unknown:
   const dtessl::Program carrier_property_program = dtessl::parse(R"DTESSL(
 state Model initial:
   carrier: set<int> = {1, 2}
-  relation_value: relation (int, int) = relation{<1, 1>, <2, 2>, <3, 3>}
+  relation_value: relation <int, int> = relation{<1, 1>, <2, 2>, <3, 3>}
   valid: bool = true
 
 transition Check @ Go():
@@ -1256,7 +1256,7 @@ Claim OneDispatch @ Happy:
   count Dispatch.ready <= 1
 
 Claim OrderedStart @ Happy:
-  eventually((not process.started, process.started) ~ happens_before)
+  eventually(<not process.started, process.started> ~ happens_before)
 )DTESSL";
   const dtessl::Program composite_program = dtessl::parse(composite_trace_source);
   const dtessl::TraceSnapshot static_trace =
@@ -1475,6 +1475,97 @@ procedure Indexed @ system:
               indexed_step.transitions.front().before_state.at("value").as_int() == 0 &&
               indexed_step.state.at("value").as_int() == 7,
           "TransitionId injection did not bypass unrelated event families");
+
+  constexpr std::string_view case_transition_surface = R"DTESSL(
+port audit.emit(int)
+
+state A @ lane initial:
+  value: int = 0
+
+state B @ lane:
+  value: int = 0
+
+transition Move():
+  case go (A @ lane) -> (B @ lane):
+    set @ lane:
+      value = 1
+    do:
+      emitted: $audit.emit(1) @ lane
+)DTESSL";
+  constexpr std::string_view relation_transition_surface = R"DTESSL(
+port audit.emit(int)
+
+state A @ lane initial:
+  value: int = 0
+
+state B @ lane:
+  value: int = 0
+
+transition Move:
+  <A @ lane, B @ lane> [label=go, do=(emitted: $audit.emit(1) @ lane)]:
+    set @ lane:
+      value = 1
+)DTESSL";
+  const dtessl::Program relation_transition_program =
+      dtessl::parse(relation_transition_surface);
+  const dtessl::FeatureSet relation_transition_features =
+      dtessl::required_features(relation_transition_program);
+  require(relation_transition_features.contains(
+              dtessl::LanguageFeature::TransitionRelations),
+          "transition relation surface is absent from backend negotiation");
+  const auto relation_transition_plans =
+      dtessl::search_plans(relation_transition_program);
+  require(std::any_of(
+              relation_transition_plans.begin(), relation_transition_plans.end(),
+              [](const dtessl::SearchPlanSummary& plan) {
+                return plan.operation == "transition-relation-union" &&
+                       plan.max_rows == 1U && plan.max_work == 1U &&
+                       plan.deterministic;
+              }),
+          "transition relation union did not expose its bounded search plan");
+  dtessl::Engine case_transition_engine(dtessl::parse(case_transition_surface));
+  dtessl::Engine relation_transition_engine(relation_transition_program);
+  const dtessl::StepResult case_transition_result =
+      case_transition_engine.step_transition({"Move", {}});
+  const dtessl::StepResult relation_transition_result =
+      relation_transition_engine.step_transition({"Move", {}});
+  require(case_transition_result == relation_transition_result,
+          "relation and case transition surfaces did not lower identically");
+  bool duplicate_relation_label_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state A @ lane initial:
+  value: int = 0
+state B @ lane:
+  value: int = 0
+
+transition Bad:
+  <A @ lane, B @ lane> [label=same] | <A @ lane, B @ lane> [label=same]
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    duplicate_relation_label_rejected = true;
+  }
+  require(duplicate_relation_label_rejected,
+          "transition relation union accepted duplicate branch labels");
+
+  bool duplicate_relation_action_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state A @ lane initial:
+  value: int = 0
+state B @ lane:
+  value: int = 0
+
+transition Bad:
+  <A @ lane, B @ lane> [do=(inline: $audit.emit() @ lane)]:
+    do:
+      block: $audit.emit() @ lane
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    duplicate_relation_action_rejected = true;
+  }
+  require(duplicate_relation_action_rejected,
+          "transition relation branch accepted two ActionPlan lowerings");
 
   constexpr std::string_view optimized_transition = R"DTESSL(
 function utility(value: int) -> int:
@@ -2143,13 +2234,13 @@ Claim NeverNegative @ procedure Work:
   never(scheduler.credits < 0)
 
 Claim StartBeforeDone @ procedure Work:
-  (not process.started, scheduler.done) ~ happens_before
+  <not process.started, scheduler.done> ~ happens_before
 
 Claim LegacyBefore @ procedure Work:
   before(not process.started, scheduler.done)
 
 Claim NestedTraceRelation @ procedure Work:
-  eventually((not process.started, scheduler.done) ~ happens_before)
+  eventually(<not process.started, scheduler.done> ~ happens_before)
 
 Claim WaitWeakly @ procedure Work:
   weak_until(not process.started, process.started)

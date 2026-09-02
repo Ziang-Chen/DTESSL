@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.3` typed, derived and higher-order relation surface.
+Status: `v0.4.4` typed RelationValue, RelationPlan and TransitionRelation surface.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -73,7 +73,7 @@ values projected from that embedding. Control-state names are deliberately not
 coerced into strings or ordinary relation rows.
 
 An ordered compact rewrite `<a,b> -> <a',b'>` is normalized as an intensional
-`relation<Embedding,Embedding>`. The left product is conjunctive matching; the
+`relation <Embedding,Embedding>`. The left product is conjunctive matching; the
 right product constructs one atomic successor from the same before snapshot.
 If an intermediate state must be visible, write two transitions or explicitly
 compose their relations rather than relying on assignment order.
@@ -98,7 +98,7 @@ A named rule and a named derived plan are distinct declarations:
 relation Edge(a: Node, b: Node):
   <a,b> in edges
 
-relation Reachable: relation (Node, Node) = closure(Edge)
+relation Reachable: relation <Node, Node> = closure(Edge)
 ```
 
 The first is a membership predicate that may be decidable without being
@@ -117,9 +117,42 @@ by lex(worker.capacity, worker.id)
 
 `~` is not a type constructor, approximate equality or bitwise negation. The
 prefix `~T`/`~{...}` forms remain accepted only for v0 source migration.
-`relation T`, `relation (A,B)` and context-typed `{...}` are the canonical
-declaration/literal forms. Legacy `relation<T...>` unary rows retain tuple
-binding so existing `.0` programs do not silently change meaning.
+`relation T`, `relation <A,B>` and context-typed `{...}` are the canonical
+declaration/literal forms. Legacy `relation (A,B)` is migration input;
+`relation <T>` retains the old unary Product-row binding so existing `.0`
+programs do not silently change meaning.
+
+## Transition relations
+
+The canonical executable branch is one ordered before/after Product:
+
+```dtessl
+transition Dispatch:
+  <{Idle @ worker, Open @ session},
+   {Busy @ worker, Closed @ session}> [label=accept, where=(eligible)]
+  | <{Busy @ worker, Closed @ session},
+     {Idle @ worker, Open @ session}> [label=release]
+```
+
+The outer `<before-set,after-set>` is ordered. Each inner `{...}` is an
+unordered conjunctive Embedding configuration. `|` is set union over
+intensional TransitionRelation branches, not ActionPlan parallelism. A branch
+is normalized to the same internal route used by the older `case` surface:
+
+```text
+TransitionBranch(before, after, bindings)
+  := source-pattern(before)
+     and where(before, bindings)
+     and after = atomic-update(before, bindings)
+     and target-pattern(after)
+```
+
+`set` contributes the atomic successor function. `do` remains attached
+`<before,after,bindings> -> ActionPlan` lowering and is evaluated only after a
+unique executable witness is selected. It never changes relation
+satisfaction. `[label=...]`, `[where=(...)]`, and `[do=(...)]` are compact
+branch extensions; their block forms use the same verifier, runtime, Solver,
+trace identity and replay path.
 
 ## Optional values
 

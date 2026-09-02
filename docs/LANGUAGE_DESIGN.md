@@ -242,7 +242,7 @@ shared input topology: Relation<Node, Node>
 - `bool`, exact bounded/unbounded `int`, exact `rational`, `string`, `bytes`.
 - `[T]` options with `[]`/`[value]`, plus `result<T,E>`, explicit
   `list<T> = list[...]`, `set<T>`, `map<K,V>` and `bag<T>`.
-- direct unary `relation T`, tuple `relation (A,B,...)` and deterministic iteration.
+- direct unary `relation T`, Product-row `relation <A,B,...>` and deterministic iteration.
 - records, variants, enums and nominal `newtype`.
 - `name T` with nominal logical atoms `T(a)`, separate from string text and
   from authority-bearing host references.
@@ -371,6 +371,29 @@ They are library types, not baked-in keywords.
 
 ## 7. Transition definitions
 
+The canonical relation surface makes the semantic shape explicit:
+
+```dtessl
+transition Dispatch:
+  <{SchedulerIdle @ scheduler, SessionActive @ session},
+   {SchedulerBusy @ scheduler, SessionActive @ session}> [label=active]:
+    where:
+      eligible
+    set @ scheduler:
+      ready = erase(before.scheduler.ready, task.id)
+    do:
+      accept: $ipc.accept(task.id) @ scheduler
+  | <{SchedulerIdle @ scheduler, SessionExpired @ session},
+     {SchedulerIdle @ scheduler, SessionExpired @ session}> [label=expired]
+```
+
+This is an intensional typed relation over
+`<BeforeEmbedding,AfterEmbedding,Bindings>`. Repeated branches are unioned;
+the runtime still requires one selected executable witness unless an explicit
+optimizer resolves candidates. `do` is a function from that witness to an
+ActionPlan and is deliberately outside relation satisfaction. The legacy
+`case (...) -> (...)` surface below lowers to exactly the same branch object.
+
 ```text
 transition Assign @ Submit(task: Task):
   case active (SchedulerIdle @ scheduler, SessionActive @ session)
@@ -424,8 +447,11 @@ in the runtime:
   explicit history-state operators and dynamically created instance sets.
 - Shared mutable state has no declared consistency/merge profile beyond the
   current equal/union merge rules.
-- Transition is not yet a first-class `TransitionRelation` that can itself be
-  projected, composed, hidden or refined with the ordinary relation algebra.
+- Transition now has a first-class before/after relation branch surface and
+  union. Named `compose/product/project/hide/rename/refine` operators over
+  whole TransitionRelation families remain absent; they must preserve trigger,
+  binding and ActionPlan-lowering provenance rather than treating an effectful
+  branch as an ordinary finite RelationValue.
 - Source patterns do not yet bind arbitrary nested record/variant payloads;
   such destructuring currently belongs to an ordinary typed `match` in the
   guard.
@@ -587,7 +613,7 @@ DTESSL inputs.
   lowered into that basis; ordinary typed `function` continues to define the
   predicate leaves. `count Transition <= N` lowers to the same monitor product.
 - Trace ordering uses the same relational surface. In particular,
-  `(first, second) ~ happens_before` is a typed `TraceRelationMatch`, and
+  `<first, second> ~ happens_before` is a typed `TraceRelationMatch`, and
   `before(first, second)` is compatibility sugar for that node. Temporal
   relations may nest inside temporal formulas. Finite trace evaluation supports
   arbitrary accepted nesting; bounded/unbounded Solver fragments must return

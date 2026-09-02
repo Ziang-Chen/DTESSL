@@ -123,7 +123,7 @@ Transport code must not own a second lexer, parser, symbol table or diagnostic
 model.
 
 The production parser, verifier and evaluator support `name T`/`T(atom)`,
-`relation T`/`relation (A,B)`/`relation{...}`, recursive
+`relation T`/`relation <A,B>`/`relation{...}`, recursive
 `subject ~ relation-expression`, compact `E`/`A`/`select` binding,
 `[T]`/`[]`/`[value]` and `list[...]`. The same accepted source provides keyword,
 operator, punctuation and built-in spans to the language service. Prefix

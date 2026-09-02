@@ -7,7 +7,7 @@ and not a source of runtime nondeterminism.
 DTESSL `v0.2.3` adds the compact `~` surface and direct unary-record binding.
 The bounds and deterministic search semantics in this profile are unchanged.
 DTESSL `v0.4.0` supersedes only that surface: canonical source writes
-`relation T` / `relation (A,B)` and reserves infix `~` for recursive
+`relation T` / `relation <A,B>` and reserves infix `~` for recursive
 `subject ~ relation-expression`. Prefix `~T` and `~{...}` remain migration
 input; the finite relation algebra and budgets below are unchanged.
 
@@ -32,7 +32,7 @@ finite type domain.
 DTESSL `v0.4.3` adds named derived plans:
 
 ```dtessl
-relation Reachable: relation (Node, Node) = closure(Edges)
+relation Reachable: relation <Node, Node> = closure(Edges)
 relation Carrier: relation Node = domain(Reachable)
 ```
 
@@ -46,11 +46,12 @@ Embedding, but it is not a mutable relation table or a first-class closure.
 - `<T,...>` is the canonical positive-arity structural product type and
   `<value,...>` its value/pattern container. The old tuple spellings remain
   migration input.
-- `relation<T...>` is a finite set of tuples with exactly the declared arity
+- `relation <T...>` is a finite set of Product rows with exactly the declared arity
   and column types.
 - `relation T` is a direct unary relation whose binder is `T`;
-  `relation (A,B,...)` is the tuple-relation spelling, and `relation{...}` is
-  the canonical rendered literal form. Prefix `~T`/`~{...}` is migration input.
+  `relation <A,B,...>` is the Product-row spelling, and `relation{...}` is
+  the canonical rendered literal form. Parenthesized relation types and prefix
+  `~T`/`~{...}` are migration input.
 - Rows use the canonical total value order and contain no duplicates.
 - Arity is at most 64, a materialized relation contains at most 4096 distinct
   rows, and one relation/search plan performs at most 1,000,000 inspected work

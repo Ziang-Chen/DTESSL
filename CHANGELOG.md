@@ -3,6 +3,22 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.4
+
+- Add canonical TransitionRelation branches as
+  `<before-state-set, after-state-set>` and `|` union. Singleton state sets may
+  omit `{}`; composite sets are unordered conjunctive Embedding configurations.
+- Add branch-local `[label=...]`, `[where=(...)]` and `[do=(...)]` extensions,
+  while retaining block `where/set/do/ensure`. Both surfaces lower to the same
+  verified route, Solver expansion, trace identity, replay and ActionPlan path.
+- Make parameterless `transition Name:` legal. The transition name remains its
+  default typed event and TransitionId.
+- Expose `transition-relations` backend negotiation and a bounded,
+  deterministic `transition-relation-union` search plan.
+- Make `relation <A,B>` and `<a,b> ~ happens_before` the canonical ordered
+  Product spellings. Parenthesized relation types and temporal pairs remain v0
+  migration input.
+
 ## v0.4.3
 
 - Add explicitly typed named derived `RelationPlan` declarations. Plans may
