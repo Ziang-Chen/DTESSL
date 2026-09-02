@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; current named relation-template candidate: `v0.4.7`.
+`v0.2.3`; current named effect-contract candidate: `v0.4.8`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -62,6 +62,7 @@ ordered workflow steps. Static topology and dynamic `where` remain distinct.
 | `v0.4.5` | Named contextual relation composition | Equal name-first and tuple-first compact relation rules, lexical `@context`, pure named Embedding before/after relations, and transition union with explicit `+ do(...)` ActionPlan attachment |
 | `v0.4.6` | Context inheritance and relation composition | Relation block default context for states/fields/before/set, explicit cross-axis override, `,` relational composition with hidden intermediate Embedding, `|` union precedence and serial ActionPlan lowering without extra RoundId |
 | `v0.4.7` | Pure state-relation templates | Breaking correction: named state relations match only the current Embedding; Transition exclusively owns after/set/do/ensure; comma conjoins templates, pipe selects alternatives, and hidden intermediate Embeddings are removed |
+| `v0.4.8` | Named typed do contracts | Reusable named ActionPlan templates, closed context/idempotency/result/delivery/ordering/retry/replay traits, TransitionRelation `+ Do(...)` attachment, deterministic materialization and nondeterministic-result reinjection boundary |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |
 | `v0.7.0` | Monitor automata and assurance | Compile existing claims/invariants to monitor automata, trace redaction, evidence metadata and refinement-oriented statuses |

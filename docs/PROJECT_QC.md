@@ -8,8 +8,8 @@ Updated: 2026-09-02, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.7` pure relation-template boundary across
-  parser, runtime, Solver, replay and ActionPlan lowering
+- Current target: validate the `v0.4.8` named typed-do contract boundary across
+  parser, verifier, runtime, replay, backend negotiation and ActionPlan lowering
 - Stop orders: none
 
 ## Current state
@@ -141,7 +141,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 61/61 tests.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.4.7` | Built CLI reports `v0.4.7` | pass |
+| Version identity | CMake/generated header target `0.4.8` | Built CLI reports `v0.4.8` | pass |
 | Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
@@ -171,6 +171,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 61/61 tests.
 | Explicit model projection | Canonical descriptor parse/print, origin digest, provenance and classified-gap checks | Scheduler projection generates checked DTESSL | pass |
 | Generated source evidence | Stable descriptor/source SHA-256 and complete nonblank-line source map | CLI check/source-map/manifest exercised | pass |
 | Typed action ports | Declared port lookup plus exact argument-type verification | Three-port serial/parallel ActionPlan fixture passes; mismatch rejects | pass |
+| Named typed do contracts | Reusable typed parameters, closed effect traits, fixed context checks and canonical key evaluation lower into ordinary ActionPlan calls | `named_do.dtessl` trace shows serial dependencies and materialized idempotency/consistency/ordering keys; nondeterministic suppress-replay rejects | pass |
 | Lifecycle mappings | Unique field/phase/literal checks and generated literal typecheck | string lifecycle fixture passes; int literal rejects | pass |
 | Native EventTrace replay | Bounded typed batches, empty-batch rejection and fresh-engine equality | Two-round logical state/action replay passes | pass |
 | Runtime-log exclusion | No log, receipt, snapshot or journal types/adapters in public API | Descriptor contains explicit external-runtime gap | pass |

@@ -304,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.7", "compiled version must be v0.4.7");
+  require(dtessl::version == "0.4.8", "compiled version must be v0.4.8");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1558,6 +1558,115 @@ transition Move:
               named_relation_transition_result.actions.calls.size() == 1U &&
               named_relation_transition_result.transition == "Move.MoveRelation",
           "named relation union or + do ActionPlan attachment is wrong");
+
+  constexpr std::string_view named_do_surface = R"DTESSL(
+name TaskId
+name OperationId
+port worker.start(TaskId, OperationId)
+port audit.accept(TaskId)
+
+do StartTask(task: TaskId, operation: OperationId) @ worker [context=fixed, idempotent_by=(<task, operation>), result=consistent_by(<task, operation>), delivery=at_least_once, ordering=ordered_by(task), retry=safe, replay=suppress]:
+  invoke: $worker.start(task, operation)
+
+do RecordAccepted(task: TaskId) @ audit [context=fixed, delivery=at_most_once, retry=forbidden, replay=suppress]:
+  append: $audit.accept(task)
+
+state Idle @ scheduler initial:
+  accepted: int = 0
+state Busy @ scheduler:
+  accepted: int = 0
+
+transition Dispatch @ Submit(task: TaskId, operation: OperationId):
+  <Idle @ scheduler, Busy @ scheduler> + (StartTask(task, operation), RecordAccepted(task)) [label=accept]:
+    set @ scheduler:
+      accepted = before.accepted + 1
+)DTESSL";
+  const dtessl::Program named_do_program = dtessl::parse(named_do_surface);
+  const dtessl::FeatureSet named_do_features =
+      dtessl::required_features(named_do_program);
+  require(named_do_features.contains(dtessl::LanguageFeature::NamedDo) &&
+              named_do_features.contains(dtessl::LanguageFeature::EffectContracts),
+          "named do contract is absent from backend feature negotiation");
+  dtessl::Engine named_do_engine(named_do_program);
+  const dtessl::StepResult named_do_result = named_do_engine.step(
+      {"Submit", {{"task", dtessl::Value(dtessl::ValueName{"TaskId", "task_a"})},
+                  {"operation", dtessl::Value(dtessl::ValueName{
+                                    "OperationId", "operation_1"})}}});
+  require(named_do_result.transition == "Dispatch.accept" &&
+              named_do_result.active_states.at("scheduler") == "Busy" &&
+              named_do_result.actions.calls.size() == 2U &&
+              named_do_result.actions.dependencies ==
+                  std::vector<std::pair<std::size_t, std::size_t>>{{0U, 1U}},
+          "named do did not compose with TransitionRelation and ActionPlan DAG");
+  const dtessl::ActionCall& start_task = named_do_result.actions.calls[0];
+  require(start_task.label == "StartTask.invoke" &&
+              start_task.effect == "StartTask" && start_task.context == "worker" &&
+              start_task.contract.context == dtessl::EffectContextPolicy::Fixed &&
+              start_task.contract.result == dtessl::EffectResultPolicy::Consistent &&
+              start_task.contract.delivery ==
+                  dtessl::EffectDeliveryPolicy::AtLeastOnce &&
+              start_task.contract.ordering ==
+                  dtessl::EffectOrderingPolicy::Ordered &&
+              start_task.contract.retry == dtessl::EffectRetryPolicy::Safe &&
+              start_task.contract.replay == dtessl::EffectReplayPolicy::Suppress &&
+              start_task.contract.idempotency_key &&
+              start_task.contract.consistency_key &&
+              start_task.contract.ordering_key,
+          "named do did not materialize its typed effect contract");
+  require(start_task.contract.idempotency_key->kind() == dtessl::Value::Kind::Tuple &&
+              start_task.contract.idempotency_key->as_tuple().fields.size() == 2U,
+          "named do idempotency key did not preserve canonical tuple structure");
+  require(dtessl::result_text(named_do_result).find(
+              "do StartTask [context=fixed, idempotent_by=") !=
+              std::string::npos,
+          "named do contract is absent from the deterministic result projection");
+  dtessl::Engine named_do_replay(named_do_program);
+  const dtessl::StepResult named_do_replayed = named_do_replay.step(
+      {"Submit", named_do_result.input.fields});
+  require(named_do_replayed == named_do_result,
+          "named do contract is not deterministic under DTESSL replay");
+
+  constexpr std::string_view nondeterministic_do_surface = R"DTESSL(
+port entropy.draw(int)
+do Draw(size: int) @ entropy [context=fixed, result=nondeterministic, retry=forbidden, replay=reinject]:
+  invoke: $entropy.draw(size)
+state Ready initial:
+  value: int = 0
+transition DrawNow @ DrawEvent(size: int):
+  <Ready, Ready> + Draw(size)
+)DTESSL";
+  dtessl::Engine nondeterministic_do_engine(
+      dtessl::parse(nondeterministic_do_surface));
+  const dtessl::StepResult nondeterministic_do_result =
+      nondeterministic_do_engine.step(
+          {"DrawEvent", {{"size", dtessl::Value(std::int64_t{32})}}});
+  require(nondeterministic_do_result.actions.calls.size() == 1U &&
+              nondeterministic_do_result.actions.calls.front().contract.result ==
+                  dtessl::EffectResultPolicy::Nondeterministic &&
+              nondeterministic_do_result.actions.calls.front().contract.replay ==
+                  dtessl::EffectReplayPolicy::Reinject &&
+              nondeterministic_do_result.state.at("value").as_int() == 0,
+          "nondeterministic do did not remain an outbound plan without a result binding");
+
+  bool nondeterministic_replay_error = false;
+  try {
+    (void)dtessl::parse(R"DTESSL(
+port entropy.draw(int)
+do Draw(size: int) @ entropy [context=fixed, result=nondeterministic, replay=suppress]:
+  invoke: $entropy.draw(size)
+state Ready initial:
+  value: int = 0
+transition DrawNow @ DrawEvent(size: int):
+  <Ready, Ready> + Draw(size)
+)DTESSL");
+  } catch (const dtessl::Error& error) {
+    nondeterministic_replay_error =
+        std::string(error.what()).find(
+            "nondeterministic do result requires replay=reinject") !=
+        std::string::npos;
+  }
+  require(nondeterministic_replay_error,
+          "nondeterministic do result admitted replay without reinjection");
 
   constexpr std::string_view composed_relation_transition_surface = R"DTESSL(
 port audit.emit(int)

@@ -448,7 +448,8 @@ ParallelStepResult Engine::step_inputs_at(
       }
       if (*candidate.action) {
         std::unordered_set<std::string> labels;
-        build_plan(*candidate.action, environment, source, decision.actions, labels);
+        build_plan(*candidate.action, environment, source, decision.actions,
+                   labels, program.dos);
         std::sort(decision.actions.dependencies.begin(), decision.actions.dependencies.end());
         decision.actions.dependencies.erase(
             std::unique(decision.actions.dependencies.begin(),

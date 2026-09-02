@@ -54,6 +54,8 @@ enum class LanguageFeature {
   HigherOrderRelations,
   TransitionRelations,
   StateRelationTemplates,
+  NamedDo,
+  EffectContracts,
 };
 
 using FeatureSet = std::set<LanguageFeature>;

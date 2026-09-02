@@ -199,11 +199,39 @@ struct TransitionInput {
   friend bool operator==(const TransitionInput&, const TransitionInput&) = default;
 };
 
+// Closed, typed semantics for an externally executed effect.  These values
+// are part of the deterministic ActionPlan; they do not grant authority and
+// they never cause the standalone DTESSL runtime to execute a port.
+enum class EffectContextPolicy { Inherited, Fixed };
+enum class EffectResultPolicy { Opaque, Consistent, Nondeterministic };
+enum class EffectDeliveryPolicy { Unspecified, AtMostOnce, AtLeastOnce };
+enum class EffectOrderingPolicy { Unspecified, Unordered, Ordered };
+enum class EffectRetryPolicy { Unspecified, Forbidden, Safe, Reconcile };
+enum class EffectReplayPolicy { Suppress, Reinject };
+
+struct EffectContract {
+  EffectContextPolicy context{EffectContextPolicy::Inherited};
+  EffectResultPolicy result{EffectResultPolicy::Opaque};
+  EffectDeliveryPolicy delivery{EffectDeliveryPolicy::Unspecified};
+  EffectOrderingPolicy ordering{EffectOrderingPolicy::Unspecified};
+  EffectRetryPolicy retry{EffectRetryPolicy::Unspecified};
+  EffectReplayPolicy replay{EffectReplayPolicy::Suppress};
+  std::optional<Value> idempotency_key;
+  std::optional<Value> consistency_key;
+  std::optional<Value> ordering_key;
+
+  friend bool operator==(const EffectContract&, const EffectContract&) = default;
+};
+
 struct ActionCall {
   std::string label;
   std::string function;
   std::vector<Value> arguments;
   std::string context;
+  // Empty for an anonymous inline `do`. Otherwise this identifies the named
+  // `do` definition whose contract was instantiated for this call.
+  std::string effect;
+  EffectContract contract;
 
   friend bool operator==(const ActionCall&, const ActionCall&) = default;
 };

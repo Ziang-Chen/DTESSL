@@ -98,6 +98,9 @@ void collect_action_features(const std::shared_ptr<ActionExpr>& action,
                              FeatureSet& features) {
   if (!action) return;
   features.insert(LanguageFeature::ActionDag);
+  if (action->kind == ActionExpr::Kind::DoCall) {
+    features.insert(LanguageFeature::NamedDo);
+  }
   for (const ExprPtr& argument : action->arguments) collect_features(argument, features);
   for (const auto& child : action->children) collect_action_features(child, features);
 }
@@ -197,6 +200,20 @@ FeatureSet required_features(const Program& program) {
     result.insert(LanguageFeature::RecursiveStateSchema);
   }
   if (!implementation.action_ports.empty()) result.insert(LanguageFeature::TypedActionPorts);
+  if (!implementation.dos.empty()) {
+    result.insert(LanguageFeature::NamedDo);
+    result.insert(LanguageFeature::EffectContracts);
+    for (const auto& [name, declaration] : implementation.dos) {
+      static_cast<void>(name);
+      for (const Parameter& parameter : declaration.parameters) {
+        collect_type_features(parameter.type, result);
+      }
+      collect_features(declaration.contract.idempotency_key, result);
+      collect_features(declaration.contract.consistency_key, result);
+      collect_features(declaration.contract.ordering_key, result);
+      collect_action_features(declaration.body, result);
+    }
+  }
   if (!implementation.types.empty()) result.insert(LanguageFeature::NominalTypes);
   for (const auto& [name, definition] : implementation.types) {
     static_cast<void>(name);
@@ -339,6 +356,13 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
     static_cast<void>(name);
     collect_search_plans(function.body, plans);
   }
+  for (const auto& [name, declaration] : implementation.dos) {
+    static_cast<void>(name);
+    collect_search_plans(declaration.contract.idempotency_key, plans);
+    collect_search_plans(declaration.contract.consistency_key, plans);
+    collect_search_plans(declaration.contract.ordering_key, plans);
+    collect_action_search_plans(declaration.body, plans);
+  }
   for (const auto& [name, relation] : implementation.relations) {
     static_cast<void>(name);
     plans.push_back({relation.derived_expression
@@ -453,6 +477,8 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::HigherOrderRelations: return "higher-order-relations";
     case LanguageFeature::TransitionRelations: return "transition-relations";
     case LanguageFeature::StateRelationTemplates: return "state-relation-templates";
+    case LanguageFeature::NamedDo: return "named-do";
+    case LanguageFeature::EffectContracts: return "effect-contracts";
   }
   return "unknown";
 }

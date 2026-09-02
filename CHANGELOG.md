@@ -3,6 +3,24 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.8
+
+- Add reusable, typed `do Name(parameters) @ context [contract]:` definitions.
+  A named `do` expands only to the existing typed ActionPlan DAG and never
+  invokes a host port inside DTESSL.
+- Add closed effect-contract properties for fixed/inherited logical context,
+  idempotency keys, consistent or nondeterministic result semantics, delivery,
+  ordering, retry and replay. Contract keys are typed expressions evaluated
+  canonically from the named-do parameters.
+- Add TransitionRelation attachment syntax
+  `<before,after> + DoName(arguments)`; grouped comma/pipe action algebra keeps
+  its existing serial/parallel meaning. Inline `do:` remains anonymous sugar.
+- Materialize the named-do identity and typed contract on every ActionPlan call
+  so replay equality and backend negotiation cover effect semantics.
+- Require `retry=safe` and `delivery=at_least_once` to have an idempotency key.
+  Require nondeterministic results to use `replay=reinject`, which means inject
+  a previously recorded typed outcome, never re-execute the physical effect.
+
 ## v0.4.7
 
 - Make named state relations pure current-Embedding matcher templates. They

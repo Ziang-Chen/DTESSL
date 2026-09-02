@@ -1,4 +1,4 @@
-# DTESSL v0.4.7
+# DTESSL v0.4.8
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -162,7 +162,8 @@ transition Schedule @ Submit(task: string, worker: string):
 核心词法和文法骨架如下；缩进构成块，Tab 非法，`//` 开始行注释。
 
 ```ebnf
-program     = { type-declaration | port | function | state | compact-state
+program     = { type-declaration | port | do-declaration | function | relation-declaration
+              | state-relation | state | compact-state
               | transition | compact-transition | compact-procedure | compact-trace
               | procedure | trace | claim } ;
 compact-state = "state" Name { "," Name } ";" NEWLINE ;
@@ -181,6 +182,19 @@ variant     = "variant" Name ":" INDENT
               DEDENT ;
 enum        = "enum" Name ":" INDENT { Name NEWLINE } DEDENT ;
 port        = "port" qualified-name "(" [ type { "," type } ] ")" NEWLINE ;
+do-declaration = "do" Name "(" [ parameter { "," parameter } ] ")"
+                 [ "@" qualified-name ] [ do-contract ] ":"
+                 INDENT action-expression DEDENT ;
+do-contract = "[" do-property { "," do-property } "]" ;
+do-property = "context" "=" ( "fixed" | "inherited" )
+            | "idempotent_by" "=" "(" expression ")"
+            | "result" "=" ( "opaque" | "nondeterministic"
+                             | "consistent_by" "(" expression ")" )
+            | "delivery" "=" ( "at_most_once" | "at_least_once" )
+            | "ordering" "=" ( "unordered"
+                               | "ordered_by" "(" expression ")" )
+            | "retry" "=" ( "forbidden" | "safe" | "reconcile" )
+            | "replay" "=" ( "suppress" | "reinject" ) ;
 function    = "function" Name "(" [ parameter { "," parameter } ] ")"
               "->" type ":" INDENT expression DEDENT ;
 state       = "state" Name [ "@" Name ] [ "initial" ] [ extensions ]
@@ -216,6 +230,7 @@ case        = "case" [ Name ] state-pattern-set "->" exact-state-set ":" INDENT
                 [ "ensure" ":" INDENT temporal-expression DEDENT ]
               DEDENT ;
 transition-relation = "<" relation-state-set "," relation-state-set ">"
+                      [ "+" ( named-do-call | "(" action-expression ")" ) ]
                       [ branch-extensions ]
                       [ ":" INDENT
                           [ "where" ":" INDENT expression DEDENT ]
@@ -363,7 +378,9 @@ action-expression = sequence { "|" sequence } ;
 sequence     = action { "," action } ;
 action       = Name ":" "$" qualified-name "(" [ arguments ] ")"
                [ "@" qualified-name ]
+             | [ Name ":" ] named-do-call
              | "(" action-expression ")" ;
+named-do-call = Name "(" [ arguments ] ")" ;
 ```
 
 `,` 表示必须按序发生，`|` 表示两边没有顺序边；`,` 的结合优先级高于 `|`。因此
@@ -437,6 +454,29 @@ transition Dispatch:
 含义是 `(Admit and Authorized) or Trusted`。所有模板都读取同一个 before Embedding；
 不存在隐藏的中间 Embedding、隐式状态更新或 relation-owned ActionPlan。箭头右侧以及
 `set/do/ensure` 只由 transition 拥有。
+
+可复用的副作用计划用独立的 typed `do` 定义；它不是 relation，也不改变
+Embedding：
+
+```dtessl
+do StartTask(task: TaskId, operation: OperationId) @ worker [context=fixed, idempotent_by=(<task, operation>), result=consistent_by(<task, operation>), delivery=at_least_once, ordering=ordered_by(task), retry=safe, replay=suppress]:
+  invoke: $worker.start(task, operation)
+
+transition Dispatch @ Submit(task: TaskId, operation: OperationId):
+  <Idle @ scheduler, Busy @ scheduler> + StartTask(task, operation) [label=accept]
+```
+
+`<before,after>` 仍是唯一的逻辑状态变化；`+` 只在该 transition case
+被选中后附加 named-do ActionPlan。named `do` 内 `,` 是串行依赖、`|` 是并行；
+同一模板重复使用时可写 `first: StartTask(...)` 给实例稳定前缀。contract 使用
+封闭枚举而不是字符串 attributes，并随每个 ActionCall 输出。`context=fixed`
+固定的是逻辑路由上下文，不是 authority。`consistent_by`、幂等、delivery 和 retry
+是 host adapter 必须兑现并提供证据的 contract，DTESSL 不会凭声明伪造物理事实。
+
+`result=nondeterministic` 只能配 `replay=reinject`：其结果不能参与当前 transition
+的 after/set；它必须以后续 typed input 进入模型。replay 的 reinject 指重注已记录
+结果，绝不重新调用 Provider。`unpredictable`、`uniform`、`cryptographic` 之类质量
+主张仍属于 Provider evidence，不是语言中写一个词就成立的事实。
 
 `ensure:` 与 `where:` 不同：`where` 只看当前 Embedding 并决定边是否可用；
 `ensure` 在边发生后的 successor 上激活时序 obligation，由 finite Trace monitor 或
@@ -675,7 +715,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.7 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.8 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

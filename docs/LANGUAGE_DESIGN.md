@@ -537,6 +537,35 @@ completion facts. Native replay consumes only `Program + typed EventTrace` and
 recomputes logical results; runtime journals, snapshots and receipts are not
 DTESSL inputs.
 
+A named `do` is a reusable typed ActionPlan template, separate from pure
+relations and from TransitionRelation successor construction:
+
+```dtessl
+do StartTask(task: TaskId, operation: OperationId) @ worker [context=fixed, idempotent_by=(<task, operation>), result=consistent_by(<task, operation>), delivery=at_least_once, ordering=ordered_by(task), retry=safe, replay=suppress]:
+  invoke: $worker.start(task, operation)
+
+transition Dispatch @ Submit(task: TaskId, operation: OperationId):
+  <Idle @ scheduler, Busy @ scheduler> + StartTask(task, operation)
+```
+
+The contract vocabulary is closed and typed: `context=fixed|inherited`,
+`idempotent_by=(expr)`, `result=opaque|consistent_by(expr)|nondeterministic`,
+`delivery=at_most_once|at_least_once`,
+`ordering=unordered|ordered_by(expr)`,
+`retry=forbidden|safe|reconcile`, and `replay=suppress|reinject`.
+Keys are evaluated from typed parameters into canonical Values. Safe retry and
+at-least-once delivery require an idempotency key. Nondeterministic results
+require reinjection during replay and are structurally unavailable to the
+current transition successor; a later typed input must carry the recorded
+outcome. Reinjection never re-executes the port. These declarations are host
+obligations, not authority grants or evidence that a provider actually met
+them.
+
+Named-do definitions cannot call other named-do definitions in v0.4.8. Compose
+them in the transition action expression instead. This keeps exactly one
+effect contract attached to each physical typed port call and avoids implicit
+contract override or stacking.
+
 ### Procedure entry, native trace and claims
 
 - `procedure P @ context: initial (...)` declares one persistent automaton

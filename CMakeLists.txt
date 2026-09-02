@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(DTESSL_VERSION 0.4.7)
+set(DTESSL_VERSION 0.4.8)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   project(dtessl VERSION ${DTESSL_VERSION} LANGUAGES CXX)
@@ -462,4 +462,17 @@ if(DTESSL_BUILD_TESTS)
                    -DCLI=$<TARGET_FILE:dtessl_cli>
                    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/examples/occurrence_capture.dtessl
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/repl_occurrence_smoke.cmake)
+  add_test(NAME dtessl.named_do_check
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   check
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/named_do.dtessl)
+  set_tests_properties(dtessl.named_do_check PROPERTIES
+                       PASS_REGULAR_EXPRESSION "ok")
+  add_test(NAME dtessl.named_do_trace
+           COMMAND $<TARGET_FILE:dtessl_cli>
+                   trace
+                   ${CMAKE_CURRENT_SOURCE_DIR}/examples/named_do.dtessl
+                   Accepted)
+  set_tests_properties(dtessl.named_do_trace PROPERTIES
+                       PASS_REGULAR_EXPRESSION "do StartTask.*idempotent_by=.*result=consistent_by.*replay=suppress")
 endif()

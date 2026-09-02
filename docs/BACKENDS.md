@@ -115,6 +115,13 @@ declared typed ports and ActionPlans. An external adapter owns raw handles, file
 descriptors, sockets, keys, leases, authorization, execution and physical
 completion. No adapter output is a DTESSL receipt or replay input.
 
+When an ActionCall carries a named-do `EffectContract`, the adapter must either
+preserve its fixed/inherited context, idempotency, result, delivery, ordering,
+retry and replay semantics or reject the plan. The contract does not grant
+authority and is not evidence of compliance. `replay=reinject` means a host may
+submit a previously recorded typed outcome through an explicit later input; it
+never authorizes re-execution during DTESSL replay.
+
 ## Compatibility
 
 - Adding a `LanguageFeature` is additive to the discovery enum but may make an

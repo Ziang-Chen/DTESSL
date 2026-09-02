@@ -1,0 +1,31 @@
+name TaskId
+name OperationId
+
+port worker.start(TaskId, OperationId)
+port audit.accept(TaskId)
+
+do StartTask(task: TaskId, operation: OperationId) @ worker [context=fixed, idempotent_by=(<task, operation>), result=consistent_by(<task, operation>), delivery=at_least_once, ordering=ordered_by(task), retry=safe, replay=suppress]:
+  invoke: $worker.start(task, operation)
+
+do RecordAccepted(task: TaskId) @ audit [context=fixed, delivery=at_most_once, retry=forbidden, replay=suppress]:
+  append: $audit.accept(task)
+
+state Idle @ scheduler initial:
+  accepted: int = 0
+
+state Busy @ scheduler:
+  accepted: int = 0
+
+transition Dispatch @ Submit(task: TaskId, operation: OperationId):
+  <Idle @ scheduler, Busy @ scheduler> + (StartTask(task, operation), RecordAccepted(task)) [label=accept]:
+    set @ scheduler:
+      accepted = before.accepted + 1
+
+procedure SchedulerRun @ local:
+  initial (Idle @ scheduler)
+
+trace Accepted:
+  replay:
+    inject Dispatch(TaskId(task_a), OperationId(operation_1)) @ SchedulerRun -> Dispatch.accept
+  capture closed:
+    transition (Dispatch.accept)

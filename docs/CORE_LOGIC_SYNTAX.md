@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.7` pure state-relation templates and Transition-owned successor construction.
+Status: `v0.4.8` pure state-relation templates, Transition-owned successor construction, and typed named-do contracts.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -218,6 +218,37 @@ before Embedding. There is no existential middle Embedding and no per-factor
 update or action. The Transition constructs exactly one successor and one
 ActionPlan after one complete matcher alternative admits. Without an explicit
 `label`, the stable route identity joins template names with `_and_`.
+
+## Named do and effect contracts
+
+A pure relation decides whether a before Embedding matches. A TransitionRelation
+constructs the after Embedding. A named `do` is the separate reusable mapping
+from one admitted transition witness to a typed ActionPlan:
+
+```dtessl
+do StartTask(task: TaskId, operation: OperationId) @ worker [context=fixed, idempotent_by=(<task, operation>), result=consistent_by(<task, operation>), delivery=at_least_once, ordering=ordered_by(task), retry=safe, replay=suppress]:
+  invoke: $worker.start(task, operation)
+
+transition Dispatch @ Submit(task: TaskId, operation: OperationId):
+  <Idle @ scheduler, Busy @ scheduler> + StartTask(task, operation)
+```
+
+The `+` does not alter relation satisfaction and is evaluated only for the
+selected case. Named-do parameters and port arguments are statically checked.
+Contract key expressions may observe those parameters but cannot observe
+ambient state, `before`, `round`, clocks, randomness or host results. Every
+expanded call records the named-do identity, resolved context and materialized
+typed contract in the ActionPlan. Inline `do:` remains the anonymous form.
+Named-do bodies contain `$port` calls and comma/pipe structure only; named-do
+composition stays at the transition boundary so one physical call never
+silently inherits stacked or conflicting effect contracts.
+
+`context=fixed` requires a declaration `@context` and forbids a body call from
+overriding it. `retry=safe` and `delivery=at_least_once` require
+`idempotent_by`. `result=nondeterministic` requires `replay=reinject`; because
+actions have no result-binding expression, such a value cannot flow into the
+same transition's after Embedding. Reinjection is a host obligation to submit a
+recorded typed input later, not permission to rerun an accepted effect.
 
 ## Optional values
 

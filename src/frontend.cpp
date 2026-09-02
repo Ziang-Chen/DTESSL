@@ -47,7 +47,11 @@ SyntaxClass identifier_syntax(std::string_view text) {
       "projected", "Claim", "always", "eventually", "until", "within",
       "since", "never", "before", "weak_until", "case", "function",
       "procedure", "initial", "inject", "when", "ensure", "trans",
-      "optimized_score"};
+      "optimized_score", "fixed", "inherited", "idempotent_by",
+      "consistent_by", "nondeterministic", "opaque", "delivery",
+      "at_most_once", "at_least_once", "ordering", "ordered_by",
+      "unordered", "retry", "safe", "forbidden", "reconcile", "suppress",
+      "reinject"};
   if (builtin_types.contains(text)) return SyntaxClass::BuiltinType;
   if (keywords.contains(text)) return SyntaxClass::Keyword;
   return SyntaxClass::Identifier;
@@ -520,14 +524,40 @@ struct ActionPortDeclaration {
 };
 
 struct ActionExpr {
-  enum class Kind { Call, Sequence, Parallel };
+  enum class Kind { Call, DoCall, Sequence, Parallel };
   Kind kind{Kind::Call};
+  // Call: local action label + typed port name. DoCall: optional invocation
+  // label + named do definition.
   std::string label;
   std::string function;
   std::vector<ExprPtr> arguments;
   std::string context;
   std::vector<std::shared_ptr<ActionExpr>> children;
 };
+
+struct EffectContractExpr {
+  EffectContextPolicy context{EffectContextPolicy::Inherited};
+  EffectResultPolicy result{EffectResultPolicy::Opaque};
+  EffectDeliveryPolicy delivery{EffectDeliveryPolicy::Unspecified};
+  EffectOrderingPolicy ordering{EffectOrderingPolicy::Unspecified};
+  EffectRetryPolicy retry{EffectRetryPolicy::Unspecified};
+  EffectReplayPolicy replay{EffectReplayPolicy::Suppress};
+  ExprPtr idempotency_key;
+  ExprPtr consistency_key;
+  ExprPtr ordering_key;
+};
+
+struct DoDeclaration {
+  std::string name;
+  std::vector<Parameter> parameters;
+  std::string context;
+  EffectContractExpr contract;
+  std::shared_ptr<ActionExpr> body;
+  std::size_t line{0};
+  std::size_t column{0};
+};
+
+using DoRegistry = std::map<std::string, DoDeclaration, std::less<>>;
 
 struct Assignment {
   std::string field;
@@ -1454,22 +1484,32 @@ class FlatParser {
       return result;
     }
     auto result = std::make_shared<ActionExpr>();
-    result->kind = ActionExpr::Kind::Call;
-    result->label = identifier().text;
-    expect(":");
-    expect("$");
-    result->function = identifier().text;
-    while (match(".")) {
-      result->function += "." + identifier().text;
+    const Token first = identifier();
+    if (match("(")) {
+      result->kind = ActionExpr::Kind::DoCall;
+      result->function = first.text;
+    } else {
+      result->label = first.text;
+      expect(":");
+      if (match("$")) {
+        result->kind = ActionExpr::Kind::Call;
+        result->function = identifier().text;
+        while (match(".")) {
+          result->function += "." + identifier().text;
+        }
+      } else {
+        result->kind = ActionExpr::Kind::DoCall;
+        result->function = identifier().text;
+      }
+      expect("(");
     }
-    expect("(");
     if (!match(")")) {
       do {
         result->arguments.push_back(parse_implication());
       } while (match(","));
       expect(")");
     }
-    if (match("@")) {
+    if (result->kind == ActionExpr::Kind::Call && match("@")) {
       result->context = identifier().text;
       while (match(".")) {
         result->context += "." + identifier().text;
@@ -1711,6 +1751,7 @@ class Parser {
   RelationDeclaration relation_declaration();
   FunctionDeclaration function_declaration();
   ActionPortDeclaration action_port_declaration();
+  DoDeclaration do_declaration();
   ParsedStateDeclaration state();
   Transition transition(bool relation_plan = false);
   TraceDeclaration trace(const std::vector<Transition>& transitions);
@@ -1768,6 +1809,7 @@ struct Program::Impl {
   std::map<std::string, StateRelationTemplate, std::less<>>
       state_relation_templates;
   std::vector<ActionPortDeclaration> action_ports;
+  DoRegistry dos;
   std::vector<State> states;
   std::vector<StateSchema> state_schemas;
   std::vector<Transition> transitions;
@@ -2384,6 +2426,125 @@ ActionPortDeclaration Parser::action_port_declaration() {
     expect(")");
   }
   newline();
+  return result;
+}
+
+DoDeclaration Parser::do_declaration() {
+  const Token start = peek();
+  expect("do");
+  DoDeclaration result;
+  result.line = start.line;
+  result.column = start.column;
+  result.name = identifier();
+  expect("(");
+  if (!match(")")) {
+    do {
+      Parameter parameter;
+      const Token parameter_start = peek();
+      parameter.line = parameter_start.line;
+      parameter.column = parameter_start.column;
+      parameter.name = identifier();
+      expect(":");
+      parameter.type = type();
+      result.parameters.push_back(std::move(parameter));
+    } while (match(","));
+    expect(")");
+  }
+  if (match("@")) {
+    result.context = identifier();
+    while (match(".")) result.context += "." + identifier();
+  }
+
+  const auto contract_expression = [&](const Token& key) {
+    expect("(");
+    std::vector<Token> tokens;
+    std::size_t depth = 1U;
+    while (depth != 0U) {
+      if (at(TokenKind::End) || at(TokenKind::Newline)) {
+        fail(key, "unterminated do contract expression");
+      }
+      Token token = take();
+      if (token.text == "(") ++depth;
+      else if (token.text == ")") --depth;
+      if (depth != 0U) tokens.push_back(std::move(token));
+    }
+    if (tokens.empty()) fail(key, "do contract expression cannot be empty");
+    FlatParser parser(std::move(tokens), types_);
+    ExprPtr expression = parser.expression();
+    parser.expect_end();
+    return expression;
+  };
+
+  std::set<std::string, std::less<>> seen;
+  if (match("[")) {
+    bool first = true;
+    while (!at("]")) {
+      if (!first) expect(",");
+      first = false;
+      const Token key_token = peek();
+      const std::string key = identifier();
+      if (!seen.insert(key).second) {
+        fail(key_token, "do contract repeats '" + key + "'");
+      }
+      expect("=");
+      if (key == "context") {
+        const std::string value = identifier();
+        if (value == "fixed") result.contract.context = EffectContextPolicy::Fixed;
+        else if (value == "inherited") {
+          result.contract.context = EffectContextPolicy::Inherited;
+        } else fail(key_token, "context must be fixed or inherited");
+      } else if (key == "idempotent_by") {
+        result.contract.idempotency_key = contract_expression(key_token);
+      } else if (key == "result") {
+        const std::string value = identifier();
+        if (value == "opaque") {
+          result.contract.result = EffectResultPolicy::Opaque;
+        } else if (value == "nondeterministic") {
+          result.contract.result = EffectResultPolicy::Nondeterministic;
+        } else if (value == "consistent_by") {
+          result.contract.result = EffectResultPolicy::Consistent;
+          result.contract.consistency_key = contract_expression(key_token);
+        } else {
+          fail(key_token,
+               "result must be opaque, nondeterministic, or consistent_by(...)");
+        }
+      } else if (key == "delivery") {
+        const std::string value = identifier();
+        if (value == "at_most_once") {
+          result.contract.delivery = EffectDeliveryPolicy::AtMostOnce;
+        } else if (value == "at_least_once") {
+          result.contract.delivery = EffectDeliveryPolicy::AtLeastOnce;
+        } else fail(key_token, "delivery must be at_most_once or at_least_once");
+      } else if (key == "ordering") {
+        const std::string value = identifier();
+        if (value == "unordered") {
+          result.contract.ordering = EffectOrderingPolicy::Unordered;
+        } else if (value == "ordered_by") {
+          result.contract.ordering = EffectOrderingPolicy::Ordered;
+          result.contract.ordering_key = contract_expression(key_token);
+        } else fail(key_token, "ordering must be unordered or ordered_by(...)");
+      } else if (key == "retry") {
+        const std::string value = identifier();
+        if (value == "forbidden") result.contract.retry = EffectRetryPolicy::Forbidden;
+        else if (value == "safe") result.contract.retry = EffectRetryPolicy::Safe;
+        else if (value == "reconcile") {
+          result.contract.retry = EffectRetryPolicy::Reconcile;
+        } else fail(key_token, "retry must be forbidden, safe, or reconcile");
+      } else if (key == "replay") {
+        const std::string value = identifier();
+        if (value == "suppress") result.contract.replay = EffectReplayPolicy::Suppress;
+        else if (value == "reinject") {
+          result.contract.replay = EffectReplayPolicy::Reinject;
+        } else fail(key_token, "replay must be suppress or reinject");
+      } else {
+        fail(key_token, "unknown do contract property '" + key + "'");
+      }
+    }
+    expect("]");
+    if (first) fail(start, "do contract cannot be empty");
+  }
+  expect(":");
+  result.body = block_action();
   return result;
 }
 
@@ -3518,6 +3679,44 @@ Transition Parser::transition(bool relation_plan) {
     expect("]");
     if (first) fail(peek(), "transition branch extension cannot be empty");
   };
+  const auto relation_branch_do = [&](std::shared_ptr<ActionExpr>& action,
+                                      bool& has_action) {
+    if (!match("+")) return;
+    if (has_action) fail(peek(), "transition branch repeats do");
+    has_action = true;
+    std::vector<Token> tokens;
+    if (match("(")) {
+      std::size_t depth = 1U;
+      while (depth != 0U) {
+        if (at(TokenKind::End) || at(TokenKind::Newline)) {
+          fail(peek(), "unterminated transition + do expression");
+        }
+        Token token = take();
+        if (token.text == "(") ++depth;
+        else if (token.text == ")") --depth;
+        if (depth != 0U) tokens.push_back(std::move(token));
+      }
+    } else {
+      std::size_t depth = 0U;
+      while (!at(TokenKind::Newline) && !at(TokenKind::End)) {
+        if (depth == 0U && (at("[") || at(":"))) break;
+        Token token = take();
+        if (token.text == "(" || token.text == "<" || token.text == "{" ||
+            token.text == "[") {
+          ++depth;
+        } else if (token.text == ")" || token.text == ">" ||
+                   token.text == "}" || token.text == "]") {
+          if (depth == 0U) fail(token, "unbalanced transition + do expression");
+          --depth;
+        }
+        tokens.push_back(std::move(token));
+      }
+      if (depth != 0U) fail(peek(), "unterminated transition + do expression");
+    }
+    if (tokens.empty()) fail(peek(), "transition + requires a named do expression");
+    FlatParser parser(std::move(tokens), types_);
+    action = parser.action();
+  };
   const auto route_body = [&](std::vector<TransitionTarget>& targets,
                               ExprPtr& condition,
                               std::shared_ptr<ActionExpr>& action,
@@ -3757,6 +3956,7 @@ Transition Parser::transition(bool relation_plan) {
       TemporalExprPtr obligation;
       bool has_where = false;
       bool has_action = false;
+      relation_branch_do(action, has_action);
       relation_branch_extensions(explicit_label, condition, action, has_where,
                                  has_action);
       if (match(":")) {
@@ -3805,6 +4005,7 @@ Transition Parser::transition(bool relation_plan) {
         TemporalExprPtr obligation;
         bool has_where = false;
         bool has_action = false;
+        relation_branch_do(action, has_action);
         relation_branch_extensions(label, condition, action, has_where,
                                    has_action);
         if (match(":")) {
@@ -5205,6 +5406,11 @@ std::shared_ptr<Program::Impl> Parser::program() {
       types_.emplace(definition.name, std::move(definition));
     } else if (at("port")) {
       result->action_ports.push_back(action_port_declaration());
+    } else if (at("do")) {
+      DoDeclaration declaration = do_declaration();
+      if (!result->dos.emplace(declaration.name, std::move(declaration)).second) {
+        fail(peek(), "duplicate do declaration");
+      }
     } else if (at("function")) {
       FunctionDeclaration function = function_declaration();
       if (!result->functions.emplace(function.name, std::move(function)).second) {
@@ -5284,7 +5490,7 @@ std::shared_ptr<Program::Impl> Parser::program() {
     } else if (at("Claim")) {
       result->claims.push_back(claim());
     } else {
-      fail(peek(), "expected type, name, relation, port, function, state, trans, transition, procedure, trace, or Claim declaration");
+      fail(peek(), "expected type, name, relation, port, do, function, state, trans, transition, procedure, trace, or Claim declaration");
     }
   }
   lower_compact(*result, compact_states, compact_transitions, compact_procedures,
@@ -6233,18 +6439,62 @@ DataType infer_type(const ExprPtr& expr, const TypeEnvironment& state,
   }
 }
 
-void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironment& state,
-                   const TypeEnvironment& event, std::unordered_set<std::string>& labels,
-                   const TypeRegistry& types, const ActionPortRegistry& ports) {
+void verify_action(const std::shared_ptr<ActionExpr>& action,
+                   const TypeEnvironment& state,
+                   const TypeEnvironment& event,
+                   const TypeEnvironment& locals,
+                   std::unordered_set<std::string>& labels,
+                   const TypeRegistry& types,
+                   const ActionPortRegistry& ports,
+                   const DoRegistry& dos,
+                   std::string label_prefix = {},
+                   std::string inherited_context = {},
+                   bool fixed_context = false,
+                   std::set<std::string, std::less<>> expansion = {}) {
   if (!action) return;
+  if (action->kind == ActionExpr::Kind::DoCall) {
+    const auto found = dos.find(action->function);
+    if (found == dos.end()) {
+      throw Error("action invokes unknown named do '" + action->function + "'");
+    }
+    const DoDeclaration& declaration = found->second;
+    if (declaration.parameters.size() != action->arguments.size()) {
+      throw Error("arguments do not match named do '" + action->function + "'");
+    }
+    for (std::size_t index = 0; index < action->arguments.size(); ++index) {
+      if (infer_type(action->arguments[index], state, event, locals, types) !=
+          declaration.parameters[index].type) {
+        throw Error("arguments do not match named do '" + action->function + "'");
+      }
+    }
+    if (!expansion.insert(declaration.name).second) {
+      throw Error("recursive named do cycle contains '" + declaration.name + "'");
+    }
+    TypeEnvironment parameters;
+    for (const Parameter& parameter : declaration.parameters) {
+      parameters.emplace(parameter.name, parameter.type);
+    }
+    const std::string invocation = action->label.empty()
+        ? declaration.name : action->label;
+    const std::string prefix = label_prefix.empty()
+        ? invocation : label_prefix + "." + invocation;
+    verify_action(declaration.body, {}, {}, parameters, labels, types, ports, dos,
+                  prefix, declaration.context,
+                  declaration.contract.context == EffectContextPolicy::Fixed,
+                  std::move(expansion));
+    return;
+  }
   if (action->kind != ActionExpr::Kind::Call) {
     for (const auto& child : action->children) {
-      verify_action(child, state, event, labels, types, ports);
+      verify_action(child, state, event, locals, labels, types, ports, dos,
+                    label_prefix, inherited_context, fixed_context, expansion);
     }
     return;
   }
-  if (!labels.insert(action->label).second) {
-    throw Error("duplicate action label '" + action->label + "'");
+  const std::string label = label_prefix.empty()
+      ? action->label : label_prefix + "." + action->label;
+  if (!labels.insert(label).second) {
+    throw Error("duplicate action label '" + label + "'");
   }
   if (!ports.empty()) {
     const auto found = ports.find(action->function);
@@ -6262,21 +6512,31 @@ void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironm
           throw Error("empty option [] requires an expected [T] type");
         }
         argument->resolved_type = expected;
-      } else if (infer_type(argument, state, event, {}, types) != expected) {
+      } else if (infer_type(argument, state, event, locals, types) != expected) {
         throw Error("action arguments do not match typed port '" + action->function + "'");
       }
     }
   } else {
     for (const ExprPtr& argument : action->arguments) {
-      (void)infer_type(argument, state, event, {}, types);
+      (void)infer_type(argument, state, event, locals, types);
     }
   }
-  if (const auto parameter = event.find(action->context);
+  const std::string& context = action->context.empty()
+      ? inherited_context : action->context;
+  if (fixed_context && !action->context.empty() &&
+      action->context != inherited_context) {
+    throw Error("fixed named do context cannot be overridden by a port call");
+  }
+  if (const auto parameter = event.find(context);
       parameter != event.end() && parameter->second.kind != DataType::Kind::String) {
     throw Error("action context event field must be string");
   }
-  if (action->context.starts_with("before.")) {
-    const std::string field = action->context.substr(action->context.find('.') + 1);
+  if (const auto parameter = locals.find(context);
+      parameter != locals.end() && parameter->second.kind != DataType::Kind::String) {
+    throw Error("action context parameter must be string");
+  }
+  if (context.starts_with("before.")) {
+    const std::string field = context.substr(context.find('.') + 1);
     const auto found = state.find(field);
     if (found == state.end()) throw Error("unknown context field '" + field + "'");
     if (found->second.kind != DataType::Kind::String) {
@@ -6484,6 +6744,12 @@ void collect_action_reads(const std::shared_ptr<ActionExpr>& action,
                           const std::set<std::string, std::less<>>& shadowed,
                           std::set<std::string, std::less<>>& reads) {
   if (!action) return;
+  if (action->kind == ActionExpr::Kind::DoCall) {
+    for (const ExprPtr& argument : action->arguments) {
+      collect_reads(argument, state, shadowed, reads);
+    }
+    return;
+  }
   if (action->kind != ActionExpr::Kind::Call) {
     for (const auto& child : action->children) {
       collect_action_reads(child, state, shadowed, reads);
@@ -6685,6 +6951,72 @@ void verify_program(Program::Impl& program) {
     if (!action_ports.emplace(port.name, port.parameters).second) {
       throw Error("duplicate typed action port '" + port.name + "'", port.line, port.column);
     }
+  }
+  for (const auto& [name, declaration] : program.dos) {
+    if (program.types.contains(name) || program.functions.contains(name) ||
+        program.relations.contains(name) || action_ports.contains(name)) {
+      throw Error("do name '" + name + "' conflicts with another declaration",
+                  declaration.line, declaration.column);
+    }
+    TypeEnvironment parameters;
+    for (const Parameter& parameter : declaration.parameters) {
+      if (!parameters.emplace(parameter.name, parameter.type).second) {
+        throw Error("duplicate do parameter '" + parameter.name + "'",
+                    parameter.line, parameter.column);
+      }
+    }
+    std::function<void(const std::shared_ptr<ActionExpr>&)> reject_nested_do =
+        [&](const std::shared_ptr<ActionExpr>& action) {
+          if (!action) return;
+          if (action->kind == ActionExpr::Kind::DoCall) {
+            throw Error("named do body cannot invoke another named do; compose "
+                        "them at the transition boundary",
+                        declaration.line, declaration.column);
+          }
+          for (const ExprPtr& argument : action->arguments) {
+            std::set<std::string, std::less<>> calls;
+            inspect_function_body(argument, program.functions,
+                                  program.relations, calls);
+          }
+          for (const auto& child : action->children) reject_nested_do(child);
+        };
+    reject_nested_do(declaration.body);
+    if (declaration.contract.context == EffectContextPolicy::Fixed &&
+        declaration.context.empty()) {
+      throw Error("fixed do contract requires an explicit @ context",
+                  declaration.line, declaration.column);
+    }
+    if (declaration.contract.result == EffectResultPolicy::Nondeterministic &&
+        declaration.contract.replay != EffectReplayPolicy::Reinject) {
+      throw Error("nondeterministic do result requires replay=reinject",
+                  declaration.line, declaration.column);
+    }
+    if (declaration.contract.replay == EffectReplayPolicy::Reinject &&
+        declaration.contract.result != EffectResultPolicy::Nondeterministic) {
+      throw Error("replay=reinject is reserved for nondeterministic typed results",
+                  declaration.line, declaration.column);
+    }
+    if ((declaration.contract.retry == EffectRetryPolicy::Safe ||
+         declaration.contract.delivery == EffectDeliveryPolicy::AtLeastOnce) &&
+        !declaration.contract.idempotency_key) {
+      throw Error("retry=safe and delivery=at_least_once require idempotent_by",
+                  declaration.line, declaration.column);
+    }
+    const auto verify_key = [&](const ExprPtr& key) {
+      if (!key) return;
+      std::set<std::string, std::less<>> calls;
+      inspect_function_body(key, program.functions, program.relations, calls);
+      (void)infer_type(key, {}, {}, parameters, program.types);
+    };
+    verify_key(declaration.contract.idempotency_key);
+    verify_key(declaration.contract.consistency_key);
+    verify_key(declaration.contract.ordering_key);
+    std::unordered_set<std::string> labels;
+    verify_action(declaration.body, {}, {}, parameters, labels, program.types,
+                  action_ports, program.dos, declaration.name,
+                  declaration.context,
+                  declaration.contract.context == EffectContextPolicy::Fixed,
+                  {declaration.name});
   }
   std::map<std::string, std::size_t, std::less<>> states_per_context;
   std::map<std::string, std::size_t, std::less<>> initials_per_context;
@@ -7254,8 +7586,8 @@ void verify_program(Program::Impl& program) {
       const TypeEnvironment local_types = route_state_types(route);
       std::unordered_set<std::string> labels;
       try {
-        verify_action(*route.action, local_types, event_types, labels, program.types,
-                      action_ports);
+        verify_action(*route.action, local_types, event_types, {}, labels,
+                      program.types, action_ports, program.dos);
       } catch (const Error& error) {
         if (error.line() != 0) throw;
         throw Error(error.what(), transition.line, transition.column);
@@ -8489,17 +8821,75 @@ std::string resolve_context(const std::string& context, const Environment& envir
 
 Fragment build_plan(const std::shared_ptr<ActionExpr>& action, Environment& environment,
                     const State& state, ActionPlan& plan,
-                    std::unordered_set<std::string>& labels) {
+                    std::unordered_set<std::string>& labels,
+                    const DoRegistry& dos,
+                    std::string label_prefix = {},
+                    std::string inherited_context = {},
+                    const DoDeclaration* active_do = nullptr,
+                    std::set<std::string, std::less<>> expansion = {}) {
+  if (action->kind == ActionExpr::Kind::DoCall) {
+    const auto found = dos.find(action->function);
+    if (found == dos.end()) {
+      throw Error("action invokes unknown named do '" + action->function + "'");
+    }
+    const DoDeclaration& declaration = found->second;
+    if (!expansion.insert(declaration.name).second) {
+      throw Error("recursive named do cycle contains '" + declaration.name + "'");
+    }
+    if (declaration.parameters.size() != action->arguments.size()) {
+      throw Error("arguments do not match named do '" + action->function + "'");
+    }
+    std::map<std::string, Value, std::less<>> locals;
+    for (std::size_t index = 0; index < action->arguments.size(); ++index) {
+      locals.emplace(declaration.parameters[index].name,
+                     evaluate(action->arguments[index], environment));
+    }
+    Environment inner(environment.state, environment.event, std::move(locals),
+                      environment.round, environment.before_state,
+                      declaration.context);
+    const std::string invocation = action->label.empty()
+        ? declaration.name : action->label;
+    const std::string prefix = label_prefix.empty()
+        ? invocation : label_prefix + "." + invocation;
+    return build_plan(declaration.body, inner, state, plan, labels, dos,
+                      prefix, declaration.context, &declaration,
+                      std::move(expansion));
+  }
   if (action->kind == ActionExpr::Kind::Call) {
-    if (!labels.insert(action->label).second) {
-      throw Error("duplicate action label '" + action->label + "'");
+    const std::string label = label_prefix.empty()
+        ? action->label : label_prefix + "." + action->label;
+    if (!labels.insert(label).second) {
+      throw Error("duplicate action label '" + label + "'");
     }
     ActionCall call;
-    call.label = action->label;
+    call.label = label;
     call.function = action->function;
-    call.context = resolve_context(action->context, environment, state);
+    call.context = resolve_context(action->context.empty()
+                                       ? inherited_context : action->context,
+                                   environment, state);
     for (const ExprPtr& argument : action->arguments) {
       call.arguments.push_back(evaluate(argument, environment));
+    }
+    if (active_do != nullptr) {
+      call.effect = active_do->name;
+      call.contract.context = active_do->contract.context;
+      call.contract.result = active_do->contract.result;
+      call.contract.delivery = active_do->contract.delivery;
+      call.contract.ordering = active_do->contract.ordering;
+      call.contract.retry = active_do->contract.retry;
+      call.contract.replay = active_do->contract.replay;
+      if (active_do->contract.idempotency_key) {
+        call.contract.idempotency_key =
+            evaluate(active_do->contract.idempotency_key, environment);
+      }
+      if (active_do->contract.consistency_key) {
+        call.contract.consistency_key =
+            evaluate(active_do->contract.consistency_key, environment);
+      }
+      if (active_do->contract.ordering_key) {
+        call.contract.ordering_key =
+            evaluate(active_do->contract.ordering_key, environment);
+      }
     }
     const std::size_t index = plan.calls.size();
     plan.calls.push_back(std::move(call));
@@ -8510,16 +8900,22 @@ Fragment build_plan(const std::shared_ptr<ActionExpr>& action, Environment& envi
   if (action->kind == ActionExpr::Kind::Parallel) {
     Fragment result;
     for (const auto& child : action->children) {
-      Fragment fragment = build_plan(child, environment, state, plan, labels);
+      Fragment fragment = build_plan(child, environment, state, plan, labels,
+                                     dos, label_prefix, inherited_context,
+                                     active_do, expansion);
       result.entries.insert(result.entries.end(), fragment.entries.begin(), fragment.entries.end());
       result.exits.insert(result.exits.end(), fragment.exits.begin(), fragment.exits.end());
     }
     return result;
   }
 
-  Fragment result = build_plan(action->children.front(), environment, state, plan, labels);
+  Fragment result = build_plan(action->children.front(), environment, state,
+                               plan, labels, dos, label_prefix,
+                               inherited_context, active_do, expansion);
   for (std::size_t index = 1; index < action->children.size(); ++index) {
-    Fragment next = build_plan(action->children[index], environment, state, plan, labels);
+    Fragment next = build_plan(action->children[index], environment, state,
+                               plan, labels, dos, label_prefix,
+                               inherited_context, active_do, expansion);
     for (const std::size_t before : result.exits) {
       for (const std::size_t after : next.entries) {
         plan.dependencies.emplace_back(before, after);
@@ -8928,6 +9324,61 @@ std::string value_text(const Value& value) {
   throw Error("invalid value kind");
 }
 
+std::string effect_contract_text(const EffectContract& contract) {
+  std::vector<std::string> fields;
+  fields.push_back(std::string("context=") +
+                   (contract.context == EffectContextPolicy::Fixed
+                        ? "fixed" : "inherited"));
+  if (contract.idempotency_key) {
+    fields.push_back("idempotent_by=" + value_text(*contract.idempotency_key));
+  }
+  switch (contract.result) {
+    case EffectResultPolicy::Opaque: fields.push_back("result=opaque"); break;
+    case EffectResultPolicy::Consistent:
+      fields.push_back(contract.consistency_key
+                           ? "result=consistent_by(" +
+                                 value_text(*contract.consistency_key) + ")"
+                           : "result=consistent_by(<missing>)");
+      break;
+    case EffectResultPolicy::Nondeterministic:
+      fields.push_back("result=nondeterministic");
+      break;
+  }
+  switch (contract.delivery) {
+    case EffectDeliveryPolicy::Unspecified: break;
+    case EffectDeliveryPolicy::AtMostOnce:
+      fields.push_back("delivery=at_most_once"); break;
+    case EffectDeliveryPolicy::AtLeastOnce:
+      fields.push_back("delivery=at_least_once"); break;
+  }
+  switch (contract.ordering) {
+    case EffectOrderingPolicy::Unspecified: break;
+    case EffectOrderingPolicy::Unordered:
+      fields.push_back("ordering=unordered"); break;
+    case EffectOrderingPolicy::Ordered:
+      fields.push_back(contract.ordering_key
+                           ? "ordering=ordered_by(" +
+                                 value_text(*contract.ordering_key) + ")"
+                           : "ordering=ordered_by(<missing>)");
+      break;
+  }
+  switch (contract.retry) {
+    case EffectRetryPolicy::Unspecified: break;
+    case EffectRetryPolicy::Forbidden: fields.push_back("retry=forbidden"); break;
+    case EffectRetryPolicy::Safe: fields.push_back("retry=safe"); break;
+    case EffectRetryPolicy::Reconcile: fields.push_back("retry=reconcile"); break;
+  }
+  fields.push_back(std::string("replay=") +
+                   (contract.replay == EffectReplayPolicy::Suppress
+                        ? "suppress" : "reinject"));
+  std::string result = "[";
+  for (std::size_t index = 0; index < fields.size(); ++index) {
+    if (index != 0) result += ", ";
+    result += fields[index];
+  }
+  return result + "]";
+}
+
 std::string result_text(const StepResult& result) {
   std::ostringstream out;
   out << "round " << result.round << '\n';
@@ -9021,6 +9472,9 @@ std::string result_text(const StepResult& result) {
     }
     out << ")";
     if (!call.context.empty()) out << " @ " << call.context;
+    if (!call.effect.empty()) {
+      out << " do " << call.effect << " " << effect_contract_text(call.contract);
+    }
     out << '\n';
   }
   out << "}\n";
