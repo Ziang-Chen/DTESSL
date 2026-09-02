@@ -240,6 +240,26 @@ FeatureSet required_features(const Program& program) {
       collect_features(clause.expression, result);
     }
   }
+  if (!implementation.transition_relations.empty()) {
+    result.insert(LanguageFeature::TransitionRelations);
+    for (const auto& [name, relation] : implementation.transition_relations) {
+      static_cast<void>(name);
+      collect_features(relation.condition, result);
+      for (const TransitionTarget& target : relation.to) {
+        for (const Assignment& assignment : target.assignments) {
+          collect_features(assignment.value, result);
+        }
+      }
+      for (const TransitionAlternative& alternative : relation.alternatives) {
+        collect_features(alternative.condition, result);
+        for (const TransitionTarget& target : alternative.to) {
+          for (const Assignment& assignment : target.assignments) {
+            collect_features(assignment.value, result);
+          }
+        }
+      }
+    }
+  }
   for (const Transition& transition : implementation.transitions) {
     if (transition.relation_surface) {
       result.insert(LanguageFeature::TransitionRelations);
@@ -333,6 +353,16 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
     collect_search_plans(relation.derived_expression, plans);
     for (const ComprehensionClause& clause : relation.clauses) {
       collect_search_plans(clause.expression, plans);
+    }
+  }
+  for (const auto& [name, relation] : implementation.transition_relations) {
+    static_cast<void>(name);
+    plans.push_back({"named-transition-relation",
+                     1U + relation.alternatives.size(),
+                     1U + relation.alternatives.size(), true, false});
+    collect_search_plans(relation.condition, plans);
+    for (const TransitionAlternative& alternative : relation.alternatives) {
+      collect_search_plans(alternative.condition, plans);
     }
   }
   for (const Transition& transition : implementation.transitions) {

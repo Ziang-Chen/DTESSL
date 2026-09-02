@@ -3,6 +3,22 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.5
+
+- Add optional lexical `@context` to typed relation rules and derived plans.
+  Unqualified state reads resolve within that context without creating
+  authority or ambient mutable capture.
+- Keep both compact rule projections as equal permanent syntax:
+  `relation Name<x: T>: ...;` and `relation <x: T> ~ Name: ...;`.
+- Add pure named Embedding before/after relations using the existing
+  `<before-set,after-set>` route AST. Pure relations may contain `where` and
+  logical successor `set`, but cannot own `do` or `ensure`.
+- Add transition composition from named relations: `R1 | R2` is relation
+  union, and `(R2 + do(...))` attaches typed ActionPlan lowering at the
+  executable transition boundary.
+- Preserve named relation identity in selected transition paths, search-plan
+  metadata, trace/replay, contextual read sets and backend feature discovery.
+
 ## v0.4.4
 
 - Add canonical TransitionRelation branches as

@@ -4,6 +4,22 @@
 
 using CollectionVisitor = std::function<bool(const Value&)>;
 
+class RelationContextScope {
+ public:
+  RelationContextScope(Environment& environment,
+                       const RelationDeclaration& declaration)
+      : environment_(environment), previous_(environment.lexical_context) {
+    if (!declaration.context.empty()) {
+      environment_.lexical_context = declaration.context;
+    }
+  }
+  ~RelationContextScope() { environment_.lexical_context = std::move(previous_); }
+
+ private:
+  Environment& environment_;
+  std::string previous_;
+};
+
 bool relation_row_less(const ValueTuple& left, const ValueTuple& right) {
   for (std::size_t index = 0; index < left.fields.size(); ++index) {
     const int order = canonical_compare(left.fields[index], right.fields[index]);
@@ -234,6 +250,7 @@ Value materialize_relation(const RelationDeclaration& declaration,
 
 bool relation_membership(const RelationDeclaration& declaration,
                          const Value& subject, Environment& environment) {
+  RelationContextScope context_scope(environment, declaration);
   if (declaration.derived_expression) {
     const Value relation = materialize_relation(declaration, environment);
     const ValueTuple target = declaration.type.direct_relation_row
@@ -380,6 +397,7 @@ bool visit_comprehension(const ExprPtr& expression, Environment& environment,
 
 Value materialize_relation(const RelationDeclaration& declaration,
                            Environment& environment) {
+  RelationContextScope context_scope(environment, declaration);
   if (declaration.derived_expression) {
     return evaluate(declaration.derived_expression, environment);
   }

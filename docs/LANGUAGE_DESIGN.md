@@ -186,6 +186,9 @@ capture or replay. Newlines before `;` are rejected.
 - `state`: typed state space, initial data, derived views and invariants.
 - `transition`: event-conditioned relation from source state set to target state
   set.
+- `relation`: a pure typed RelationPlan. Rule relations admit both equal
+  name-first and tuple-first compact projections; a pure named before/after
+  relation can be reused by transitions but cannot own `do` or `ensure`.
 - `from` / `to`: source and target state patterns. `goto` is not used.
 - `where`: eligibility and finite relational search. A closed `where` expression
   is the LTS guard; `guard` is therefore a compiler term, not another surface
@@ -447,8 +450,9 @@ in the runtime:
   explicit history-state operators and dynamically created instance sets.
 - Shared mutable state has no declared consistency/merge profile beyond the
   current equal/union merge rules.
-- Transition now has a first-class before/after relation branch surface and
-  union. Named `compose/product/project/hide/rename/refine` operators over
+- Transition now has a first-class before/after relation branch surface,
+  named pure relation reuse, `|` union, and use-site `+ do(...)` lowering.
+  Named `compose/product/project/hide/rename/refine` operators over
   whole TransitionRelation families remain absent; they must preserve trigger,
   binding and ActionPlan-lowering provenance rather than treating an effectful
   branch as an ordinary finite RelationValue.

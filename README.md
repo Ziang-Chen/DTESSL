@@ -1,4 +1,4 @@
-# DTESSL v0.4.4
+# DTESSL v0.4.5
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -320,13 +320,20 @@ comprehension-branch = Name ":" comprehension-clause
                      | expression ":" comprehension-clause
                          { "," comprehension-clause } ;
 relation-declaration = "relation" Name "(" parameter { "," parameter } ")"
+                         [ "@" Name ]
                          ":" INDENT comprehension-clause
                          { "," comprehension-clause } DEDENT
-                     | "relation" "<" parameter { "," parameter } ">"
-                         "~" Name ":" comprehension-clause
+                     | "relation" Name "<" parameter { "," parameter } ">"
+                         [ "@" Name ] ":" comprehension-clause
                          { "," comprehension-clause } ";"
-                     | "relation" Name ":" relation-type
+                     | "relation" "<" parameter { "," parameter } ">"
+                         "~" Name [ "@" Name ] ":" comprehension-clause
+                         { "," comprehension-clause } ";"
+                     | "relation" Name [ "@" Name ] ":" relation-type
                          "=" expression ;
+state-relation = "relation" Name [ "@" Name ] ":" INDENT
+                   transition-relation-branch
+                   { "|" transition-relation-branch } DEDENT ;
 match-expression = "match" name "{"
                      pattern "->" expression
                      { "," pattern "->" expression }
@@ -372,6 +379,28 @@ Embedding 配置，`|` 是 relation branch 的并集。`[label=...]` 给分支�
 compact `[where=(...), do=(...)]` 和块式 `where/set/do/ensure` 降到同一个
 Transition branch AST。关系只决定 successor；`do` 是选中唯一 witness 后的
 `<before,after,bindings> -> ActionPlan` lowering，不参与关系真假。
+
+关系规则的 name-first 与 tuple-first 紧凑写法永久并行：
+
+```dtessl
+relation Eligible<w: Worker, t: Task> @ scheduler: w in workers, t in waiting;
+relation <w: Worker, t: Task> ~ EligibleTuple @ scheduler: w in workers, t in waiting;
+```
+
+两者进入同一个 typed AST；`@scheduler` 只把 `workers` 等裸字段名解析到
+`scheduler.workers`，不代表 authority 或实例所有权。before/after 关系也可纯命名，
+再由 transition 组合：
+
+```dtessl
+relation Admit @ scheduler:
+  <Idle @ scheduler, Busy @ scheduler> [where=(credits > 0)]
+
+transition Dispatch:
+  Admit | (Release + do(released: $audit.emit("released") @ scheduler))
+```
+
+`Admit | Release` 是关系并集；`+ do(...)` 才把 ActionPlan 附着到该可执行分支。
+命名 relation 本体允许 `where/set`，但拒绝 `do/ensure`。
 
 `ensure:` 与 `where:` 不同：`where` 只看当前 Embedding 并决定边是否可用；
 `ensure` 在边发生后的 successor 上激活时序 obligation，由 finite Trace monitor 或
@@ -610,7 +639,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.4 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.5 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

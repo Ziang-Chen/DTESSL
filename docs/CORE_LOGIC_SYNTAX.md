@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.4` typed RelationValue, RelationPlan and TransitionRelation surface.
+Status: `v0.4.5` contextual RelationPlan and named TransitionRelation composition.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -101,6 +101,22 @@ relation Edge(a: Node, b: Node):
 relation Reachable: relation <Node, Node> = closure(Edge)
 ```
 
+Compact rules have two equal, permanent source projections:
+
+```dtessl
+relation Eligible<worker: Worker, task: Task> @ scheduler:
+  worker in workers, task in waiting, worker.capacity >= task.cost;
+
+relation <worker: Worker, task: Task> ~ EligibleTuple @ scheduler:
+  worker in workers, task in waiting, worker.capacity >= task.cost;
+```
+
+Both lower to the same typed `RelationDeclaration`. `@scheduler` is a lexical
+state-value scope, so `workers` means `scheduler.workers`; it does not grant
+authority, select a runtime object, or capture mutable storage. Parameter types
+remain mandatory because a relation rule must have a stable domain even when
+it is only decidable and cannot be enumerated.
+
 The first is a membership predicate that may be decidable without being
 enumerable. The second is an explicitly typed, enumerable algebra plan. Both
 have stable names and one dependency DAG, but neither is a mutable global table.
@@ -153,6 +169,28 @@ unique executable witness is selected. It never changes relation
 satisfaction. `[label=...]`, `[where=(...)]`, and `[do=(...)]` are compact
 branch extensions; their block forms use the same verifier, runtime, Solver,
 trace identity and replay path.
+
+A pure before/after relation may also be named and reused:
+
+```dtessl
+relation Admit @ scheduler:
+  <{Idle @ worker, Open @ session},
+   {Busy @ worker, Closed @ session}> [where=(credits > 0)]
+
+relation Release @ scheduler:
+  <{Busy @ worker, Closed @ session},
+   {Idle @ worker, Open @ session}>
+
+transition Dispatch:
+  Admit | (Release + do(released: $audit.emit("released") @ worker))
+```
+
+Here `Admit | Release` is union of pure binary Embedding relations.
+`Release + do(...)` constructs a `TransitionBranch{RelationPlan, ActionPlan}`;
+the action is attached only at the executable transition use site. A named
+relation is rejected if it contains `do` or `ensure`, so relation satisfaction
+cannot depend on an effect or a monitor result. `set` remains legal because it
+defines the logical after-Embedding rather than performing a physical effect.
 
 ## Optional values
 

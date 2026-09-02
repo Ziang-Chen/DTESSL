@@ -5,7 +5,7 @@ acceptance slice, not merely a calendar label.
 
 Released foundation: `v0.0.1`, `v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.1.1`,
 `v0.1.2`, `v0.1.3`, `v0.2.0`, `v0.2.1`. Current integration candidate:
-`v0.2.3`; current TransitionRelation candidate: `v0.4.4`.
+`v0.2.3`; current named TransitionRelation candidate: `v0.4.5`.
 
 ## Permanent architecture invariant — 2026-08-28
 
@@ -59,6 +59,7 @@ ordered workflow steps. Static topology and dynamic `where` remain distinct.
 | `v0.4.2` | Lazy typed relations and pattern containers | General/compact rule relation declarations, lazy set/relation comprehensions, all finite relation algebra over declared plans, canonical `<...>` tuple/pattern/update containers, composite runtime relation filters, compact pattern/update transition lowering, typed-class application sugar, and separated private AST/relation-semantics files |
 | `v0.4.3` | Derived/higher-order relation closure | Typed named derived RelationPlans with dependency DAGs, domain/range/product/identity/image/preimage/reflexive closure, standard finite relation properties, `Claim @ relation`, canonical nested RelationValues and explicit RelationValue/RelationPlan boundary |
 | `v0.4.4` | TransitionRelation surface | Canonical `<before-set,after-set>` branches, `|` union, branch label/where/do extensions, shared case/runtime/Solver/trace/ActionPlan lowering and canonical ordered Product spelling for relation types and trace relations |
+| `v0.4.5` | Named contextual relation composition | Equal name-first and tuple-first compact relation rules, lexical `@context`, pure named Embedding before/after relations, and transition union with explicit `+ do(...)` ActionPlan attachment |
 | `v0.5.0` | Typed action and scheduler model | Canonical call DAG, typed port registry, `requires` relation, deterministic scheduler queries and backend-neutral ActionPlan API without physical receipt ingestion |
 | `v0.6.0` | Context and Binding | Package/namespace, immutable shared values, first-class Binding skeleton and typed derived bindings, stale generation/fencing tests |
 | `v0.7.0` | Monitor automata and assurance | Compile existing claims/invariants to monitor automata, trace redaction, evidence metadata and refinement-oriented statuses |

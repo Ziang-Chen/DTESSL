@@ -249,6 +249,7 @@ ParallelStepResult Engine::step_inputs_at(
       const std::shared_ptr<ActionExpr>* action;
       const std::set<std::string, std::less<>>* reads;
       const std::set<std::string, std::less<>>* writes;
+      const std::string* lexical_context;
     };
     std::vector<Enabled> enabled;
     std::vector<std::size_t> candidate_indices;
@@ -272,18 +273,21 @@ ParallelStepResult Engine::step_inputs_at(
         const std::shared_ptr<ActionExpr>* action;
         const std::set<std::string, std::less<>>* reads;
         const std::set<std::string, std::less<>>* writes;
+        const std::string* lexical_context;
       };
       const auto route_at = [&](RouteId route_id) {
         if (route_id == 0U) {
           return Route{&transition.from, &transition.case_name, &transition.to,
                        &transition.condition, &transition.action,
-                       &transition.reads, &transition.writes};
+                       &transition.reads, &transition.writes,
+                       &transition.route_context};
         }
         const TransitionAlternative& alternative =
             transition.alternatives.at(route_id - 1U);
         return Route{&alternative.from, &alternative.name, &alternative.to,
                      &alternative.condition, &alternative.action,
-                     &alternative.reads, &alternative.writes};
+                     &alternative.reads, &alternative.writes,
+                     &alternative.lexical_context};
       };
       validate_event(transition, event, program.types);
       std::vector<RouteId> candidate_routes;
@@ -334,7 +338,8 @@ ParallelStepResult Engine::step_inputs_at(
       }
       for (const RouteId route_index : candidate_routes) {
         const Route route = route_at(route_index);
-        Environment environment{values_, &event, {}, round_id - 1U};
+        Environment environment{values_, &event, {}, round_id - 1U, nullptr,
+                                *route.lexical_context};
         const std::string path = transition.name +
             (route.case_name->empty() ? "" : "." + *route.case_name);
         const PropertyDecision decision = evaluate_instant_property(
@@ -344,7 +349,8 @@ ParallelStepResult Engine::step_inputs_at(
         if (decision.disposition == PropertyDisposition::Admit) {
           enabled.push_back(Enabled{&transition, route.case_name, route.from, route.to,
                                     route.condition, route.action,
-                                    route.reads, route.writes});
+                                    route.reads, route.writes,
+                                    route.lexical_context});
         } else if (decision.disposition != PropertyDisposition::Disable) {
           throw Error("invalid transition guard Property disposition");
         }
@@ -357,7 +363,8 @@ ParallelStepResult Engine::step_inputs_at(
     const auto prepare = [&](const Enabled& candidate) {
       const Transition& transition = *candidate.transition;
       const State& source = find_state(program, candidate.from->front().state);
-      Environment environment{values_, &event, {}, round_id - 1U};
+      Environment environment{values_, &event, {}, round_id - 1U, nullptr,
+                              *candidate.lexical_context};
       Prepared decision{&transition, candidate.case_name, candidate.from, candidate.to,
                         candidate.reads, candidate.writes, {}, {}, {}, {}, {}, {}, {}, {}};
       decision.input.kind = injected_transition.empty()

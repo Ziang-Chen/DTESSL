@@ -304,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.4", "compiled version must be v0.4.4");
+  require(dtessl::version == "0.4.5", "compiled version must be v0.4.5");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1531,6 +1531,87 @@ transition Move:
       relation_transition_engine.step_transition({"Move", {}});
   require(case_transition_result == relation_transition_result,
           "relation and case transition surfaces did not lower identically");
+
+  constexpr std::string_view named_relation_transition_surface = R"DTESSL(
+port audit.emit(int)
+
+state A @ lane initial:
+  value: int = 0
+
+state B @ lane:
+  value: int = 0
+
+relation MoveRelation @ lane:
+  <A @ lane, B @ lane>:
+    set @ lane:
+      value = before.value + 1
+
+transition Move:
+  (MoveRelation + do(emitted: $audit.emit(1) @ lane))
+)DTESSL";
+  dtessl::Engine named_relation_transition_engine(
+      dtessl::parse(named_relation_transition_surface));
+  const dtessl::StepResult named_relation_transition_result =
+      named_relation_transition_engine.step_transition({"Move", {}});
+  require(named_relation_transition_result.active_states.at("lane") == "B" &&
+              named_relation_transition_result.state.at("value").as_int() == 1 &&
+              named_relation_transition_result.actions.calls.size() == 1U &&
+              named_relation_transition_result.transition == "Move.MoveRelation",
+          "named relation union or + do ActionPlan attachment is wrong");
+
+  constexpr std::string_view contextual_compact_relation_surface = R"DTESSL(
+state Model @ model initial:
+  values: set<int> = {1, 2}
+  accepted: bool = false
+
+state Noise @ noise initial:
+  values: set<int> = {9}
+
+relation Positive<x: int> @ model: x in values, x > 0;
+relation <x: int> ~ PositiveTuple @ model: x in values, x > 0;
+
+transition Check:
+  <Model @ model, Model @ model>:
+    set @ model:
+      accepted = 1 ~ Positive and 1 ~ PositiveTuple
+)DTESSL";
+  dtessl::Engine contextual_relation_engine(
+      dtessl::parse(contextual_compact_relation_surface));
+  const dtessl::StepResult contextual_relation_result =
+      contextual_relation_engine.step_transition({"Check", {}});
+  require(contextual_relation_result.state.at("model.accepted").as_bool(),
+          "name-first compact relation did not retain its @context scope");
+
+  bool effectful_named_relation_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+port audit.emit(int)
+state A @ lane initial:
+  value: int = 0
+state B @ lane:
+  value: int = 0
+relation Impure:
+  <A @ lane, B @ lane> [do=(emitted: $audit.emit(1) @ lane)]
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    effectful_named_relation_rejected = true;
+  }
+  require(effectful_named_relation_rejected,
+          "a pure named relation accepted ActionPlan ownership");
+
+  bool unused_invalid_named_relation_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state A @ lane initial:
+  value: int = 0
+relation Invalid @ lane:
+  <Missing @ lane, A @ lane>
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    unused_invalid_named_relation_rejected = true;
+  }
+  require(unused_invalid_named_relation_rejected,
+          "an unused named relation bypassed state verification");
   bool duplicate_relation_label_rejected = false;
   try {
     static_cast<void>(dtessl::parse(R"DTESSL(

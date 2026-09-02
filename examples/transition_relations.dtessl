@@ -32,3 +32,22 @@ transition Dispatch:
 // The same union may stay entirely on one line when no branch needs a block.
 transition Toggle:
   <Idle @ worker, Busy @ worker> [label=forward] | <Busy @ worker, Idle @ worker> [label=back]
+
+// Pure named binary Embedding relations can be composed into an executable
+// transition. @worker scopes `credits`; only the use site attaches ActionPlan.
+relation Admit @ worker:
+  <{Idle @ worker, Open @ session}, {Busy @ worker, Closed @ session}> [where=(credits > 0)]:
+    set @ worker:
+      credits = before.credits - 1
+    set @ session:
+      accepted = true
+
+relation Release @ worker:
+  <{Busy @ worker, Closed @ session}, {Idle @ worker, Open @ session}>:
+    set @ worker:
+      credits = before.credits + 1
+    set @ session:
+      accepted = false
+
+transition NamedDispatch:
+  Admit | (Release + do(released: $audit.emit("released") @ worker))

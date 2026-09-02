@@ -482,6 +482,10 @@ struct Parameter {
 // only on demand.  No declaration owns mutable rows.
 struct RelationDeclaration {
   std::string name;
+  // Optional lexical state-value scope.  It only shortens qualified state
+  // reads (for example `credits` -> `scheduler.credits`); it is neither an
+  // authority token nor an implicit mutable capture.
+  std::string context;
   std::vector<Parameter> parameters;
   std::vector<ComprehensionClause> clauses;
   // A derived relation is an intensional RelationPlan with an explicit
@@ -558,6 +562,7 @@ struct TransitionAlternative {
   std::shared_ptr<struct TemporalExpr> obligation;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
+  std::string lexical_context;
 };
 
 struct Transition {
@@ -584,6 +589,9 @@ struct Transition {
   std::shared_ptr<struct TemporalExpr> obligation;
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
+  // Per-route lexical scope. Named relation branches retain their own scope
+  // when they are composed into a transition family.
+  std::string route_context;
   CaptureBindings captures;
   std::size_t line{0};
   std::size_t column{0};
@@ -1676,7 +1684,7 @@ class Parser {
   FunctionDeclaration function_declaration();
   ActionPortDeclaration action_port_declaration();
   ParsedStateDeclaration state();
-  Transition transition();
+  Transition transition(bool relation_plan = false);
   TraceDeclaration trace(const std::vector<Transition>& transitions);
   ClaimDeclaration claim();
   ProcedureDeclaration procedure();
@@ -1707,6 +1715,7 @@ class Parser {
   std::vector<Token> tokens_;
   std::size_t cursor_{0};
   TypeRegistry types_;
+  std::map<std::string, Transition, std::less<>> transition_relations_;
 };
 
 }  // namespace
@@ -1725,6 +1734,9 @@ struct Program::Impl {
   TypeRegistry types;
   FunctionRegistry functions;
   RelationRegistry relations;
+  // Pure named Embedding-before/after relations. They share Transition route
+  // representation but cannot own actions or temporal obligations.
+  std::map<std::string, Transition, std::less<>> transition_relations;
   std::vector<ActionPortDeclaration> action_ports;
   std::vector<State> states;
   std::vector<StateSchema> state_schemas;
@@ -2207,11 +2219,25 @@ RelationDeclaration Parser::relation_declaration() {
   RelationDeclaration result;
   result.line = start.line;
   result.column = start.column;
-  const bool compact = match("<");
+  const bool tuple_first_compact = match("<");
+  bool name_first_compact = false;
 
-  if (!compact) {
+  if (!tuple_first_compact) {
     result.name = identifier();
-    if (match(":")) {
+    if (match("@")) result.context = identifier();
+    name_first_compact = match("<");
+    if (name_first_compact) {
+      // `relation Name<a: A, b: B>:` is the name-first compact spelling.
+      // The tuple-first `<...> ~ Name` form is an equal, permanent projection
+      // of the same typed RelationDeclaration rather than a deprecated alias.
+    } else if (match("(")) {
+      // Long rule form continues below.
+    } else {
+      if (match("@")) {
+        if (!result.context.empty()) fail(peek(), "relation repeats context");
+        result.context = identifier();
+      }
+      if (!match(":")) fail(peek(), "expected '(', '<', or ':'");
       result.type = type();
       if (result.type.kind != DataType::Kind::Relation) {
         fail(start, "derived relation declaration requires a relation result type");
@@ -2232,8 +2258,8 @@ RelationDeclaration Parser::relation_declaration() {
       result.enumerable = true;
       return result;
     }
-    expect("(");
   }
+  const bool compact = tuple_first_compact || name_first_compact;
   std::set<std::string, std::less<>> parameter_names;
   if ((compact && !at(">")) || (!compact && !at(")"))) {
     do {
@@ -2257,9 +2283,13 @@ RelationDeclaration Parser::relation_declaration() {
   if (result.parameters.size() > relation_arity_limit) {
     fail(start, "relation declaration exceeds arity limit");
   }
-  if (compact) {
+  if (tuple_first_compact) {
     expect("~");
     result.name = identifier();
+  }
+  if (match("@")) {
+    if (!result.context.empty()) fail(peek(), "relation repeats context");
+    result.context = identifier();
   }
   expect(":");
 
@@ -3150,9 +3180,9 @@ ParsedStateDeclaration Parser::state() {
   return result;
 }
 
-Transition Parser::transition() {
+Transition Parser::transition(bool relation_plan) {
   const Token start = peek();
-  expect("transition");
+  expect(relation_plan ? "relation" : "transition");
   Transition result;
   result.line = start.line;
   result.column = start.column;
@@ -3502,7 +3532,77 @@ Transition Parser::transition() {
       fail(peek(), "transition relation branch requires where, set, do, or ensure");
     }
   };
+  const auto append_named_route = [&](std::string label,
+                                      const std::vector<StateBinding>& sources,
+                                      const std::vector<TransitionTarget>& targets,
+                                      const ExprPtr& condition,
+                                      const std::shared_ptr<ActionExpr>& action,
+                                      std::string context) {
+    if (result.from.empty()) {
+      result.case_name = std::move(label);
+      result.from = sources;
+      result.to = targets;
+      result.condition = condition;
+      result.action = action;
+      result.route_context = std::move(context);
+      return;
+    }
+    result.alternatives.push_back(TransitionAlternative{
+        std::move(label), sources, targets, condition, action, nullptr,
+        {}, {}, std::move(context)});
+  };
+  const auto is_named_relation_reference = [&]() {
+    std::size_t offset = 0U;
+    if (peek(offset).text == "|") ++offset;
+    if (peek(offset).text == "(") ++offset;
+    return peek(offset).kind == TokenKind::Identifier &&
+           transition_relations_.contains(peek(offset).text);
+  };
   while (!at(TokenKind::Dedent)) {
+    if (is_named_relation_reference()) {
+      if (!result.from.empty() && !result.relation_surface) {
+        fail(peek(), "transition cannot mix case/from syntax with named relations");
+      }
+      result.relation_surface = true;
+      for (;;) {
+        if (match("|") && result.from.empty()) {
+          fail(peek(), "transition relation union needs a left branch");
+        }
+        const bool grouped = match("(");
+        const std::string relation_name = identifier();
+        const Transition& plan = transition_relations_.at(relation_name);
+        std::shared_ptr<ActionExpr> attached_action;
+        if (match("+")) {
+          const Token do_token = peek();
+          expect("do");
+          FlatParser action_parser(parenthesized_extension_tokens(do_token), types_);
+          attached_action = action_parser.action();
+        }
+        if (grouped) expect(")");
+
+        const std::string primary_label = plan.case_name.empty()
+            ? relation_name
+            : relation_name + "." + plan.case_name;
+        append_named_route(primary_label, plan.from, plan.to, plan.condition,
+                           attached_action, plan.route_context);
+        for (const TransitionAlternative& alternative : plan.alternatives) {
+          const std::string label = alternative.name.empty()
+              ? relation_name
+              : relation_name + "." + alternative.name;
+          append_named_route(label, alternative.from, alternative.to,
+                             alternative.condition, attached_action,
+                             alternative.lexical_context);
+        }
+        if (!at("|")) {
+          newline();
+          break;
+        }
+        if (!is_named_relation_reference()) {
+          fail(peek(), "named relation union requires another named relation");
+        }
+      }
+      continue;
+    }
     if (at("<") || at("|")) {
       if (!result.from.empty() && !result.relation_surface) {
         fail(peek(), "transition cannot mix case/from syntax with relation branches");
@@ -3550,7 +3650,7 @@ Transition Parser::transition() {
           result.alternatives.push_back(TransitionAlternative{
               std::move(label), std::move(sources), std::move(targets),
               std::move(condition), std::move(action), std::move(obligation),
-              {}, {}});
+              {}, {}, {}});
         }
         if (!at("|")) break;
       }
@@ -3588,7 +3688,7 @@ Transition Parser::transition() {
         } else {
           result.alternatives.push_back(TransitionAlternative{
               case_name, std::move(source), targets, condition, action,
-              obligation, {}, {}});
+              obligation, {}, {}, {}});
         }
       }
       continue;
@@ -3737,6 +3837,28 @@ Transition Parser::transition() {
     fail(peek(), "expected case, set, from, to, where, do, or ensure");
   }
   dedent();
+  if (relation_plan) {
+    if (!result.relation_surface || result.from.empty()) {
+      fail(start, "named state relation requires <before-set,after-set> branches");
+    }
+    const bool owns_effect = result.action || std::any_of(
+        result.alternatives.begin(), result.alternatives.end(),
+        [](const TransitionAlternative& alternative) {
+          return static_cast<bool>(alternative.action);
+        });
+    const bool owns_obligation = result.obligation || std::any_of(
+        result.alternatives.begin(), result.alternatives.end(),
+        [](const TransitionAlternative& alternative) {
+          return static_cast<bool>(alternative.obligation);
+        });
+    if (owns_effect || owns_obligation) {
+      fail(start, "named relation is pure; attach do/ensure at a transition or Claim");
+    }
+    result.route_context = result.declaration_context;
+    for (TransitionAlternative& alternative : result.alternatives) {
+      alternative.lexical_context = result.declaration_context;
+    }
+  }
   return result;
 }
 
@@ -4904,9 +5026,26 @@ std::shared_ptr<Program::Impl> Parser::program() {
         fail(peek(), "duplicate function declaration");
       }
     } else if (at("relation")) {
-      RelationDeclaration relation = relation_declaration();
-      if (!result->relations.emplace(relation.name, std::move(relation)).second) {
-        fail(peek(), "duplicate relation declaration");
+      std::size_t lookahead = 1U;
+      const bool has_name = peek(lookahead).kind == TokenKind::Identifier;
+      if (has_name) ++lookahead;
+      if (peek(lookahead).text == "@") lookahead += 2U;
+      const bool state_relation = has_name && peek(lookahead).text == ":" &&
+          peek(lookahead + 1U).kind == TokenKind::Newline;
+      if (state_relation) {
+        Transition relation = transition(true);
+        if (result->relations.contains(relation.name) ||
+            result->transition_relations.contains(relation.name)) {
+          fail(peek(), "duplicate relation declaration");
+        }
+        transition_relations_.emplace(relation.name, relation);
+        result->transition_relations.emplace(relation.name, std::move(relation));
+      } else {
+        RelationDeclaration relation = relation_declaration();
+        if (result->transition_relations.contains(relation.name) ||
+            !result->relations.emplace(relation.name, std::move(relation)).second) {
+          fail(peek(), "duplicate relation declaration");
+        }
       }
     } else if (at("state")) {
       if (peek(2).text == "," || peek(2).text == ";") {
@@ -5947,6 +6086,11 @@ void verify_action(const std::shared_ptr<ActionExpr>& action, const TypeEnvironm
   }
 }
 
+TypeEnvironment lexical_context_types(const TypeEnvironment& state,
+                                      std::string_view context,
+                                      std::size_t line,
+                                      std::size_t column);
+
 void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
                    std::set<std::string, std::less<>> shadowed,
                    std::set<std::string, std::less<>>& reads) {
@@ -5959,13 +6103,24 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
         for (const Parameter& parameter : relation->second.parameters) {
           relation_shadowed.insert(parameter.name);
         }
+        const TypeEnvironment scoped = lexical_context_types(
+            state, relation->second.context, relation->second.line,
+            relation->second.column);
+        std::set<std::string, std::less<>> relation_reads;
         if (relation->second.derived_expression) {
-          collect_reads(relation->second.derived_expression, state,
-                        relation_shadowed, reads);
-          return;
+          collect_reads(relation->second.derived_expression, scoped,
+                        relation_shadowed, relation_reads);
+        } else {
+          for (const ComprehensionClause& clause : relation->second.clauses) {
+            collect_reads(clause.expression, scoped, relation_shadowed,
+                          relation_reads);
+          }
         }
-        for (const ComprehensionClause& clause : relation->second.clauses) {
-          collect_reads(clause.expression, state, relation_shadowed, reads);
+        for (const std::string& read : relation_reads) {
+          const std::string qualified = relation->second.context + "." + read;
+          reads.insert(!relation->second.context.empty() && state.contains(qualified)
+                           ? qualified
+                           : read);
         }
         return;
       }
@@ -6024,6 +6179,31 @@ void collect_reads(const ExprPtr& expr, const TypeEnvironment& state,
   for (const ExprPtr& child : expr->children) {
     collect_reads(child, state, shadowed, reads);
   }
+}
+
+TypeEnvironment lexical_context_types(const TypeEnvironment& state,
+                                      std::string_view context,
+                                      std::size_t line,
+                                      std::size_t column) {
+  TypeEnvironment result = state;
+  if (context.empty()) return result;
+  const std::string prefix = std::string(context) + ".";
+  bool found_context = false;
+  for (const auto& [key, type] : state) {
+    if (!key.starts_with(prefix)) continue;
+    found_context = true;
+    const std::string local = key.substr(prefix.size());
+    const auto [existing, inserted] = result.emplace(local, type);
+    if (!inserted && existing->second != type) {
+      throw Error("context @" + std::string(context) +
+                      " has ambiguous field '" + local + "'",
+                  line, column);
+    }
+  }
+  if (!found_context) {
+    throw Error("unknown relation context @" + std::string(context), line, column);
+  }
+  return result;
 }
 
 void verify_temporal_expression(const TemporalExprPtr& expression,
@@ -6197,10 +6377,12 @@ void verify_program(Program::Impl& program) {
       throw Error("relation name '" + name + "' conflicts with a type, function, or builtin",
                   relation.line, relation.column);
     }
+    const TypeEnvironment scoped_relation_state = lexical_context_types(
+        relation_state_types, relation.context, relation.line, relation.column);
     if (relation.derived_expression) {
       collect_relations(relation.derived_expression, relation_graph[name]);
       const DataType actual = infer_type(relation.derived_expression,
-                                         relation_state_types, {}, {},
+                                         scoped_relation_state, {}, {},
                                          program.types);
       if (actual != relation.type) {
         throw Error("derived relation '" + name + "' expression has type '" +
@@ -6217,14 +6399,14 @@ void verify_program(Program::Impl& program) {
     for (const ComprehensionClause& clause : relation.clauses) {
       collect_relations(clause.expression, relation_graph[name]);
       if (clause.kind == ComprehensionClause::Kind::Predicate) {
-        if (infer_type(clause.expression, relation_state_types, {}, parameters,
+        if (infer_type(clause.expression, scoped_relation_state, {}, parameters,
                        program.types).kind !=
             DataType::Kind::Bool) {
           throw Error("relation rule clause must be bool", clause.line, clause.column);
         }
         continue;
       }
-      const DataType domain = infer_type(clause.expression, relation_state_types, {},
+      const DataType domain = infer_type(clause.expression, scoped_relation_state, {},
                                          parameters, program.types);
       DataType item;
       if (domain.kind == DataType::Kind::Set) {
@@ -6396,6 +6578,101 @@ void verify_program(Program::Impl& program) {
     }
   }
 
+  for (auto& [name, relation] : program.transition_relations) {
+    if (program.types.contains(name) || program.functions.contains(name) ||
+        program.relations.contains(name)) {
+      throw Error("state relation name '" + name +
+                      "' conflicts with a type, function, or value relation",
+                  relation.line, relation.column);
+    }
+    if (!relation.declaration_context.empty() &&
+        !program.context_index.contains(relation.declaration_context)) {
+      throw Error("unknown relation context @" + relation.declaration_context,
+                  relation.line, relation.column);
+    }
+    struct PureRoute {
+      std::vector<StateBinding>* from;
+      std::vector<TransitionTarget>* to;
+      ExprPtr* condition;
+      std::string* context;
+    };
+    std::vector<PureRoute> routes{{&relation.from, &relation.to,
+                                   &relation.condition,
+                                   &relation.route_context}};
+    for (TransitionAlternative& alternative : relation.alternatives) {
+      routes.push_back({&alternative.from, &alternative.to,
+                        &alternative.condition,
+                        &alternative.lexical_context});
+    }
+    for (PureRoute& route : routes) {
+      TypeEnvironment source_types;
+      std::set<std::string, std::less<>> source_contexts;
+      for (StateBinding& binding : *route.from) {
+        const State& source = find_state(program, binding.state);
+        if (binding.context.empty()) binding.context = source.context;
+        binding.context_id = source.context_id;
+        binding.state_id = source.state_id;
+        if (binding.context != source.context) {
+          throw Error("state '" + source.name + "' belongs to @" +
+                          source.context + ", not @" + binding.context,
+                      binding.line, binding.column);
+        }
+        if (!source_contexts.insert(binding.context).second) {
+          throw Error("state relation source repeats context @" + binding.context,
+                      binding.line, binding.column);
+        }
+        for (const Field& field : source.fields) {
+          source_types.emplace(state_key(binding.context, field.name), field.type);
+          if (route.from->size() == 1U) {
+            source_types.emplace(field.name, field.type);
+          }
+        }
+      }
+      const TypeEnvironment scoped = lexical_context_types(
+          source_types, *route.context, relation.line, relation.column);
+      if (infer_type(*route.condition, scoped, {}, {}, program.types).kind !=
+          DataType::Kind::Bool) {
+        throw Error("where clause in state relation '" + name + "' must be bool",
+                    relation.line, relation.column);
+      }
+      std::set<std::string, std::less<>> target_contexts;
+      for (TransitionTarget& target : *route.to) {
+        const State& successor = find_state(program, target.binding.state);
+        if (target.binding.context.empty()) {
+          target.binding.context = successor.context;
+        }
+        target.binding.context_id = successor.context_id;
+        target.binding.state_id = successor.state_id;
+        if (target.binding.context != successor.context) {
+          throw Error("state '" + successor.name + "' belongs to @" +
+                          successor.context + ", not @" + target.binding.context,
+                      target.binding.line, target.binding.column);
+        }
+        if (!target_contexts.insert(target.binding.context).second) {
+          throw Error("state relation target repeats context @" +
+                          target.binding.context,
+                      target.binding.line, target.binding.column);
+        }
+        std::set<std::string, std::less<>> assigned;
+        for (const Assignment& assignment : target.assignments) {
+          const Field& field = find_field(successor, assignment.field);
+          if (!assigned.insert(assignment.field).second) {
+            throw Error("field '" + assignment.field +
+                            "' is assigned twice in state relation",
+                        assignment.line, assignment.column);
+          }
+          if (!same_base_type(infer_type(assignment.value, scoped, {}, {},
+                                         program.types),
+                              field.type)) {
+            throw Error("assignment to '" + assignment.field +
+                            "' has the wrong type",
+                        assignment.line, assignment.column);
+          }
+        }
+      }
+    }
+  }
+
   names.clear();
   std::map<std::string, std::vector<Parameter>, std::less<>> event_schemas;
   for (Transition& transition : program.transitions) {
@@ -6413,7 +6690,8 @@ void verify_program(Program::Impl& program) {
     raw_routes.push_back(TransitionAlternative{transition.case_name,
                                                transition.from, transition.to,
                                                transition.condition, transition.action,
-                                               transition.obligation, {}, {}});
+                                               transition.obligation, {}, {},
+                                               transition.route_context});
     raw_routes.insert(raw_routes.end(), transition.alternatives.begin(),
                       transition.alternatives.end());
     std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>> case_names;
@@ -6544,7 +6822,7 @@ void verify_program(Program::Impl& program) {
         expanded_routes.push_back(TransitionAlternative{
             recursive.name, std::move(source), recursive.to,
             recursive.condition, recursive.action,
-            recursive.obligation, {}, {}});
+            recursive.obligation, {}, {}, recursive.lexical_context});
       }
     }
     transition.from = std::move(expanded_routes.front().from);
@@ -6553,6 +6831,7 @@ void verify_program(Program::Impl& program) {
     transition.condition = std::move(expanded_routes.front().condition);
     transition.action = std::move(expanded_routes.front().action);
     transition.obligation = std::move(expanded_routes.front().obligation);
+    transition.route_context = std::move(expanded_routes.front().lexical_context);
     transition.alternatives.assign(
         std::make_move_iterator(expanded_routes.begin() + 1),
         std::make_move_iterator(expanded_routes.end()));
@@ -6564,17 +6843,20 @@ void verify_program(Program::Impl& program) {
       TemporalExprPtr* obligation;
       std::set<std::string, std::less<>>* reads;
       std::set<std::string, std::less<>>* writes;
+      std::string* lexical_context;
     };
     std::vector<RouteRef> routes;
     routes.push_back(RouteRef{&transition.from, &transition.to,
                               &transition.condition, &transition.action,
                               &transition.obligation,
-                              &transition.reads, &transition.writes});
+                              &transition.reads, &transition.writes,
+                              &transition.route_context});
     for (TransitionAlternative& alternative : transition.alternatives) {
       routes.push_back(RouteRef{&alternative.from, &alternative.to,
                                 &alternative.condition, &alternative.action,
                                 &alternative.obligation,
-                                &alternative.reads, &alternative.writes});
+                                &alternative.reads, &alternative.writes,
+                                &alternative.lexical_context});
     }
     const bool legacy_single = std::all_of(
         routes.begin(), routes.end(), [](const auto& route) {
@@ -6658,7 +6940,8 @@ void verify_program(Program::Impl& program) {
           if (legacy_single) result.emplace(field.name, field.type);
         }
       }
-      return result;
+      return lexical_context_types(result, *route.lexical_context,
+                                   transition.line, transition.column);
     };
     TypeEnvironment optimization_types;
     if (transition.optimized_score) {
@@ -6815,6 +7098,14 @@ void verify_program(Program::Impl& program) {
      if (transition.optimized_score) {
        collect_reads(transition.optimized_score, optimization_types, shadowed,
                      *route.reads);
+     }
+     if (!route.lexical_context->empty()) {
+       std::set<std::string, std::less<>> qualified;
+       for (const std::string& read : *route.reads) {
+         const std::string scoped = state_key(*route.lexical_context, read);
+         qualified.insert(local_types.contains(scoped) ? scoped : read);
+       }
+       *route.reads = std::move(qualified);
      }
     }
   }
@@ -7062,11 +7353,22 @@ void verify_program(Program::Impl& program) {
 }
 
 struct Environment {
+  Environment(const std::map<std::string, Value, std::less<>>& state_values,
+              const Event* current_event = nullptr,
+              std::map<std::string, Value, std::less<>> local_values = {},
+              std::uint64_t current_round = 0,
+              const std::map<std::string, Value, std::less<>>* predecessor = nullptr,
+              std::string context = {})
+      : state(state_values), event(current_event), locals(std::move(local_values)),
+        round(current_round), before_state(predecessor),
+        lexical_context(std::move(context)) {}
+
   const std::map<std::string, Value, std::less<>>& state;
   const Event* event{nullptr};
   std::map<std::string, Value, std::less<>> locals;
   std::uint64_t round{0};
   const std::map<std::string, Value, std::less<>>* before_state{nullptr};
+  std::string lexical_context;
 };
 
 Value evaluate(const ExprPtr& expr, Environment& environment);
@@ -7304,6 +7606,30 @@ Value resolve_name(const std::string& name, const Environment& environment) {
     const auto& state_values = before && environment.before_state != nullptr
                                    ? *environment.before_state
                                    : environment.state;
+    if (!environment.lexical_context.empty()) {
+      const std::string prefix = environment.lexical_context + ".";
+      std::size_t scoped_match = 0U;
+      for (const auto& [key, item] : state_values) {
+        if (!key.starts_with(prefix)) continue;
+        const std::string_view local(key.data() + prefix.size(),
+                                     key.size() - prefix.size());
+        if ((path == local ||
+             (path.starts_with(local) && path.size() > local.size() &&
+              path[local.size()] == '.')) &&
+            local.size() > scoped_match) {
+          scoped_match = local.size();
+          root = std::string(local);
+          value = item;
+          found_root = true;
+        }
+      }
+      if (found_root) {
+        cursor = scoped_match == path.size() ? path.size() : scoped_match + 1U;
+      }
+    }
+    if (found_root) {
+      // Continue below for a nested record/tuple projection.
+    } else {
     cursor = 0;
     std::size_t matched = 0;
     for (const auto& [key, item] : state_values) {
@@ -7318,6 +7644,7 @@ Value resolve_name(const std::string& name, const Environment& environment) {
       }
     }
     if (found_root) cursor = matched == path.size() ? path.size() : matched + 1U;
+    }
   }
   if (!found_root) throw Error("unknown value '" + root + "'");
   while (cursor < path.size()) {
