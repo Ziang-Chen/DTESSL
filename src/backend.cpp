@@ -240,23 +240,12 @@ FeatureSet required_features(const Program& program) {
       collect_features(clause.expression, result);
     }
   }
-  if (!implementation.transition_relations.empty()) {
-    result.insert(LanguageFeature::TransitionRelations);
-    for (const auto& [name, relation] : implementation.transition_relations) {
+  if (!implementation.state_relation_templates.empty()) {
+    result.insert(LanguageFeature::StateRelationTemplates);
+    for (const auto& [name, relation] : implementation.state_relation_templates) {
       static_cast<void>(name);
-      collect_features(relation.condition, result);
-      for (const TransitionTarget& target : relation.to) {
-        for (const Assignment& assignment : target.assignments) {
-          collect_features(assignment.value, result);
-        }
-      }
-      for (const TransitionAlternative& alternative : relation.alternatives) {
-        collect_features(alternative.condition, result);
-        for (const TransitionTarget& target : alternative.to) {
-          for (const Assignment& assignment : target.assignments) {
-            collect_features(assignment.value, result);
-          }
-        }
+      for (const StateRelationRoute& route : relation.routes) {
+        collect_features(route.condition, result);
       }
     }
   }
@@ -281,20 +270,19 @@ FeatureSet required_features(const Program& program) {
       }
     };
     collect_targets(transition.to);
-    const auto collect_composition = [&](const std::vector<RelationStage>& stages) {
-      for (const RelationStage& stage : stages) {
-        collect_features(stage.condition, result);
-        collect_targets(stage.to);
-        collect_action_features(stage.action, result);
+    const auto collect_relation_constraints =
+        [&](const std::vector<RelationConstraint>& constraints) {
+      for (const RelationConstraint& constraint : constraints) {
+        collect_features(constraint.condition, result);
       }
     };
-    collect_composition(transition.composition);
+    collect_relation_constraints(transition.relation_constraints);
     for (const TransitionAlternative& alternative : transition.alternatives) {
       collect_features(alternative.condition, result);
       collect_temporal_features(alternative.obligation, result);
       collect_targets(alternative.to);
       collect_action_features(alternative.action, result);
-      collect_composition(alternative.composition);
+      collect_relation_constraints(alternative.relation_constraints);
     }
     collect_action_features(transition.action, result);
   }
@@ -364,14 +352,12 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
       collect_search_plans(clause.expression, plans);
     }
   }
-  for (const auto& [name, relation] : implementation.transition_relations) {
+  for (const auto& [name, relation] : implementation.state_relation_templates) {
     static_cast<void>(name);
-    plans.push_back({"named-transition-relation",
-                     1U + relation.alternatives.size(),
-                     1U + relation.alternatives.size(), true, false});
-    collect_search_plans(relation.condition, plans);
-    for (const TransitionAlternative& alternative : relation.alternatives) {
-      collect_search_plans(alternative.condition, plans);
+    plans.push_back({"state-relation-template",
+                     relation.routes.size(), relation.routes.size(), true, false});
+    for (const StateRelationRoute& route : relation.routes) {
+      collect_search_plans(route.condition, plans);
     }
   }
   for (const Transition& transition : implementation.transitions) {
@@ -395,22 +381,21 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
       }
     };
     collect_targets(transition.to);
-    const auto collect_composition = [&](const std::vector<RelationStage>& stages) {
-      if (stages.empty()) return;
-      plans.push_back({"transition-relation-compose", stages.size(),
-                       stages.size(), true, false});
-      for (const RelationStage& stage : stages) {
-        collect_search_plans(stage.condition, plans);
-        collect_targets(stage.to);
-        collect_action_search_plans(stage.action, plans);
+    const auto collect_relation_constraints =
+        [&](const std::vector<RelationConstraint>& constraints) {
+      if (constraints.empty()) return;
+      plans.push_back({"transition-relation-match", constraints.size(),
+                       constraints.size(), true, false});
+      for (const RelationConstraint& constraint : constraints) {
+        collect_search_plans(constraint.condition, plans);
       }
     };
-    collect_composition(transition.composition);
+    collect_relation_constraints(transition.relation_constraints);
     for (const TransitionAlternative& alternative : transition.alternatives) {
       collect_search_plans(alternative.condition, plans);
       collect_targets(alternative.to);
       collect_action_search_plans(alternative.action, plans);
-      collect_composition(alternative.composition);
+      collect_relation_constraints(alternative.relation_constraints);
     }
     collect_action_search_plans(transition.action, plans);
   }
@@ -467,6 +452,7 @@ std::string_view feature_name(LanguageFeature feature) noexcept {
     case LanguageFeature::RelationClaims: return "relation-claims";
     case LanguageFeature::HigherOrderRelations: return "higher-order-relations";
     case LanguageFeature::TransitionRelations: return "transition-relations";
+    case LanguageFeature::StateRelationTemplates: return "state-relation-templates";
   }
   return "unknown";
 }

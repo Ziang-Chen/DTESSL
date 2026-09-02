@@ -304,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.6", "compiled version must be v0.4.6");
+  require(dtessl::version == "0.4.7", "compiled version must be v0.4.7");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1542,12 +1542,12 @@ state B @ lane:
   value: int = 0
 
 relation MoveRelation @ lane:
-  <A @ lane, B @ lane>:
-    set @ lane:
-      value = before.value + 1
+  A [where=(value = 0)]
 
 transition Move:
-  (MoveRelation + do(emitted: $audit.emit(1) @ lane))
+  MoveRelation -> B @ lane [do=(emitted: $audit.emit(1) @ lane)]:
+    set @ lane:
+      value = before.value + 1
 )DTESSL";
   dtessl::Engine named_relation_transition_engine(
       dtessl::parse(named_relation_transition_surface));
@@ -1569,48 +1569,49 @@ state B @ lane:
 state C @ lane:
   value: int = 0
 
-relation First @ lane:
-  <A, B>:
-    set:
-      value = before.value + 1
+relation FromA @ lane:
+  A
 
-relation Second @ lane:
-  <B, C> [where=(value = 1)]:
-    set:
-      value = before.value + 1
+relation Zero @ lane:
+  A [where=(value = 0)]
 
-relation RejectSecond @ lane:
-  <B, C> [where=(value = 99)]
+relation Reject @ lane:
+  A [where=(value = 99)]
 
 transition Chain:
-  (First + do(first: $audit.emit(1) @ lane)), (Second + do(second: $audit.emit(2) @ lane))
+  FromA, Zero -> C @ lane [do=(first: $audit.emit(1) @ lane, second: $audit.emit(2) @ lane)]:
+    set @ lane:
+      value = before.value + 2
 
 transition Blocked:
-  First, RejectSecond
+  FromA, Reject -> C @ lane
 )DTESSL";
   const dtessl::Program composed_relation_program =
       dtessl::parse(composed_relation_transition_surface);
+  require(dtessl::required_features(composed_relation_program).contains(
+              dtessl::LanguageFeature::StateRelationTemplates),
+          "state relation templates are absent from backend negotiation");
   dtessl::Engine composed_relation_engine(composed_relation_program);
   const dtessl::StepResult composed_relation_result =
       composed_relation_engine.step_transition({"Chain", {}});
   require(composed_relation_result.round == 1U &&
               composed_relation_result.active_states.at("lane") == "C" &&
               composed_relation_result.state.at("value").as_int() == 2 &&
-              composed_relation_result.transition == "Chain.First_then_Second" &&
+              composed_relation_result.transition == "Chain.FromA_and_Zero" &&
               composed_relation_result.actions.calls.size() == 2U &&
               composed_relation_result.actions.dependencies ==
                   std::vector<std::pair<std::size_t, std::size_t>>{{0U, 1U}},
-          "named relation comma did not perform atomic relational composition");
+          "named relation conjunction did not filter one transition construction");
   const auto composed_relation_plans =
       dtessl::search_plans(composed_relation_program);
   require(std::any_of(
               composed_relation_plans.begin(), composed_relation_plans.end(),
               [](const dtessl::SearchPlanSummary& plan) {
-                return plan.operation == "transition-relation-compose" &&
+                return plan.operation == "transition-relation-match" &&
                        plan.max_rows == 2U && plan.max_work == 2U &&
                        plan.deterministic;
               }),
-          "relation composition did not expose a bounded Solver plan");
+          "relation template matching did not expose a bounded Solver plan");
   dtessl::Engine blocked_composition_engine(composed_relation_program);
   bool blocked_composition_rejected = false;
   try {
@@ -1623,7 +1624,7 @@ transition Blocked:
               blocked_composition_engine.current_round() == 0U &&
               blocked_composition_engine.current_states().at("lane") == "A" &&
               blocked_composition_engine.values().at("value").as_int() == 0,
-          "failed intermediate relation guard committed a partial composition");
+          "failed relation predicate changed transition state");
 
   constexpr std::string_view contextual_compact_relation_surface = R"DTESSL(
 state Model @ model initial:
@@ -1657,7 +1658,7 @@ state A @ lane initial:
 state B @ lane:
   value: int = 0
 relation Impure:
-  <A @ lane, B @ lane> [do=(emitted: $audit.emit(1) @ lane)]
+  A @ lane [do=(emitted: $audit.emit(1) @ lane)]
 )DTESSL"));
   } catch (const dtessl::Error&) {
     effectful_named_relation_rejected = true;
@@ -1665,13 +1666,45 @@ relation Impure:
   require(effectful_named_relation_rejected,
           "a pure named relation accepted ActionPlan ownership");
 
+  bool named_relation_after_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state A @ lane initial:
+  value: int = 0
+state B @ lane:
+  value: int = 0
+relation OldBinary @ lane:
+  <A, B>
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    named_relation_after_rejected = true;
+  }
+  require(named_relation_after_rejected,
+          "a named relation retained an after-Embedding");
+
+  bool named_relation_set_rejected = false;
+  try {
+    static_cast<void>(dtessl::parse(R"DTESSL(
+state A @ lane initial:
+  value: int = 0
+relation ImpureUpdate @ lane:
+  A:
+    set:
+      value = 1
+)DTESSL"));
+  } catch (const dtessl::Error&) {
+    named_relation_set_rejected = true;
+  }
+  require(named_relation_set_rejected,
+          "a named relation retained a state update");
+
   bool unused_invalid_named_relation_rejected = false;
   try {
     static_cast<void>(dtessl::parse(R"DTESSL(
 state A @ lane initial:
   value: int = 0
 relation Invalid @ lane:
-  <Missing @ lane, A @ lane>
+  Missing @ lane
 )DTESSL"));
   } catch (const dtessl::Error&) {
     unused_invalid_named_relation_rejected = true;

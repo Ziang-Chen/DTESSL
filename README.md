@@ -1,4 +1,4 @@
-# DTESSL v0.4.6
+# DTESSL v0.4.7
 
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
 确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
@@ -332,14 +332,27 @@ relation-declaration = "relation" Name "(" parameter { "," parameter } ")"
                      | "relation" Name [ "@" Name ] ":" relation-type
                          "=" expression ;
 state-relation = "relation" Name [ "@" Name ] ":" INDENT
-                   transition-relation-branch
-                   { "|" transition-relation-branch } DEDENT ;
-transition-relation-expression = relation-sequence
-                                   { "|" relation-sequence } ;
-relation-sequence = relation-factor { "," relation-factor } ;
-relation-factor = Name [ "+" "do" "(" action-expression ")" ]
-                | "(" transition-relation-expression ")"
-                  [ "+" "do" "(" action-expression ")" ] ;
+                   state-relation-route
+                   { "|" state-relation-route } DEDENT ;
+state-relation-route = relation-state-set
+                         [ "[" [ "label" "=" Name "," ]
+                           "where" "=" "(" expression ")" "]" ]
+                         [ ":" INDENT
+                             "where" ":" INDENT expression DEDENT
+                           DEDENT ] ;
+transition-template-branch = relation-expression "->" relation-state-set
+                               [ branch-extensions ]
+                               [ ":" INDENT
+                                   [ "where" ":" INDENT expression DEDENT ]
+                                   [ "set" [ "@" Name ] ":" INDENT
+                                       { Name "=" expression NEWLINE } DEDENT ]
+                                   [ "do" ":" INDENT action-expression DEDENT ]
+                                   [ "ensure" ":" INDENT temporal-expression DEDENT ]
+                                 DEDENT ] ;
+relation-expression = relation-conjunction
+                        { "|" relation-conjunction } ;
+relation-conjunction = relation-factor { "," relation-factor } ;
+relation-factor = Name | "(" relation-expression ")" ;
 match-expression = "match" name "{"
                      pattern "->" expression
                      { "," pattern "->" expression }
@@ -394,34 +407,36 @@ relation <w: Worker, t: Task> ~ EligibleTuple @ scheduler: w in workers, t in wa
 ```
 
 两者进入同一个 typed AST；`@scheduler` 只把 `workers` 等裸字段名解析到
-`scheduler.workers`，不代表 authority 或实例所有权。before/after 关系也可纯命名，
-再由 transition 组合：
+`scheduler.workers`，不代表 authority 或实例所有权。状态关系也可以定义为只读的
+当前 Embedding 匹配模板，再由 transition 构造 after：
 
 ```dtessl
 relation Admit @ scheduler:
-  <Idle, Busy> [where=(credits > 0)]
+  Idle [where=(credits > 0)]
 
 transition Dispatch:
-  Admit | (Release + do(released: $audit.emit("released") @ scheduler))
+  Admit -> Busy @ scheduler:
+    set @ scheduler:
+      credits = before.credits - 1
+    do:
+      accepted: $audit.emit("accepted") @ scheduler
 ```
 
-`Admit | Release` 是关系并集；`+ do(...)` 才把 ActionPlan 附着到该可执行分支。
-命名 relation 本体允许 `where/set`，但拒绝 `do/ensure`。
-relation 头部的 `@scheduler` 会被整个块继承，因此 state、裸字段、`before` 和
-无限定的 `set:` 都不再重复写上下文；只有跨轴节点显式覆盖。
+relation 头部的 `@scheduler` 只作用于模板中的 state 和纯谓词字段解析。
+命名 relation 只允许 state pattern 与 `where`；`after/set/do/ensure` 全部属于
+transition。旧的 named `<before,after>` relation 会给出迁移诊断，不再执行。
 
-在 transition 的命名关系表达式中，`,` 是关系复合，且优先级高于 `|`：
+在 transition 的命名关系表达式中，`,` 是对同一个当前 Embedding 的合取，且
+优先级高于 `|`：
 
 ```dtessl
 transition Dispatch:
-  Admit, Audit | Reject
+  Admit, Authorized | Trusted -> Busy @ scheduler
 ```
 
-含义是 `(Admit ; Audit) union Reject`。`Audit` 的 guard 与更新读取 `Admit`
-产生的中间 Embedding；中间值只是存在量化 witness，不单独提交、不增加 RoundId、
-也不形成独立 trace occurrence。整个组合只提交最终 Embedding。若中间状态必须可观察，
-应拆成两个 transition/procedure step。各因子的 `+ do(...)` 在完整 witness 被选中后
-按逗号顺序连接成 ActionPlan DAG。
+含义是 `(Admit and Authorized) or Trusted`。所有模板都读取同一个 before Embedding；
+不存在隐藏的中间 Embedding、隐式状态更新或 relation-owned ActionPlan。箭头右侧以及
+`set/do/ensure` 只由 transition 拥有。
 
 `ensure:` 与 `where:` 不同：`where` 只看当前 Embedding 并决定边是否可用；
 `ensure` 在边发生后的 successor 上激活时序 obligation，由 finite Trace monitor 或
@@ -660,7 +675,7 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 
 ## 有意留在 v0 之外
 
-为了逐层闭合语言核心，v0.4.6 仍不包含 matrix、概率或
+为了逐层闭合语言核心，v0.4.7 仍不包含 matrix、概率或
 非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
 插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
 它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限

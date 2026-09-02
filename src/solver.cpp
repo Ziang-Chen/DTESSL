@@ -76,12 +76,11 @@ bool program_observes_round(const Program::Impl& program) {
     }
   }
   for (const Transition& transition : program.transitions) {
-    const auto composition_observes_round = [](const std::vector<RelationStage>& stages) {
-      return std::any_of(stages.begin(), stages.end(),
-                         [](const RelationStage& stage) {
-                           return observes_round(stage.condition) ||
-                                  targets_observe_round(stage.to) ||
-                                  action_observes_round(stage.action);
+    const auto relation_observes_round =
+        [](const std::vector<RelationConstraint>& constraints) {
+      return std::any_of(constraints.begin(), constraints.end(),
+                         [](const RelationConstraint& constraint) {
+                           return observes_round(constraint.condition);
                          });
     };
     if (observes_round(transition.condition) ||
@@ -89,7 +88,7 @@ bool program_observes_round(const Program::Impl& program) {
         observes_round(transition.optimized_score) ||
         targets_observe_round(transition.to) ||
         action_observes_round(transition.action) ||
-        composition_observes_round(transition.composition)) {
+        relation_observes_round(transition.relation_constraints)) {
       return true;
     }
     for (const TransitionAlternative& alternative : transition.alternatives) {
@@ -97,7 +96,7 @@ bool program_observes_round(const Program::Impl& program) {
           observes_round(alternative.obligation) ||
           targets_observe_round(alternative.to) ||
           action_observes_round(alternative.action) ||
-          composition_observes_round(alternative.composition)) {
+          relation_observes_round(alternative.relation_constraints)) {
         return true;
       }
     }

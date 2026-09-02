@@ -250,7 +250,7 @@ ParallelStepResult Engine::step_inputs_at(
       const std::set<std::string, std::less<>>* reads;
       const std::set<std::string, std::less<>>* writes;
       const std::string* lexical_context;
-      const std::vector<RelationStage>* composition;
+      const std::vector<RelationConstraint>* relation_constraints;
     };
     std::vector<Enabled> enabled;
     std::vector<std::size_t> candidate_indices;
@@ -275,14 +275,15 @@ ParallelStepResult Engine::step_inputs_at(
         const std::set<std::string, std::less<>>* reads;
         const std::set<std::string, std::less<>>* writes;
         const std::string* lexical_context;
-        const std::vector<RelationStage>* composition;
+        const std::vector<RelationConstraint>* relation_constraints;
       };
       const auto route_at = [&](RouteId route_id) {
         if (route_id == 0U) {
           return Route{&transition.from, &transition.case_name, &transition.to,
                        &transition.condition, &transition.action,
                        &transition.reads, &transition.writes,
-                       &transition.route_context, &transition.composition};
+                       &transition.route_context,
+                       &transition.relation_constraints};
         }
         const TransitionAlternative& alternative =
             transition.alternatives.at(route_id - 1U);
@@ -290,7 +291,7 @@ ParallelStepResult Engine::step_inputs_at(
                      &alternative.condition, &alternative.action,
                      &alternative.reads, &alternative.writes,
                      &alternative.lexical_context,
-                     &alternative.composition};
+                     &alternative.relation_constraints};
       };
       validate_event(transition, event, program.types);
       std::vector<RouteId> candidate_routes;
@@ -350,11 +351,32 @@ ParallelStepResult Engine::step_inputs_at(
             PropertyUse{path + ".where", PropertyScope::Transition,
                         PropertyTrigger::Candidate, PropertyFailure::Disable});
         if (decision.disposition == PropertyDisposition::Admit) {
+          bool constraints_admit = true;
+          for (const RelationConstraint& constraint :
+               *route.relation_constraints) {
+            Environment constraint_environment{values_, &event, {},
+                                               round_id - 1U, nullptr,
+                                               constraint.lexical_context};
+            const PropertyDecision match = evaluate_instant_property(
+                constraint.condition, constraint_environment,
+                PropertyUse{path + "." + constraint.name,
+                            PropertyScope::Transition,
+                            PropertyTrigger::Candidate,
+                            PropertyFailure::Disable});
+            if (match.disposition == PropertyDisposition::Disable) {
+              constraints_admit = false;
+              break;
+            }
+            if (match.disposition != PropertyDisposition::Admit) {
+              throw Error("invalid relation template predicate disposition");
+            }
+          }
+          if (!constraints_admit) continue;
           enabled.push_back(Enabled{&transition, route.case_name, route.from, route.to,
                                     route.condition, route.action,
                                     route.reads, route.writes,
                                     route.lexical_context,
-                                    route.composition});
+                                    route.relation_constraints});
         } else if (decision.disposition != PropertyDisposition::Disable) {
           throw Error("invalid transition guard Property disposition");
         }
@@ -395,121 +417,6 @@ ParallelStepResult Engine::step_inputs_at(
           decision.causal_predecessors.insert(writers->second.begin(),
                                               writers->second.end());
         }
-      }
-      if (!candidate.composition->empty()) {
-        std::map<std::string, std::string, std::less<>> stage_active = active_states_;
-        std::map<std::string, Value, std::less<>> stage_values = values_;
-        std::unordered_set<std::string> labels;
-        std::vector<std::size_t> preceding_action_exits;
-        for (const RelationStage& stage : *candidate.composition) {
-          for (const StateBinding& binding : stage.from) {
-            const auto active = stage_active.find(binding.context);
-            if (active == stage_active.end() || active->second != binding.state) {
-              return std::nullopt;
-            }
-          }
-          Environment stage_environment{stage_values, &event, {}, round_id - 1U,
-                                        nullptr, stage.lexical_context};
-          const PropertyDecision stage_guard = evaluate_instant_property(
-              stage.condition, stage_environment,
-              PropertyUse{transition.name + "." + stage.name + ".where",
-                          PropertyScope::Transition,
-                          PropertyTrigger::Candidate,
-                          PropertyFailure::Disable});
-          if (stage_guard.disposition == PropertyDisposition::Disable) {
-            return std::nullopt;
-          }
-          if (stage_guard.disposition != PropertyDisposition::Admit) {
-            throw Error("invalid relation composition guard disposition");
-          }
-
-          std::map<std::string, std::string, std::less<>> next_active = stage_active;
-          std::map<std::string, Value, std::less<>> next_values = stage_values;
-          for (const TransitionTarget& target : stage.to) {
-            const State& target_state = find_state(program, target.binding.state);
-            const bool single_context = stage_active.size() == 1U;
-            const auto previous = stage_active.find(target.binding.context);
-            if (previous == stage_active.end()) {
-              throw Error("relation composition targets an inactive context");
-            }
-            if (previous->second != target.binding.state) {
-              const State& old_state = find_state(program, previous->second);
-              for (const Field& field : old_state.fields) {
-                next_values.erase(single_context
-                                      ? field.name
-                                      : state_key(target.binding.context,
-                                                  field.name));
-              }
-              for (const auto& [field, value] : initial_values(target_state)) {
-                next_values.insert_or_assign(
-                    single_context
-                        ? field
-                        : state_key(target.binding.context, field),
-                    value);
-              }
-            }
-            next_active.insert_or_assign(target.binding.context,
-                                         target.binding.state);
-            for (const Assignment& assignment : target.assignments) {
-              Value value = evaluate(assignment.value, stage_environment);
-              const Field& field = find_field(target_state, assignment.field);
-              if (!value_matches_base_type(value, field.type, program.types) ||
-                  !static_type_constraint_accepts(value, field.type,
-                                                  program.types)) {
-                throw Error("relation composition assignment leaves its type/domain");
-              }
-              next_values.insert_or_assign(
-                  single_context
-                      ? assignment.field
-                      : state_key(target.binding.context, assignment.field),
-                  std::move(value));
-            }
-          }
-          for (const auto& [context, state_name] : next_active) {
-            const State& state = find_state(program, state_name);
-            verify_invariants(state,
-                              local_state_values(next_values, context, state),
-                              round_id);
-          }
-          if (stage.action) {
-            const State& source = find_state(program, stage.from.front().state);
-            Fragment fragment = build_plan(stage.action, stage_environment, source,
-                                           decision.actions, labels);
-            for (const std::size_t before : preceding_action_exits) {
-              for (const std::size_t after : fragment.entries) {
-                decision.actions.dependencies.emplace_back(before, after);
-              }
-            }
-            preceding_action_exits = std::move(fragment.exits);
-          }
-          stage_active = std::move(next_active);
-          stage_values = std::move(next_values);
-        }
-        for (const auto& [context, state_name] : stage_active) {
-          if (active_states_.at(context) == state_name) continue;
-          decision.targets.emplace(context, state_name);
-          const State& state = find_state(program, state_name);
-          decision.dense_targets.emplace_back(state.context_id, state.state_id);
-          for (const Field& field : state.fields) {
-            const std::string key = stage_active.size() == 1U
-                                        ? field.name
-                                        : state_key(context, field.name);
-            decision.writes.insert_or_assign(key, stage_values.at(key));
-          }
-        }
-        for (const auto& [field, value] : stage_values) {
-          const auto previous = values_.find(field);
-          if (previous == values_.end() || previous->second != value) {
-            decision.writes.insert_or_assign(field, value);
-          }
-        }
-        std::sort(decision.actions.dependencies.begin(),
-                  decision.actions.dependencies.end());
-        decision.actions.dependencies.erase(
-            std::unique(decision.actions.dependencies.begin(),
-                        decision.actions.dependencies.end()),
-            decision.actions.dependencies.end());
-        return decision;
       }
       for (const TransitionTarget& target : *candidate.to) {
         const State& target_state = find_state(program, target.binding.state);
@@ -611,7 +518,7 @@ ParallelStepResult Engine::step_inputs_at(
     }
     if (candidates.empty()) {
       throw Error("no transition accepts event '" + event.name +
-                  "' after relation composition");
+                  "' after transition construction");
     }
     std::size_t selected_index = 0;
     if (candidates.size() > 1U) {

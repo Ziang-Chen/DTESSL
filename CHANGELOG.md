@@ -3,6 +3,23 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.7
+
+- Make named state relations pure current-Embedding matcher templates. They
+  may own state patterns and typed `where` predicates only.
+- Move every after-Embedding, field update, temporal obligation and ActionPlan
+  attachment back to Transition. The executable surface is now
+  `RelationA, RelationB | RelationC -> target-state-set` plus transition-local
+  `set/do/ensure`.
+- Define comma between matcher templates as conjunction over the same immutable
+  before Embedding, with pipe as alternative. Remove hidden intermediate
+  Embeddings, stage updates, stage actions and relation-owned writes.
+- Reject the v0.4.5/v0.4.6 named `<before,after>` relation spelling with an
+  explicit migration diagnostic rather than preserving incorrect semantics.
+- Expose `state-relation-template` and `transition-relation-match` Solver plans,
+  a distinct `state-relation-templates` backend feature, and retain relation
+  identity in the selected Transition path and replay.
+
 ## v0.4.6
 
 - Make a relation header `@context` the default lexical and state-binding

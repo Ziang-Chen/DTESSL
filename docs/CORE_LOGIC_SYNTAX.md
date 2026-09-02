@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.6` inherited relation context and atomic relation composition.
+Status: `v0.4.7` pure state-relation templates and Transition-owned successor construction.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -170,58 +170,54 @@ satisfaction. `[label=...]`, `[where=(...)]`, and `[do=(...)]` are compact
 branch extensions; their block forms use the same verifier, runtime, Solver,
 trace identity and replay path.
 
-A pure before/after relation may also be named and reused:
+A pure current-Embedding matcher may also be named and reused:
 
 ```dtessl
 relation Admit @ worker:
-  <{Idle, Open @ session},
-   {Busy, Closed @ session}> [where=(credits > 0)]
+  {Idle, Open @ session} [where=(credits > 0)]
 
 relation Release @ worker:
-  <{Busy, Closed @ session},
-   {Idle, Open @ session}>
+  {Busy, Closed @ session}
 
 transition Dispatch:
-  Admit | (Release + do(released: $audit.emit("released") @ worker))
+  Admit -> {Busy @ worker, Closed @ session}:
+    set @ worker:
+      credits = before.worker.credits - 1
+    set @ session:
+      accepted = true
+    do:
+      accepted: $audit.emit("accepted") @ worker
 ```
 
-Here `Admit | Release` is union of pure binary Embedding relations.
-`Release + do(...)` constructs a `TransitionBranch{RelationPlan, ActionPlan}`;
-the action is attached only at the executable transition use site. A named
-relation is rejected if it contains `do` or `ensure`, so relation satisfaction
-cannot depend on an effect or a monitor result. `set` remains legal because it
-defines the logical after-Embedding rather than performing a physical effect.
+`Admit` only tests the current active states and predicate. The arrow target,
+`set`, and `do` belong to `Dispatch`. A named relation is rejected if it contains
+an after-Embedding, `set`, `do`, or `ensure`; relation satisfaction therefore
+cannot mutate state, propose an effect, or depend on a monitor result.
 
 The header context is inherited by the entire relation block:
 
 ```dtessl
 relation Admit @ worker:
-  <{Idle, Open @ session}, {Busy, Closed @ session}>:
-    set:
-      credits = before.credits - 1
-    set @ session:
-      accepted = true
+  {Idle, Open @ session} [where=(credits > 0)]
 ```
 
-Only the `session` axis is qualified. `Idle`, `Busy`, `credits`,
-`before.credits`, and the unqualified `set:` all mean `@worker`. An explicit
-local `@context` overrides the inherited default.
+Only the `session` axis is qualified. `Idle` and `credits` mean `@worker`.
+The header context is lexical matching scope, not mutable ownership; there is
+no relation-local after or `set:` to inherit.
 
 Named relation expressions form a small algebra:
 
 ```dtessl
 transition Dispatch:
-  Admit, Audit | Reject
+  Admit, Authorized | Trusted -> {Busy @ worker, Closed @ session}
 ```
 
-`,` is relational composition and binds more tightly than `|`, so this means
-`(Admit ; Audit) union Reject`. The after-Embedding of `Admit` is the
-existential middle witness consumed by `Audit`; its guards and updates see
-that middle value. The full composition commits atomically as one occurrence
-and one RoundId. It does not expose the middle Embedding to trace/Claim. Write
-two transitions or procedure injections when the intermediate state must be
-observable. Actions attached to successive factors form serial ActionPlan
-edges, but are returned only after every pure relation stage admits.
+`,` is matcher conjunction and binds more tightly than `|`, so this means
+`(Admit and Authorized) or Trusted`. Every predicate reads the same immutable
+before Embedding. There is no existential middle Embedding and no per-factor
+update or action. The Transition constructs exactly one successor and one
+ActionPlan after one complete matcher alternative admits. Without an explicit
+`label`, the stable route identity joins template names with `_and_`.
 
 ## Optional values
 

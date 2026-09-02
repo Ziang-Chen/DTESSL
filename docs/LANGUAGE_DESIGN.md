@@ -186,9 +186,10 @@ capture or replay. Newlines before `;` are rejected.
 - `state`: typed state space, initial data, derived views and invariants.
 - `transition`: event-conditioned relation from source state set to target state
   set.
-- `relation`: a pure typed RelationPlan. Rule relations admit both equal
-  name-first and tuple-first compact projections; a pure named before/after
-  relation can be reused by transitions but cannot own `do` or `ensure`.
+- `relation`: a pure typed RelationPlan or current-Embedding matcher template.
+  Rule relations admit both equal name-first and tuple-first compact
+  projections; a state matcher may own only patterns and `where`, never an
+  after-Embedding, update, action or temporal obligation.
 - `from` / `to`: source and target state patterns. `goto` is not used.
 - `where`: eligibility and finite relational search. A closed `where` expression
   is the LTS guard; `guard` is therefore a compiler term, not another surface
@@ -205,10 +206,10 @@ capture or replay. Newlines before `;` are rejected.
   authority by string.
 - `a, b` creates an action dependency `a -> b`.
 - `a | b` creates parallel branches with no ordering edge.
-- Between named relations inside a transition, `R1, R2` is relational
-  composition with a hidden intermediate Embedding; `R1 | R2` is union.
-  Comma binds more tightly in both algebras, but relation composition remains
-  one atomic occurrence rather than two scheduled steps.
+- Between named state-relation templates inside a transition, `R1, R2` is
+  conjunction over the same current Embedding; `R1 | R2` is alternative.
+  Comma binds more tightly. The matcher expression creates no hidden
+  intermediate Embedding and performs no state update.
 - `#tag(...)` is reserved for non-executable observation/evidence metadata. It
   cannot be read by expressions or affect transition choice. Editorial tags are
   excluded from executable digests and included in source digests.
@@ -454,12 +455,11 @@ in the runtime:
   explicit history-state operators and dynamically created instance sets.
 - Shared mutable state has no declared consistency/merge profile beyond the
   current equal/union merge rules.
-- Transition now has a first-class before/after relation branch surface,
-  named pure relation reuse, `|` union, and use-site `+ do(...)` lowering.
-  Named `compose/product/project/hide/rename/refine` operators over
-  whole TransitionRelation families remain absent; they must preserve trigger,
-  binding and ActionPlan-lowering provenance rather than treating an effectful
-  branch as an ordinary finite RelationValue.
+- Transition now has a first-class before/after branch surface and reusable
+  pure matcher templates. The Transition alone owns successor construction,
+  updates, temporal obligations and ActionPlan lowering. Named
+  `compose/product/project/hide/rename/refine` over Transition families remain
+  absent; an executable transition is not an ordinary finite RelationValue.
 - Source patterns do not yet bind arbitrary nested record/variant payloads;
   such destructuring currently belongs to an ordinary typed `match` in the
   guard.

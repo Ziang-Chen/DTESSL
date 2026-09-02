@@ -33,26 +33,36 @@ transition Dispatch:
 transition Toggle:
   <Idle @ worker, Busy @ worker> [label=forward] | <Busy @ worker, Idle @ worker> [label=back]
 
-// Pure named binary Embedding relations can be composed into an executable
-// transition. @worker scopes `credits`; only the use site attaches ActionPlan.
+// A named relation is a pure matcher template over the current Embedding.
+// It owns neither an after-Embedding nor state updates nor ActionPlan lowering.
 relation Admit @ worker:
-  <{Idle, Open @ session}, {Busy, Closed @ session}> [where=(credits > 0)]:
-    set:
-      credits = before.credits - 1
-    set @ session:
-      accepted = true
+  {Idle, Open @ session} [where=(credits > 0)]
 
 relation Release @ worker:
-  <{Busy, Closed @ session}, {Idle, Open @ session}>:
-    set:
-      credits = before.credits + 1
-    set @ session:
-      accepted = false
+  {Busy, Closed @ session}
 
 transition NamedDispatch:
-  Admit | (Release + do(released: $audit.emit("released") @ worker))
+  Admit -> {Busy @ worker, Closed @ session} [label=accept]:
+    set @ worker:
+      credits = before.worker.credits - 1
+    set @ session:
+      accepted = true
+  Release -> {Idle @ worker, Open @ session} [label=release]:
+    set @ worker:
+      credits = before.worker.credits + 1
+    set @ session:
+      accepted = false
+    do:
+      released: $audit.emit("released") @ worker
 
-// Comma is relational composition, not boolean conjunction. The intermediate
-// Busy/Closed Embedding is a hidden witness inside one atomic occurrence.
-transition Cycle:
-  Admit, Release
+// Comma conjoins pure templates against the same current Embedding. There are
+// no hidden intermediate Embeddings; the Transition below owns the sole after.
+relation HasCredit @ worker:
+  Idle [where=(credits > 0)]
+
+transition CheckedDispatch:
+  Admit, HasCredit -> {Busy @ worker, Closed @ session}:
+    set @ worker:
+      credits = before.worker.credits - 1
+    set @ session:
+      accepted = true
