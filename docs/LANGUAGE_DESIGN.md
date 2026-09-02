@@ -205,6 +205,10 @@ capture or replay. Newlines before `;` are rejected.
   authority by string.
 - `a, b` creates an action dependency `a -> b`.
 - `a | b` creates parallel branches with no ordering edge.
+- Between named relations inside a transition, `R1, R2` is relational
+  composition with a hidden intermediate Embedding; `R1 | R2` is union.
+  Comma binds more tightly in both algebras, but relation composition remains
+  one atomic occurrence rather than two scheduled steps.
 - `#tag(...)` is reserved for non-executable observation/evidence metadata. It
   cannot be read by expressions or affect transition choice. Editorial tags are
   excluded from executable digests and included in source digests.

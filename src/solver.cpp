@@ -76,18 +76,28 @@ bool program_observes_round(const Program::Impl& program) {
     }
   }
   for (const Transition& transition : program.transitions) {
+    const auto composition_observes_round = [](const std::vector<RelationStage>& stages) {
+      return std::any_of(stages.begin(), stages.end(),
+                         [](const RelationStage& stage) {
+                           return observes_round(stage.condition) ||
+                                  targets_observe_round(stage.to) ||
+                                  action_observes_round(stage.action);
+                         });
+    };
     if (observes_round(transition.condition) ||
         observes_round(transition.obligation) ||
         observes_round(transition.optimized_score) ||
         targets_observe_round(transition.to) ||
-        action_observes_round(transition.action)) {
+        action_observes_round(transition.action) ||
+        composition_observes_round(transition.composition)) {
       return true;
     }
     for (const TransitionAlternative& alternative : transition.alternatives) {
       if (observes_round(alternative.condition) ||
           observes_round(alternative.obligation) ||
           targets_observe_round(alternative.to) ||
-          action_observes_round(alternative.action)) {
+          action_observes_round(alternative.action) ||
+          composition_observes_round(alternative.composition)) {
         return true;
       }
     }

@@ -36,18 +36,23 @@ transition Toggle:
 // Pure named binary Embedding relations can be composed into an executable
 // transition. @worker scopes `credits`; only the use site attaches ActionPlan.
 relation Admit @ worker:
-  <{Idle @ worker, Open @ session}, {Busy @ worker, Closed @ session}> [where=(credits > 0)]:
-    set @ worker:
+  <{Idle, Open @ session}, {Busy, Closed @ session}> [where=(credits > 0)]:
+    set:
       credits = before.credits - 1
     set @ session:
       accepted = true
 
 relation Release @ worker:
-  <{Busy @ worker, Closed @ session}, {Idle @ worker, Open @ session}>:
-    set @ worker:
+  <{Busy, Closed @ session}, {Idle, Open @ session}>:
+    set:
       credits = before.credits + 1
     set @ session:
       accepted = false
 
 transition NamedDispatch:
   Admit | (Release + do(released: $audit.emit("released") @ worker))
+
+// Comma is relational composition, not boolean conjunction. The intermediate
+// Busy/Closed Embedding is a hidden witness inside one atomic occurrence.
+transition Cycle:
+  Admit, Release

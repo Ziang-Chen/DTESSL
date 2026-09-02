@@ -304,7 +304,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
 }  // namespace
 
 int main() {
-  require(dtessl::version == "0.4.5", "compiled version must be v0.4.5");
+  require(dtessl::version == "0.4.6", "compiled version must be v0.4.6");
   constexpr std::string_view language_source =
       "// model\nstate Model initial:\n  value: int = 1\n";
   const dtessl::LanguageAnalysis language_analysis =
@@ -1558,6 +1558,72 @@ transition Move:
               named_relation_transition_result.actions.calls.size() == 1U &&
               named_relation_transition_result.transition == "Move.MoveRelation",
           "named relation union or + do ActionPlan attachment is wrong");
+
+  constexpr std::string_view composed_relation_transition_surface = R"DTESSL(
+port audit.emit(int)
+
+state A @ lane initial:
+  value: int = 0
+state B @ lane:
+  value: int = 0
+state C @ lane:
+  value: int = 0
+
+relation First @ lane:
+  <A, B>:
+    set:
+      value = before.value + 1
+
+relation Second @ lane:
+  <B, C> [where=(value = 1)]:
+    set:
+      value = before.value + 1
+
+relation RejectSecond @ lane:
+  <B, C> [where=(value = 99)]
+
+transition Chain:
+  (First + do(first: $audit.emit(1) @ lane)), (Second + do(second: $audit.emit(2) @ lane))
+
+transition Blocked:
+  First, RejectSecond
+)DTESSL";
+  const dtessl::Program composed_relation_program =
+      dtessl::parse(composed_relation_transition_surface);
+  dtessl::Engine composed_relation_engine(composed_relation_program);
+  const dtessl::StepResult composed_relation_result =
+      composed_relation_engine.step_transition({"Chain", {}});
+  require(composed_relation_result.round == 1U &&
+              composed_relation_result.active_states.at("lane") == "C" &&
+              composed_relation_result.state.at("value").as_int() == 2 &&
+              composed_relation_result.transition == "Chain.First_then_Second" &&
+              composed_relation_result.actions.calls.size() == 2U &&
+              composed_relation_result.actions.dependencies ==
+                  std::vector<std::pair<std::size_t, std::size_t>>{{0U, 1U}},
+          "named relation comma did not perform atomic relational composition");
+  const auto composed_relation_plans =
+      dtessl::search_plans(composed_relation_program);
+  require(std::any_of(
+              composed_relation_plans.begin(), composed_relation_plans.end(),
+              [](const dtessl::SearchPlanSummary& plan) {
+                return plan.operation == "transition-relation-compose" &&
+                       plan.max_rows == 2U && plan.max_work == 2U &&
+                       plan.deterministic;
+              }),
+          "relation composition did not expose a bounded Solver plan");
+  dtessl::Engine blocked_composition_engine(composed_relation_program);
+  bool blocked_composition_rejected = false;
+  try {
+    static_cast<void>(
+        blocked_composition_engine.step_transition({"Blocked", {}}));
+  } catch (const dtessl::Error&) {
+    blocked_composition_rejected = true;
+  }
+  require(blocked_composition_rejected &&
+              blocked_composition_engine.current_round() == 0U &&
+              blocked_composition_engine.current_states().at("lane") == "A" &&
+              blocked_composition_engine.values().at("value").as_int() == 0,
+          "failed intermediate relation guard committed a partial composition");
 
   constexpr std::string_view contextual_compact_relation_surface = R"DTESSL(
 state Model @ model initial:

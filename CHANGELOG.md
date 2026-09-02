@@ -3,6 +3,24 @@
 DTESSL uses `vMilestone.MajorFeature.MinorFeature`, not compatibility-oriented
 Semantic Versioning. See `docs/VERSIONING.md`.
 
+## v0.4.6
+
+- Make a relation header `@context` the default lexical and state-binding
+  context for the whole block. Local states, fields, `before` and unqualified
+  `set:` assignments inherit it; only cross-axis bindings need an explicit
+  override.
+- Define comma between named relations as relational composition and pipe as
+  union, with comma binding more tightly: `R1, R2 | R3` is `(R1 ; R2) ∪ R3`.
+- Evaluate every composition stage against the preceding stage's immutable
+  intermediate Embedding, including guards, finite-domain assignments and
+  invariants, then atomically commit only the final Embedding.
+- Keep intermediate Embeddings as existential witnesses: they create no extra
+  RoundId or trace occurrence. Stage-local ActionPlans are joined in serial
+  order after a complete witness is selected.
+- Add grouped relation expressions, bounded composition search-plan metadata,
+  Solver execution through the ordinary Engine path and endpoint-only replay
+  evidence.
+
 ## v0.4.5
 
 - Add optional lexical `@context` to typed relation rules and derived plans.

@@ -550,6 +550,20 @@ struct TransitionTarget {
   std::vector<Assignment> assignments;
 };
 
+// One pure relation factor inside an atomic named-relation composition.
+// Stages expose an existential intermediate Embedding to the evaluator but do
+// not independently commit, emit a RoundId, or become a trace occurrence.
+struct RelationStage {
+  std::string name;
+  std::vector<StateBinding> from;
+  std::vector<TransitionTarget> to;
+  ExprPtr condition{make_literal(Value(true))};
+  std::shared_ptr<ActionExpr> action;
+  std::string lexical_context;
+  std::set<std::string, std::less<>> reads;
+  std::set<std::string, std::less<>> writes;
+};
+
 struct TransitionAlternative {
   // One intensional relation branch from a conjunctive before Embedding
   // pattern to one atomically constructed after Embedding.  `action` is
@@ -563,6 +577,7 @@ struct TransitionAlternative {
   std::set<std::string, std::less<>> reads;
   std::set<std::string, std::less<>> writes;
   std::string lexical_context;
+  std::vector<RelationStage> composition;
 };
 
 struct Transition {
@@ -592,6 +607,7 @@ struct Transition {
   // Per-route lexical scope. Named relation branches retain their own scope
   // when they are composed into a transition family.
   std::string route_context;
+  std::vector<RelationStage> composition;
   CaptureBindings captures;
   std::size_t line{0};
   std::size_t column{0};
@@ -3298,6 +3314,7 @@ Transition Parser::transition(bool relation_plan) {
     }
     return result;
   };
+  const std::string inherited_declaration_context = result.declaration_context;
   const auto scoped_assignments = [&]() {
     std::vector<std::pair<std::string, Assignment>> result;
     while (!at(TokenKind::Dedent)) {
@@ -3313,14 +3330,18 @@ Transition Parser::transition(bool relation_plan) {
         expression_tokens.push_back(take());
       }
       newline();
-      if (expression_tokens.size() < 3U ||
-          expression_tokens[expression_tokens.size() - 2U].text != "@" ||
-          expression_tokens.back().kind != TokenKind::Identifier) {
+      std::string context;
+      if (expression_tokens.size() >= 3U &&
+          expression_tokens[expression_tokens.size() - 2U].text == "@" &&
+          expression_tokens.back().kind == TokenKind::Identifier) {
+        context = expression_tokens.back().text;
+        expression_tokens.resize(expression_tokens.size() - 2U);
+      } else if (!inherited_declaration_context.empty()) {
+        context = inherited_declaration_context;
+      } else {
         fail(assignment_start,
-             "compact set assignment requires 'field = expression @ context'");
+             "set assignment needs '@ context' when no declaration context is inherited");
       }
-      const std::string context = expression_tokens.back().text;
-      expression_tokens.resize(expression_tokens.size() - 2U);
       FlatParser parser(std::move(expression_tokens), types_);
       assignment.value = parser.expression();
       parser.expect_end();
@@ -3397,6 +3418,11 @@ Transition Parser::transition(bool relation_plan) {
     } else {
       append();
     }
+    if (relation_plan && !result.declaration_context.empty()) {
+      for (StateBinding& source : sources) {
+        if (source.context.empty()) source.context = result.declaration_context;
+      }
+    }
     return sources;
   };
   const auto relation_target_set = [&]() {
@@ -3412,6 +3438,13 @@ Transition Parser::transition(bool relation_plan) {
       expect("}");
     } else {
       append();
+    }
+    if (relation_plan && !result.declaration_context.empty()) {
+      for (TransitionTarget& target : targets) {
+        if (target.binding.context.empty()) {
+          target.binding.context = result.declaration_context;
+        }
+      }
     }
     return targets;
   };
@@ -3537,7 +3570,8 @@ Transition Parser::transition(bool relation_plan) {
                                       const std::vector<TransitionTarget>& targets,
                                       const ExprPtr& condition,
                                       const std::shared_ptr<ActionExpr>& action,
-                                      std::string context) {
+                                      std::string context,
+                                      std::vector<RelationStage> composition) {
     if (result.from.empty()) {
       result.case_name = std::move(label);
       result.from = sources;
@@ -3545,11 +3579,12 @@ Transition Parser::transition(bool relation_plan) {
       result.condition = condition;
       result.action = action;
       result.route_context = std::move(context);
+      result.composition = std::move(composition);
       return;
     }
     result.alternatives.push_back(TransitionAlternative{
         std::move(label), sources, targets, condition, action, nullptr,
-        {}, {}, std::move(context)});
+        {}, {}, std::move(context), std::move(composition)});
   };
   const auto is_named_relation_reference = [&]() {
     std::size_t offset = 0U;
@@ -3564,43 +3599,122 @@ Transition Parser::transition(bool relation_plan) {
         fail(peek(), "transition cannot mix case/from syntax with named relations");
       }
       result.relation_surface = true;
-      for (;;) {
-        if (match("|") && result.from.empty()) {
-          fail(peek(), "transition relation union needs a left branch");
+      if (match("|") && result.from.empty()) {
+        fail(peek(), "transition relation union needs a left branch");
+      }
+      struct ParsedComposition {
+        std::vector<RelationStage> stages;
+      };
+      std::function<std::vector<ParsedComposition>()> relation_union;
+      std::function<std::vector<ParsedComposition>()> relation_sequence;
+      std::function<std::vector<ParsedComposition>()> relation_factor;
+      const auto attach_action = [&](std::vector<ParsedComposition>& plans,
+                                     std::shared_ptr<ActionExpr> action) {
+        for (ParsedComposition& plan : plans) {
+          RelationStage& last = plan.stages.back();
+          if (!last.action) {
+            last.action = action;
+            continue;
+          }
+          auto sequence = std::make_shared<ActionExpr>();
+          sequence->kind = ActionExpr::Kind::Sequence;
+          sequence->children = {last.action, action};
+          last.action = std::move(sequence);
         }
-        const bool grouped = match("(");
+      };
+      const auto named_factor = [&]() {
         const std::string relation_name = identifier();
         const Transition& plan = transition_relations_.at(relation_name);
-        std::shared_ptr<ActionExpr> attached_action;
+        std::vector<ParsedComposition> alternatives;
+        const auto append = [&](std::string label,
+                                const std::vector<StateBinding>& from,
+                                const std::vector<TransitionTarget>& to,
+                                const ExprPtr& condition,
+                                std::string context) {
+          alternatives.push_back(ParsedComposition{{RelationStage{
+              std::move(label), from, to, condition, nullptr,
+              std::move(context), {}, {}}}});
+        };
+        append(plan.case_name.empty() ? relation_name
+                                      : relation_name + "_" + plan.case_name,
+               plan.from, plan.to, plan.condition, plan.route_context);
+        for (const TransitionAlternative& alternative : plan.alternatives) {
+          append(alternative.name.empty()
+                     ? relation_name
+                     : relation_name + "_" + alternative.name,
+                 alternative.from, alternative.to, alternative.condition,
+                 alternative.lexical_context);
+        }
+        return alternatives;
+      };
+      relation_factor = [&]() {
+        std::vector<ParsedComposition> plans;
+        if (match("(")) {
+          plans = relation_union();
+          expect(")");
+        } else {
+          plans = named_factor();
+        }
         if (match("+")) {
           const Token do_token = peek();
           expect("do");
           FlatParser action_parser(parenthesized_extension_tokens(do_token), types_);
-          attached_action = action_parser.action();
+          attach_action(plans, action_parser.action());
         }
-        if (grouped) expect(")");
-
-        const std::string primary_label = plan.case_name.empty()
-            ? relation_name
-            : relation_name + "." + plan.case_name;
-        append_named_route(primary_label, plan.from, plan.to, plan.condition,
-                           attached_action, plan.route_context);
-        for (const TransitionAlternative& alternative : plan.alternatives) {
-          const std::string label = alternative.name.empty()
-              ? relation_name
-              : relation_name + "." + alternative.name;
-          append_named_route(label, alternative.from, alternative.to,
-                             alternative.condition, attached_action,
-                             alternative.lexical_context);
+        return plans;
+      };
+      relation_sequence = [&]() {
+        std::vector<ParsedComposition> current = relation_factor();
+        while (match(",")) {
+          std::vector<ParsedComposition> right = relation_factor();
+          std::vector<ParsedComposition> product;
+          for (const ParsedComposition& left_plan : current) {
+            for (const ParsedComposition& right_plan : right) {
+              ParsedComposition composed = left_plan;
+              composed.stages.insert(composed.stages.end(),
+                                     right_plan.stages.begin(),
+                                     right_plan.stages.end());
+              product.push_back(std::move(composed));
+            }
+          }
+          current = std::move(product);
         }
-        if (!at("|")) {
-          newline();
-          break;
+        return current;
+      };
+      relation_union = [&]() {
+        std::vector<ParsedComposition> alternatives = relation_sequence();
+        while (match("|")) {
+          std::vector<ParsedComposition> right = relation_sequence();
+          alternatives.insert(alternatives.end(),
+                              std::make_move_iterator(right.begin()),
+                              std::make_move_iterator(right.end()));
         }
-        if (!is_named_relation_reference()) {
-          fail(peek(), "named relation union requires another named relation");
-        }
+        return alternatives;
+      };
+      std::vector<ParsedComposition> alternatives = relation_union();
+      for (ParsedComposition& composed : alternatives) {
+          std::string label;
+          for (const RelationStage& stage : composed.stages) {
+            if (!label.empty()) label += "_then_";
+            label += stage.name;
+          }
+          const RelationStage& first = composed.stages.front();
+          const RelationStage& last = composed.stages.back();
+          if (composed.stages.size() == 1U) {
+            append_named_route(label, first.from, first.to, first.condition,
+                               first.action, first.lexical_context, {});
+          } else {
+            std::vector<TransitionTarget> final_targets = last.to;
+            for (TransitionTarget& target : final_targets) {
+              target.assignments.clear();
+            }
+            append_named_route(label, first.from, final_targets,
+                               make_literal(Value(true)), nullptr,
+                               first.lexical_context,
+                               std::move(composed.stages));
+          }
       }
+      newline();
       continue;
     }
     if (at("<") || at("|")) {
@@ -3650,7 +3764,7 @@ Transition Parser::transition(bool relation_plan) {
           result.alternatives.push_back(TransitionAlternative{
               std::move(label), std::move(sources), std::move(targets),
               std::move(condition), std::move(action), std::move(obligation),
-              {}, {}, {}});
+              {}, {}, {}, {}});
         }
         if (!at("|")) break;
       }
@@ -3688,7 +3802,7 @@ Transition Parser::transition(bool relation_plan) {
         } else {
           result.alternatives.push_back(TransitionAlternative{
               case_name, std::move(source), targets, condition, action,
-              obligation, {}, {}, {}});
+              obligation, {}, {}, {}, {}});
         }
       }
       continue;
@@ -6691,7 +6805,8 @@ void verify_program(Program::Impl& program) {
                                                transition.from, transition.to,
                                                transition.condition, transition.action,
                                                transition.obligation, {}, {},
-                                               transition.route_context});
+                                               transition.route_context,
+                                               transition.composition});
     raw_routes.insert(raw_routes.end(), transition.alternatives.begin(),
                       transition.alternatives.end());
     std::map<std::string, std::pair<std::size_t, std::size_t>, std::less<>> case_names;
@@ -6822,7 +6937,8 @@ void verify_program(Program::Impl& program) {
         expanded_routes.push_back(TransitionAlternative{
             recursive.name, std::move(source), recursive.to,
             recursive.condition, recursive.action,
-            recursive.obligation, {}, {}, recursive.lexical_context});
+            recursive.obligation, {}, {}, recursive.lexical_context,
+            recursive.composition});
       }
     }
     transition.from = std::move(expanded_routes.front().from);
@@ -6832,6 +6948,7 @@ void verify_program(Program::Impl& program) {
     transition.action = std::move(expanded_routes.front().action);
     transition.obligation = std::move(expanded_routes.front().obligation);
     transition.route_context = std::move(expanded_routes.front().lexical_context);
+    transition.composition = std::move(expanded_routes.front().composition);
     transition.alternatives.assign(
         std::make_move_iterator(expanded_routes.begin() + 1),
         std::make_move_iterator(expanded_routes.end()));
@@ -6844,23 +6961,45 @@ void verify_program(Program::Impl& program) {
       std::set<std::string, std::less<>>* reads;
       std::set<std::string, std::less<>>* writes;
       std::string* lexical_context;
+      std::vector<RelationStage>* composition;
     };
     std::vector<RouteRef> routes;
     routes.push_back(RouteRef{&transition.from, &transition.to,
                               &transition.condition, &transition.action,
                               &transition.obligation,
                               &transition.reads, &transition.writes,
-                              &transition.route_context});
+                              &transition.route_context,
+                              &transition.composition});
     for (TransitionAlternative& alternative : transition.alternatives) {
       routes.push_back(RouteRef{&alternative.from, &alternative.to,
                                 &alternative.condition, &alternative.action,
                                 &alternative.obligation,
                                 &alternative.reads, &alternative.writes,
-                                &alternative.lexical_context});
+                                &alternative.lexical_context,
+                                &alternative.composition});
     }
     const bool legacy_single = std::all_of(
-        routes.begin(), routes.end(), [](const auto& route) {
-          return route.sources->size() == 1U && route.targets->size() == 1U;
+        routes.begin(), routes.end(), [&](const auto& route) {
+          if (route.composition->empty()) {
+            return route.sources->size() == 1U && route.targets->size() == 1U;
+          }
+          std::set<std::string, std::less<>> contexts;
+          const auto observe = [&](const StateBinding& binding) {
+            contexts.insert(binding.context.empty()
+                                ? find_state(program, binding.state).context
+                                : binding.context);
+          };
+          for (const StateBinding& binding : *route.sources) observe(binding);
+          for (const TransitionTarget& target : *route.targets) {
+            observe(target.binding);
+          }
+          for (const RelationStage& stage : *route.composition) {
+            for (const StateBinding& binding : stage.from) observe(binding);
+            for (const TransitionTarget& target : stage.to) {
+              observe(target.binding);
+            }
+          }
+          return contexts.size() == 1U;
         });
     TypeEnvironment state_types;
     for (RouteRef& route : routes) {
@@ -6943,6 +7082,126 @@ void verify_program(Program::Impl& program) {
       return lexical_context_types(result, *route.lexical_context,
                                    transition.line, transition.column);
     };
+    for (RouteRef& route : routes) {
+      if (route.composition->empty()) continue;
+      std::map<std::string, std::string, std::less<>> previous_targets;
+      std::unordered_set<std::string> action_labels;
+      for (std::size_t stage_index = 0;
+           stage_index < route.composition->size(); ++stage_index) {
+        RelationStage& stage = route.composition->at(stage_index);
+        TypeEnvironment stage_types;
+        std::map<std::string, std::string, std::less<>> stage_sources;
+        for (StateBinding& binding : stage.from) {
+          const State& source = find_state(program, binding.state);
+          if (binding.context.empty()) binding.context = source.context;
+          binding.context_id = source.context_id;
+          binding.state_id = source.state_id;
+          if (binding.context != source.context) {
+            throw Error("relation composition source '" + source.name +
+                            "' belongs to @" + source.context + ", not @" +
+                            binding.context,
+                        binding.line, binding.column);
+          }
+          if (!stage_sources.emplace(binding.context, binding.state).second) {
+            throw Error("relation composition repeats source context @" +
+                            binding.context,
+                        binding.line, binding.column);
+          }
+          for (const Field& field : source.fields) {
+            stage_types.emplace(state_key(binding.context, field.name), field.type);
+            if (stage.from.size() == 1U) stage_types.emplace(field.name, field.type);
+          }
+        }
+        if (stage_index != 0U) {
+          for (const auto& [context, source_state] : stage_sources) {
+            const auto produced = previous_targets.find(context);
+            if (produced != previous_targets.end() &&
+                produced->second != source_state) {
+              throw Error("relation composition '" + transition.name + "." +
+                              stage.name +
+                              "' conflicts with the preceding after-Embedding at @" +
+                              context,
+                          transition.line, transition.column);
+            }
+          }
+        }
+        const TypeEnvironment scoped = lexical_context_types(
+            stage_types, stage.lexical_context, transition.line,
+            transition.column);
+        if (infer_type(stage.condition, scoped, event_types, {}, program.types).kind !=
+            DataType::Kind::Bool) {
+          throw Error("relation composition where clause must be bool",
+                      transition.line, transition.column);
+        }
+        std::set<std::string, std::less<>> stage_target_contexts;
+        for (TransitionTarget& target : stage.to) {
+          const State& successor = find_state(program, target.binding.state);
+          if (target.binding.context.empty()) {
+            target.binding.context = successor.context;
+          }
+          target.binding.context_id = successor.context_id;
+          target.binding.state_id = successor.state_id;
+          if (!stage_target_contexts.insert(target.binding.context).second) {
+            throw Error("relation composition repeats target context @" +
+                            target.binding.context,
+                        target.binding.line, target.binding.column);
+          }
+          previous_targets.insert_or_assign(target.binding.context,
+                                            target.binding.state);
+          std::set<std::string, std::less<>> assigned;
+          for (const Assignment& assignment : target.assignments) {
+            const Field& field = find_field(successor, assignment.field);
+            if (!assigned.insert(assignment.field).second) {
+              throw Error("relation composition assigns field twice",
+                          assignment.line, assignment.column);
+            }
+            if (!same_base_type(infer_type(assignment.value, scoped, event_types,
+                                           {}, program.types),
+                                field.type)) {
+              throw Error("relation composition assignment has the wrong type",
+                          assignment.line, assignment.column);
+            }
+            stage.writes.insert(legacy_single
+                                    ? assignment.field
+                                    : state_key(target.binding.context,
+                                                assignment.field));
+            collect_reads(assignment.value, scoped, {}, stage.reads);
+          }
+          const auto same_source = stage_sources.find(target.binding.context);
+          if (same_source == stage_sources.end() ||
+              same_source->second != target.binding.state) {
+            for (const Field& field : successor.fields) {
+              stage.writes.insert(legacy_single
+                                      ? field.name
+                                      : state_key(target.binding.context,
+                                                  field.name));
+            }
+          }
+        }
+        collect_reads(stage.condition, scoped, {}, stage.reads);
+        verify_action(stage.action, scoped, event_types, action_labels,
+                      program.types, action_ports);
+        collect_action_reads(stage.action, scoped, {}, stage.reads);
+        if (!stage.lexical_context.empty()) {
+          std::set<std::string, std::less<>> qualified;
+          for (const std::string& read : stage.reads) {
+            const std::string scoped_name = state_key(stage.lexical_context, read);
+            qualified.insert(scoped.contains(scoped_name) ? scoped_name : read);
+          }
+          stage.reads = std::move(qualified);
+        }
+        route.reads->insert(stage.reads.begin(), stage.reads.end());
+        route.writes->insert(stage.writes.begin(), stage.writes.end());
+      }
+      route.targets->clear();
+      for (const auto& [context, state_name] : previous_targets) {
+        const State& state = find_state(program, state_name);
+        route.targets->push_back(TransitionTarget{
+            StateBinding{state_name, context, transition.line,
+                         transition.column, state.context_id, state.state_id},
+            {}});
+      }
+    }
     TypeEnvironment optimization_types;
     if (transition.optimized_score) {
       bool scope_found = false;

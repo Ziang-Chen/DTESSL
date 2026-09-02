@@ -1,6 +1,6 @@
 # DTESSL Project QC Control
 
-Updated: 2026-09-01, Asia/Shanghai
+Updated: 2026-09-02, Asia/Shanghai
 
 ## Control metadata
 
@@ -8,8 +8,8 @@ Updated: 2026-09-01, Asia/Shanghai
 - Target repository: `Ziang-Chen/DTESSL`
 - Integration repository: `Ziang-Chen/chenVirtualMachine`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
-- Current target: validate the `v0.4.5` named contextual relation composition and shared
-  runtime/Solver/ActionPlan lowering
+- Current target: validate the `v0.4.6` inherited context and relation
+  composition semantics across runtime/Solver/ActionPlan lowering
 - Stop orders: none
 
 ## Current state
@@ -92,6 +92,13 @@ before/after relations compose inside transitions with `|` plus explicit
 effect or physical authority. Standard, `-Werror`, and ASan/UBSan builds each
 pass 61/61 tests; the named example also passes direct run and replay.
 
+The `v0.4.6` slice makes relation context inherited rather than repeated and
+defines `,` as atomic relational composition with a hidden intermediate
+Embedding. Stage guards/updates observe the preceding stage, stage actions
+form serial DAG edges, and the final decision retains one RoundId and one
+trace/replay occurrence. Standard, `-Werror`, and ASan/UBSan builds each pass
+61/61 tests; the composition example also passes direct run and replay.
+
 ## Current goal contract
 
 - North star: see `GOAL_CONTRACT.md`.
@@ -127,7 +134,7 @@ pass 61/61 tests; the named example also passes direct run and replay.
 | Search budgets/plans | Static plan metadata and million-work rollback test | Budget failure leaves round zero | pass |
 | No ambient effects | Engine only returns `ActionPlan` | Host is not invoked by CLI | pass |
 | Runtime memory safety | ASan/UBSan baseline plus bounded scratch-pool unit test | Pool not yet used by parser/search hot paths | candidate |
-| Version identity | CMake/generated header target `0.4.5` | Built CLI reports `v0.4.5` | pass |
+| Version identity | CMake/generated header target `0.4.6` | Built CLI reports `v0.4.6` | pass |
 | Solver semantic seam | Public Solver owns Embedding expansion and Claim search; runtime keeps procedure/replay execution | CLI emits verified/counterexample/inconclusive status without performing ActionPlans | pass |
 | EmbeddingExpand graph | Canonical Embedding codec/store plus explicit directed adjacency; witness parent is not graph topology | Safety path and eventuality lasso fixtures emit reproducible Embedding digests | pass |
 | Compact automaton AST | Single-line parsing, direct typed-AST lowering, deterministic trace and multiline rejection tests | `examples/compact_automaton.dtessl` selects `ctodo.a_to_b` | pass |
@@ -142,6 +149,7 @@ pass 61/61 tests; the named example also passes direct run and replay.
 | TransitionRelation branch surface | `<before-set,after-set>` and `|` lower to existing typed routes; differential unit test compares the complete StepResult with equivalent case syntax | `transition_relations.dtessl` executes Dispatch.accept with two context deltas and one typed action | pass |
 | Transition branch extensions | Stable `label`, inline `where` and inline `do` reuse ordinary verifier/evaluator/ActionPlan nodes; block extras remain available | Feature and plan CLI expose `transition-relations` and deterministic two-row union | pass |
 | Named contextual relation composition | Name-first and tuple-first rules share one AST; pure named before/after plans retain lexical scope and reject effects | `NamedDispatch.Admit` runs and replays with qualified read evidence; `(Release + do(...))` remains an unselected typed effect branch | pass |
+| Inherited context and relation comma | Header context scopes local states/fields/before/set; composition evaluates guards and updates over hidden intermediate Embeddings and serializes stage ActionPlans | Unit model reaches `C` with value `2` in one RoundId and action dependency `0 -> 1`; example exposes `transition-relation-compose` plan | pass |
 | Canonical ordered Product spelling | Relation types and trace relation subjects accept canonical `<>`; parenthesized v0 inputs remain readable | Derived/higher-order and temporal examples use the canonical form | pass |
 | Unified RelationMatch path | Equality/order/membership and recursive `~` lower to one typed AST/evaluator; runtime and ClaimMonitor atoms call it without private predicate evaluation | Existing comparison corpus plus nested tuple relation and canonical-render tests pass | pass |
 | Trace relation syntax | `(a,b) ~ happens_before` has a distinct trace-domain AST case; compatibility `before(a,b)` shares it; finite nesting executes and unsupported Solver nesting is inconclusive | Procedure Product verifies strict ordering; closed trace satisfies nested `eventually(RelationMatch)` | pass |

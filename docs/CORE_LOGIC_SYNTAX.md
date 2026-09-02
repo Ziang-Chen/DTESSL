@@ -1,6 +1,6 @@
 # Core Logic Surface
 
-Status: `v0.4.5` contextual RelationPlan and named TransitionRelation composition.
+Status: `v0.4.6` inherited relation context and atomic relation composition.
 
 This profile separates source identifiers, logical names and human text, and
 gives relations and optional values compact syntax without changing their
@@ -173,13 +173,13 @@ trace identity and replay path.
 A pure before/after relation may also be named and reused:
 
 ```dtessl
-relation Admit @ scheduler:
-  <{Idle @ worker, Open @ session},
-   {Busy @ worker, Closed @ session}> [where=(credits > 0)]
+relation Admit @ worker:
+  <{Idle, Open @ session},
+   {Busy, Closed @ session}> [where=(credits > 0)]
 
-relation Release @ scheduler:
-  <{Busy @ worker, Closed @ session},
-   {Idle @ worker, Open @ session}>
+relation Release @ worker:
+  <{Busy, Closed @ session},
+   {Idle, Open @ session}>
 
 transition Dispatch:
   Admit | (Release + do(released: $audit.emit("released") @ worker))
@@ -191,6 +191,37 @@ the action is attached only at the executable transition use site. A named
 relation is rejected if it contains `do` or `ensure`, so relation satisfaction
 cannot depend on an effect or a monitor result. `set` remains legal because it
 defines the logical after-Embedding rather than performing a physical effect.
+
+The header context is inherited by the entire relation block:
+
+```dtessl
+relation Admit @ worker:
+  <{Idle, Open @ session}, {Busy, Closed @ session}>:
+    set:
+      credits = before.credits - 1
+    set @ session:
+      accepted = true
+```
+
+Only the `session` axis is qualified. `Idle`, `Busy`, `credits`,
+`before.credits`, and the unqualified `set:` all mean `@worker`. An explicit
+local `@context` overrides the inherited default.
+
+Named relation expressions form a small algebra:
+
+```dtessl
+transition Dispatch:
+  Admit, Audit | Reject
+```
+
+`,` is relational composition and binds more tightly than `|`, so this means
+`(Admit ; Audit) union Reject`. The after-Embedding of `Admit` is the
+existential middle witness consumed by `Audit`; its guards and updates see
+that middle value. The full composition commits atomically as one occurrence
+and one RoundId. It does not expose the middle Embedding to trace/Claim. Write
+two transitions or procedure injections when the intermediate state must be
+observable. Actions attached to successive factors form serial ActionPlan
+edges, but are returned only after every pure relation stage admits.
 
 ## Optional values
 

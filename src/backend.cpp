@@ -281,11 +281,20 @@ FeatureSet required_features(const Program& program) {
       }
     };
     collect_targets(transition.to);
+    const auto collect_composition = [&](const std::vector<RelationStage>& stages) {
+      for (const RelationStage& stage : stages) {
+        collect_features(stage.condition, result);
+        collect_targets(stage.to);
+        collect_action_features(stage.action, result);
+      }
+    };
+    collect_composition(transition.composition);
     for (const TransitionAlternative& alternative : transition.alternatives) {
       collect_features(alternative.condition, result);
       collect_temporal_features(alternative.obligation, result);
       collect_targets(alternative.to);
       collect_action_features(alternative.action, result);
+      collect_composition(alternative.composition);
     }
     collect_action_features(transition.action, result);
   }
@@ -386,10 +395,22 @@ std::vector<SearchPlanSummary> search_plans(const Program& program) {
       }
     };
     collect_targets(transition.to);
+    const auto collect_composition = [&](const std::vector<RelationStage>& stages) {
+      if (stages.empty()) return;
+      plans.push_back({"transition-relation-compose", stages.size(),
+                       stages.size(), true, false});
+      for (const RelationStage& stage : stages) {
+        collect_search_plans(stage.condition, plans);
+        collect_targets(stage.to);
+        collect_action_search_plans(stage.action, plans);
+      }
+    };
+    collect_composition(transition.composition);
     for (const TransitionAlternative& alternative : transition.alternatives) {
       collect_search_plans(alternative.condition, plans);
       collect_targets(alternative.to);
       collect_action_search_plans(alternative.action, plans);
+      collect_composition(alternative.composition);
     }
     collect_action_search_plans(transition.action, plans);
   }
