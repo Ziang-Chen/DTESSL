@@ -22,5 +22,5 @@ action "Schedule" 0 "audit" "audit.observe" "" 1 "task"
 action "Schedule" 0 "reserve" "scheduler.reserve" "" 1 "task"
 action "Schedule" 1 "commit" "scheduler.commit" "" 1 "task"
 lifecycle "scheduler_lifecycle" "Scheduler" "mode" 2 "active" "\"Active\"" "idle" "\"Idle\""
-gap "physical_receipts" external-runtime "provider receipts" "owned by chenRT runtime journal and excluded from this DTESSL model"
+gap "physical_receipts" external-runtime "provider receipts" "owned by host runtime journal and excluded from this DTESSL model"
 end

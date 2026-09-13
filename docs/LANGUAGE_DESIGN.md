@@ -660,7 +660,7 @@ contract override or stacking.
   return `satisfied` or `violated`; positive satisfaction is downgraded to
   `pending` when projection gaps exist.
 - Dynamic capture consumes only DTESSL-native typed Engine steps. It is not a
-  syslog, audit-log, receipt or chenRT journal adapter.
+  syslog, audit-log, receipt or host runtime journal adapter.
 
 ## 10. Time, simultaneity and causality
 

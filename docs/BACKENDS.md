@@ -2,13 +2,13 @@
 
 ## Purpose
 
-DTESSL must support its C++ reference interpreter, ChenVM and other execution or
+DTESSL must support its C++ reference interpreter, external VM and other execution or
 verification backends without encoding a particular VM into the language. This
 document fixes the integration direction while deliberately leaving artifact
 encoding unfrozen until `CanonicalModule` exists.
 
 Adapters may live out of tree and consume DTESSL as an installed CMake package,
-linked library or pinned submodule. ChenVM is one such consumer, not a privileged
+linked library or pinned submodule. external VM is one such consumer, not a privileged
 semantic target. The same negotiation rules apply to every backend domain/name.
 
 `SemanticDescriptor v1` is a separate producer-to-model projection. An existing
@@ -67,8 +67,8 @@ direct unary row model rather than the legacy unary tuple. A backend missing
 any required semantic must reject the program during negotiation.
 
 ```cpp
-dtessl::BackendDescriptor chen_vm{
-    {"chen", "vm", 1},
+dtessl::BackendDescriptor external_vm{
+    {"example", "vm", 1},
     {dtessl::Projection::Execute},
     {
         dtessl::LanguageFeature::TypedState,
@@ -77,7 +77,7 @@ dtessl::BackendDescriptor chen_vm{
     },
 };
 
-auto result = dtessl::negotiate_backend(program, chen_vm,
+auto result = dtessl::negotiate_backend(program, external_vm,
                                         dtessl::Projection::Execute);
 if (!result.compatible) {
   // Reject before lowering or execution; report result.missing.
@@ -105,7 +105,7 @@ module or its stable read-only view.
 A VM backend may lower the executable projection to its own typed IR or
 bytecode. It must preserve atomic rounds, causal predecessors, action DAG edges
 and budget traps. It must reject features it cannot preserve.
-DTESSL does not mandate ChenBytecode, Wasm, JVM bytecode or a universal common
+DTESSL does not mandate backend-specific bytecode, Wasm, JVM bytecode or a universal common
 instruction set.
 
 ## Host providers

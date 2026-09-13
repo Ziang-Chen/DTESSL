@@ -42,7 +42,7 @@ The second value is an author assertion, not proof of independence. Tools keep
 it visible and never upgrade a generated mirror to independent assurance.
 
 Every descriptor binds `origin.kind`, `origin.locator` and a lowercase SHA-256
-origin digest. A consumer such as a ChenFlow Package adapter verifies that
+origin digest. A consumer such as a workflow Package adapter verifies that
 binding against the exact source artifact; DTESSL does not fetch or decode the
 source system.
 
@@ -100,7 +100,7 @@ reconciliation or re-executing accepted physical effects.
 
 ## IR consumer rule
 
-An IR/ChenFlow integration imports only an explicit model projection supplied
+An IR/workflow integration imports only an explicit model projection supplied
 by its producer and bound to the canonical Package digest. It must not
 synthesize transitions from arbitrary JavaScript, runtime logs or opaque
 reducer code. Import verifies origin binding, descriptor/generator digests,

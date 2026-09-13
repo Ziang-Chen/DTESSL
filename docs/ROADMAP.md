@@ -13,7 +13,7 @@ This is a long-term product boundary, independent of the current milestone:
 
 - DTESSL consumes only a DTESSL `Program` and native typed `EventTrace`, and
   produces deterministic logical results and typed `ActionPlan` proposals.
-- DTESSL does not ingest, normalize or replay chenRT/runtime journals, syslog,
+- DTESSL does not ingest, normalize or replay host runtime/runtime journals, syslog,
   audit logs, Provider receipts, snapshots, arbitrary JSON or free text.
 - An existing system must actively export a lossy DTESSL projection artifact
   with provenance, coverage and classified gaps. DTESSL does not infer it.
@@ -82,7 +82,7 @@ canonical AST, even if advanced domain theories remain libraries or exporters.
 | `v1.3.0` | Distributed/resource dialect | Message/fault schedules, leases/credits/conservation/backpressure and deterministic provider facts |
 | `v1.4.0` | Security and memory dialect | actsFor/rights/labels/declassification, RegionRef/ownership/HB/consistency claims and adversarial corpus |
 | `v1.5.0` | Tooling | Formatter, incremental compiler cache, stable diagnostics, LSP navigation/completion and syntax migration tool |
-| `v1.6.0` | chenRT/ChenVM and external adapters | Typed host interface injection, package embedding, trace exchange and reference/fallback parity for ChenVM and out-of-tree VM/provider implementations without shared bytecode |
+| `v1.6.0` | host runtime/external VM and external adapters | Typed host interface injection, package embedding, trace exchange and reference/fallback parity for external VM and out-of-tree VM/provider implementations without shared bytecode |
 
 ## Milestone 2 — four projections from one typed AST
 
@@ -112,6 +112,6 @@ For every version:
    slice.
 3. Run sanitizer/fuzzer/performance gates where affected.
 4. Tag only the verified commit.
-5. Update the ChenVM submodule only after the DTESSL tag exists.
+5. Update the external VM submodule only after the DTESSL tag exists.
 6. Never mark a future roadmap row complete because its syntax appears in a
    design document.

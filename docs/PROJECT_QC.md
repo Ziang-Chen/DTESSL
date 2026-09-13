@@ -6,7 +6,7 @@ Updated: 2026-09-02, Asia/Shanghai
 
 - Owner: Ziang-Chen
 - Target repository: `Ziang-Chen/DTESSL`
-- Integration repository: `Ziang-Chen/chenVirtualMachine`,
+- Integration repository: `external host integration`,
   `external/DTESSL` submodule (explicitly outside this integration slice)
 - Current target: validate the `v0.4.8` named typed-do contract boundary across
   parser, verifier, runtime, replay, backend negotiation and ActionPlan lowering
@@ -111,7 +111,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 61/61 tests.
 - North star: see `GOAL_CONTRACT.md`.
 - Allowed surface: this DTESSL repository's parser, verifier, simulator,
   language service, CLI/REPL, examples, tests and documentation.
-- Non-goals: tags, ChenVM/chenRT, other repositories or task threads,
+- Non-goals: tags, external VM/host runtime, other repositories or task threads,
   LSP transport, ambient authority and runtime nondeterminism.
 - Current exit gate: pass parser/verifier/runtime and CLI trace/claim tests plus
   standard/`-Werror`/ASan+UBSan, then commit, push and leave the worktree clean.
@@ -219,7 +219,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 61/61 tests.
   them independently compiled without exposing a second IR.
 - Validation: syntax remains candidate until exercised on at least one
   non-trivial user model.
-- Release: DTESSL tags and ChenVM submodule updates must remain ordered.
+- Release: DTESSL tags and external VM submodule updates must remain ordered.
 
 ## Next corrective focus
 
@@ -231,7 +231,7 @@ Standard, `-Werror`, and ASan/UBSan builds each pass 61/61 tests.
 
 ## Decision log
 
-- 2026-08-28: DTESSL split into an independent repository; ChenVM consumes it as
+- 2026-08-28: DTESSL split into an independent repository; external VM consumes it as
   a pinned external submodule.
 - 2026-08-28: version interpretation fixed as
   `vMilestone.MajorFeature.MinorFeature`; first baseline is `v0.0.1`.

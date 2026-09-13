@@ -410,7 +410,7 @@ Semantic Versioning. See `docs/VERSIONING.md`.
   provenance without treating either self-assertion as proof.
 - Added typed action-port declarations and static call argument verification.
 - Added bounded native `DTESSL EventTrace` logical replay. It never consumes
-  chenRT journals, snapshots or receipts and never re-executes physical effects.
+  host runtime journals, snapshots or receipts and never re-executes physical effects.
 - Added descriptor check/generate/source-map/manifest/run/replay CLI paths and
   conformance fixtures.
 

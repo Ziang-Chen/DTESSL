@@ -1,7 +1,13 @@
 # DTESSL v0.4.8
 
+Licensed under [GNU AGPL version 3 only](LICENSE) (`AGPL-3.0-only`).
+Copyright (c) 2026 Ziang-Chen and DTESSL contributors.
+
+允许商用；分发受许可覆盖的作品，以及通过网络提供修改后的版本时，
+须遵守许可证规定的相应源码提供义务。第三方作品保留其各自许可。
+
 DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一个独立的、
-确定性的离散时间事件系统建模语言。它不依赖 ChenIR、ChenFlow 或 ChenVM；当前参考实现
+确定性的离散时间事件系统建模语言。当前参考实现
 是无第三方依赖的 C++20 库与命令行工具。
 
 版本采用 `v里程碑.大特性.小特性`，不是 SemVer。完整设计、版本路线和当前证据分别见：
@@ -52,7 +58,7 @@ before snapshot；写集不冲突时原子合并，冲突而没有显式 merge r
 6. 生成所选 path 的 `do` 调用 DAG，然后原子提交全部状态轴和值。
 
 `$name(...)` 不会在解释器内执行。它只是一个带类型实参、上下文和依赖边的外部调用
-记录。宿主以后可以向这些名字注入 chenRT IPC 或其他接口；DTESSL 本身没有环境时钟、
+记录。宿主以后可以向这些名字注入 host runtime IPC 或其他接口；DTESSL 本身没有环境时钟、
 文件系统、网络和进程权限。
 
 ## 最小语法
@@ -675,7 +681,7 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
 
 `replay` 使用一个全新引擎重新计算同一事件，并比较完整 `StepResult`。库级
 `DTESSL EventTrace` 是一组按 round 排列的原生 typed event batch，只重建逻辑状态与
-ActionPlan。它不读取 chenRT journal、snapshot、Provider receipt 或自由文本，也不重新
+ActionPlan。它不读取 host runtime journal、snapshot、Provider receipt 或自由文本，也不重新
 执行物理副作用；runtime replay 不属于 DTESSL。
 
 ## 构建与运行

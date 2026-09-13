@@ -260,7 +260,7 @@ if(DTESSL_BUILD_TESTS)
                    descriptor-check
                    ${CMAKE_CURRENT_SOURCE_DIR}/examples/scheduler.semantic)
   set_tests_properties(dtessl.semantic_descriptor_check PROPERTIES
-                       PASS_REGULAR_EXPRESSION "ok descriptor=41810c5b91ae8df0978be5899613561b7daa73a8e888f2317b61b3ccc90a0053 source=8b7b34570f814a0f5d95b590b9468fc07c3fbf746625f6578290ba072846a761")
+                       PASS_REGULAR_EXPRESSION "ok descriptor=3b4914466570710f7239db1cb58fb95386bc8caf15e900d4bc3c5026e2a50552 source=8b7b34570f814a0f5d95b590b9468fc07c3fbf746625f6578290ba072846a761")
   add_test(NAME dtessl.semantic_descriptor_manifest
            COMMAND $<TARGET_FILE:dtessl_cli>
                    descriptor-manifest

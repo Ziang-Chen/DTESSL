@@ -297,7 +297,7 @@ dtessl::SemanticDescriptor semantic_fixture() {
       {{"idle", "\"Idle\""}, {"active", "\"Active\""}}}};
   descriptor.gaps = {{"physical_receipts", dtessl::SemanticGapKind::ExternalRuntime,
                       "provider receipts",
-                      "owned by chenRT runtime journal and excluded from this DTESSL model"}};
+                      "owned by host runtime journal and excluded from this DTESSL model"}};
   return descriptor;
 }
 
@@ -640,7 +640,7 @@ int main() {
               features.contains(dtessl::LanguageFeature::ActionDag),
           "program feature discovery is incomplete");
   dtessl::BackendDescriptor vm_backend{
-      {"chen", "vm", 1},
+      {"example", "vm", 1},
       {dtessl::Projection::Execute},
       features};
   vm_backend.features.erase(dtessl::LanguageFeature::UnionMerge);

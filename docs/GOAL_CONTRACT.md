@@ -18,18 +18,18 @@ completion into language-level fiction.
 - Native typed EventTrace, logical replay, monitor and bounded exploration formats.
 - Formal exporters and optional solver adapters.
 - Formatter, diagnostics, test corpus and language tooling.
-- DTESSL repository releases and the pinned ChenVM submodule reference.
+- DTESSL repository releases and the pinned external VM submodule reference.
 
 ## Non-goals
 
 - A general-purpose application language or operating-system shell.
-- A universal bytecode shared by ChenVM, Wasm, JVM and native runtimes.
+- A universal bytecode shared by external VM, Wasm, JVM and native runtimes.
 - Ambient clock, randomness, filesystem, network, process or secret access.
 - Allowing a model to mint authority, handles, leases, tokens or completion
   facts that only a host can attest.
 - Hidden programs encoded in JSON/YAML or string-keyed attribute bags.
 - Production nondeterminism without an explicit deterministic resolver.
-- Making ChenVM a mandatory backend for the standalone simulator.
+- Making external VM a mandatory backend for the standalone simulator.
 
 ## Exit criteria
 
@@ -50,7 +50,7 @@ The project is complete only when all of the following are evidenced:
    declaration order where order is not semantic.
 7. Versioned migration and compatibility rules cover source, AST, native trace
    and typed ActionPlan formats.
-8. A tagged release can be built and tested standalone and through the ChenVM
+8. A tagged release can be built and tested standalone and through the external VM
    submodule without copied source.
 9. Documentation lets another operator implement a model and diagnose a failed
    transition without reading compiler internals.
@@ -107,7 +107,7 @@ The project is complete only when all of the following are evidenced:
 - Completion requires parser/verifier/runtime/CLI/REPL and real PTY evidence,
   plus standard, `-Werror` and ASan/UBSan gates, followed by a scoped commit
   and push.
-- This slice does not authorize changes to `main`, tags, chenRT, ChenVM or any
+- This slice does not authorize changes to `main`, tags, host runtime, external VM or any
   other task thread.
 
 ## Owner decisions already fixed
