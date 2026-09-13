@@ -1,7 +1,10 @@
 # DTESSL v0.4.8
 
 Licensed under [GNU AGPL version 3 only](LICENSE) (`AGPL-3.0-only`).
-Copyright (c) 2026 Ziang-Chen and DTESSL contributors.
+Copyright (c) 2026 Ziang-Chen.
+
+This grant also covers historical versions, including snapshots without a
+LICENSE file; see [licensing scope and historical grant](LICENSING.md).
 
 允许商用；分发受许可覆盖的作品，以及通过网络提供修改后的版本时，
 须遵守许可证规定的相应源码提供义务。第三方作品保留其各自许可。
