@@ -91,47 +91,47 @@ DTESSL's round, merge, capture, and ActionPlan rules are project-specific choice
 
 ### 1. StateSchema and Embedding
 
-Let $S$ be a recursive state schema and $E_r=(C_r,V_r)$ the Embedding at round $r$.
-$C_r$ records active control branches; $V_r$ contains typed field values.
+Let $`S`$ be a recursive state schema and $`E_r=(C_r,V_r)`$ the Embedding at round $`r`$.
+$`C_r`$ records active control branches; $`V_r`$ contains typed field values.
 
-$$
+```math
 E_r\in\operatorname{Valid}(S),\qquad
 R_t(E_r,u,E')\in\{\mathrm{true},\mathrm{false}\}.
-$$
+```
 
-Here $u$ is a typed input occurrence and $R_t$ is a transition's before/after
+Here $`u`$ is a typed input occurrence and $`R_t`$ is a transition's before/after
 relation. Each active choice axis selects one valid branch; nested axes become
 active with their enclosing branch. A named state relation only matches the
-current Embedding. Conjoining two templates means $P(E_r)\land Q(E_r)$: both
+current Embedding. Conjoining two templates means $`P(E_r)\land Q(E_r)`$: both
 read the same state, with no intermediate update or attached effect.
 
 ### 2. Deterministic selection and atomic commit
 
-Let $K_t(E_r,u)$ contain candidates admitted by control-state matching and
-`where`. Without an optimizer, the engine requires $|K_t|=1$. With an explicit
-exact-numeric score $s$, it requires a unique maximum:
+Let $`K_t(E_r,u)`$ contain candidates admitted by control-state matching and
+`where`. Without an optimizer, the engine requires $`|K_t|=1`$. With an explicit
+exact-numeric score $`s`$, it requires a unique maximum:
 
-$$
+```math
 k^*\in\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k),
 \qquad
 \left|\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k)\right|=1.
-$$
+```
 
 No candidate or a tied maximum rejects the input. Selection is followed by merge
 and invariant checks. Relation-value `select ... by lex(...)` has a different
 direction: it chooses the unique smallest score tuple in ascending order.
 
-All inputs in a round's bag $B_r$ read the same before snapshot:
+All inputs in a round's bag $`B_r`$ read the same before snapshot:
 
-$$
+```math
 E_{r+1}=\operatorname{Apply}\!\left(E_r,
 \operatorname{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
-$$
+```
 
 Commit requires successful admission for every input, a defined merge, and valid
 resulting invariants. Multiple writes to one field are rejected by default.
 `merge equal` requires equal values; `merge union` unions supported set values.
-Failure preserves $E_r$ and produces no accepted action plan. Source order and
+Failure preserves $`E_r`$ and produces no accepted action plan. Source order and
 hash iteration order never break a tie.
 
 ### 3. Causal order and rounds
@@ -139,13 +139,13 @@ hash iteration order never break a tie.
 Lamport's happened-before relation is a partial order rather than an ordering
 that requires a physical clock.
 [Lamport, 1978](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/12/Time-Clocks-and-the-Ordering-of-Events-in-a-Distributed-System.pdf).
-For DTESSL, let $D$ contain direct field and control-state-axis dependency edges,
-and let $D^+$ be its transitive closure:
+For DTESSL, let $`D`$ contain direct field and control-state-axis dependency edges,
+and let $`D^+`$ be its transitive closure:
 
-$$
+```math
 a\prec b\iff(a,b)\in D^+,\qquad
 a\parallel b\iff\neg(a\prec b)\land\neg(b\prec a)\quad(a\ne b).
-$$
+```
 
 Decisions in one atomic batch share a `RoundId`. A smaller round number alone
 does not establish a causal dependency between two occurrences. Calls within
@@ -159,25 +159,25 @@ execution and property automata. See
 [SPIN's theoretical background](https://spinroot.com/spin/theory.html).
 An explanatory model of DTESSL's construction is:
 
-$$
+```math
 \mathcal P=\mathrm{EmbeddingExpand}\times\mathrm{ClaimMonitor},\qquad
 (E,q)\longrightarrow(E',\delta(q,L(E,u,E'))).
-$$
+```
 
-$q$ is monitor state and $L$ supplies observations of the logical step. Monitor
+$`q`$ is monitor state and $`L`$ supplies observations of the logical step. Monitor
 state stays separate from the user's StateSchema. The Solver explores reachable
 product nodes on demand for finite-prefix, deadlock, or lasso counterexamples.
 Unsupported fragments and exhausted search budgets must not be reported as
 proofs; they retain an `inconclusive` result.
 
-For a closed finite trace $\pi=E_0\ldots E_n$, basic temporal operators read:
+For a closed finite trace $`\pi=E_0\ldots E_n`$, basic temporal operators read:
 
-$$
+```math
 \pi,i\models\mathbf F p\iff\exists j\in[i,n]:\pi,j\models p,\qquad
 \pi,i\models\mathbf G p\iff\forall j\in[i,n]:\pi,j\models p.
-$$
+```
 
-Here $0\le i\le n$, including the initial state. The finite-trace interpretation
+Here $`0\le i\le n`$, including the initial state. The finite-trace interpretation
 is grounded in [De Giacomo and Vardi, 2013](https://www.ijcai.org/Proceedings/13/Papers/132.pdf).
 An open trace remains `pending` without decisive evidence. A projection with
 causal gaps cannot establish an unconditional positive result. DTESSL does not
@@ -185,14 +185,14 @@ claim to implement the paper's full LDLf language.
 
 ### 5. Capture and replay
 
-Let $A$ be occurrence seeds selected by state, transition, or procedure filters.
-With $\operatorname{Pred}$ denoting explicit causal predecessors, the base
+Let $`A`$ be occurrence seeds selected by state, transition, or procedure filters.
+With $`\operatorname{Pred}`$ denoting explicit causal predecessors, the base
 causal closure is the least fixed point:
 
-$$
+```math
 \operatorname{CausalClosure}(A)
 =\mu X.\left(A\cup\operatorname{Pred}(X)\right).
-$$
+```
 
 An `eventually` capture also retains the interval from each anchor to its first
 witness. Procedure labels provide grouping; they do not pull every unrelated
@@ -205,13 +205,13 @@ prefix. `capture projected` is observational and cannot be replayed.
 
 ### 6. Logical changes and external effects
 
-$$
+```math
 \operatorname{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
 A_r=\operatorname{Lower}(E_r,E_{r+1},\mathrm{bindings}).
-$$
+```
 
-This equation describes an accepted step: $A_r$ is the outbound ActionPlan and
-$H_r$ is logical history evidence. The core emits plans without invoking external
+This equation describes an accepted step: $`A_r`$ is the outbound ActionPlan and
+$`H_r`$ is logical history evidence. The core emits plans without invoking external
 providers. Idempotency, retry, and delivery annotations are contracts the host
 must fulfill. Nondeterministic results enter through later typed inputs rather
 than the current after-state. Replay reinjects recorded input and recomputes

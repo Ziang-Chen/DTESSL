@@ -41,54 +41,54 @@ DTESSL 将建模分为静态结构、动态状态、关系约束、逻辑转移�
 
 ### 1. StateSchema 定义结构，Embedding 表示当前实例
 
-令 $S$ 为递归状态结构，$E_r=(C_r,V_r)$ 为第 $r$ 轮的 Embedding：
-$C_r$ 记录当前激活的控制分支，$V_r$ 是有类型的字段值。
+令 $`S`$ 为递归状态结构，$`E_r=(C_r,V_r)`$ 为第 $`r`$ 轮的 Embedding：
+$`C_r`$ 记录当前激活的控制分支，$`V_r`$ 是有类型的字段值。
 
-$$
+```math
 E_r\in\operatorname{Valid}(S),\qquad
 R_t(E_r,u,E')\in\{\mathrm{true},\mathrm{false}\}.
-$$
+```
 
-$u$ 是有类型的输入 occurrence，$R_t$ 是 transition 的 before/after 关系。
+$`u`$ 是有类型的输入 occurrence，$`R_t`$ 是 transition 的 before/after 关系。
 每个激活的 choice 轴选择一个合法分支；嵌套轴随祖先分支激活。
-命名 state relation 只匹配当前 $E_r$，不拥有隐藏的中间状态或副作用。
-例如两个命名模板的合取为 $P(E_r)\land Q(E_r)$，二者读取同一状态。
+命名 state relation 只匹配当前 $`E_r`$，不拥有隐藏的中间状态或副作用。
+例如两个命名模板的合取为 $`P(E_r)\land Q(E_r)`$，二者读取同一状态。
 
 ### 2. 确定性来自显式选择与原子提交
 
-令 $K_t(E_r,u)$ 为通过控制状态匹配与 `where` 的候选集合。
-未声明优化时要求 $|K_t|=1$；声明精确数值目标 $s$ 时要求唯一最大值：
+令 $`K_t(E_r,u)`$ 为通过控制状态匹配与 `where` 的候选集合。
+未声明优化时要求 $`|K_t|=1`$；声明精确数值目标 $`s`$ 时要求唯一最大值：
 
-$$
+```math
 k^*\in\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k),
 \qquad
 \left|\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k)\right|=1.
-$$
+```
 
 无候选或最高分并列均拒绝；选中后仍须通过更新合并和不变量检查。
 不要与关系值的 `select ... by lex(...)` 混淆：后者按升序选择唯一最小 score tuple。
 
-对同一轮输入 bag $B_r$，所有候选读取同一个 before snapshot：
+对同一轮输入 bag $`B_r`$，所有候选读取同一个 before snapshot：
 
-$$
+```math
 E_{r+1}=\operatorname{Apply}\!\left(E_r,
 \operatorname{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
-$$
+```
 
 仅在所有输入通过 admission、Merge 有定义且结果满足不变量时提交。
 重复字段写入默认拒绝；`merge equal` 要求值相等，`merge union` 在支持的集合类型上取并集。
-失败时保留 $E_r$，不返回已接受的动作计划；源码或哈希遍历顺序不用于决胜。
+失败时保留 $`E_r`$，不返回已接受的动作计划；源码或哈希遍历顺序不用于决胜。
 
 ### 3. 因果偏序与 round 不是物理时间
 
 Lamport 将 happened-before 建模为偏序，而非由物理时钟推导的一条必然全序。
 [Lamport, 1978](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/12/Time-Clocks-and-the-Ordering-of-Events-in-a-Distributed-System.pdf)。
-在 DTESSL 中，令 $D$ 为字段依赖与控制状态轴依赖的直接边，$D^+$ 为其传递闭包：
+在 DTESSL 中，令 $`D`$ 为字段依赖与控制状态轴依赖的直接边，$`D^+`$ 为其传递闭包：
 
-$$
+```math
 a\prec b\iff(a,b)\in D^+,\qquad
 a\parallel b\iff\neg(a\prec b)\land\neg(b\prec a)\quad(a\ne b).
-$$
+```
 
 `RoundId` 标记一次原子批次，同轮 decision 共享它；编号较小本身不能证明两事件存在因果关系。
 ActionPlan 内部的调用 DAG 另行描述串行和并行依赖，不应与 occurrence DAG 混为一谈。
@@ -100,36 +100,36 @@ ActionPlan 内部的调用 DAG 另行描述串行和并行依赖，不应与 occ
 及 [SPIN 理论说明](https://spinroot.com/spin/theory.html) 提供这一方法的依据。
 DTESSL 的解释性模型为：
 
-$$
+```math
 \mathcal P=\mathrm{EmbeddingExpand}\times\mathrm{ClaimMonitor},\qquad
 (E,q)\longrightarrow(E',\delta(q,L(E,u,E'))).
-$$
+```
 
-$q$ 是监视器状态，$L$ 是由当前逻辑步骤得到的观测；监视器状态不混入用户的 StateSchema。
+$`q`$ 是监视器状态，$`L`$ 是由当前逻辑步骤得到的观测；监视器状态不混入用户的 StateSchema。
 Solver 按需探索可达乘积节点，寻找有限前缀、死锁或 lasso 反例。
 无法编译的片段或耗尽的搜索预算不能当作证明成功，应保留 `inconclusive`。
 
-闭合有限 trace $\pi=E_0\ldots E_n$ 上的基本时序读法是：
+闭合有限 trace $`\pi=E_0\ldots E_n`$ 上的基本时序读法是：
 
-$$
+```math
 \pi,i\models\mathbf F p\iff\exists j\in[i,n]:\pi,j\models p,\qquad
 \pi,i\models\mathbf G p\iff\forall j\in[i,n]:\pi,j\models p.
-$$
+```
 
-这里 $0\le i\le n$，初态也参与判断。有限 trace 的理论依据见
+这里 $`0\le i\le n`$，初态也参与判断。有限 trace 的理论依据见
 [De Giacomo–Vardi, 2013](https://www.ijcai.org/Proceedings/13/Papers/132.pdf)。
 开放 trace 不凭有限前缀推断未来；尚无决定性证据时为 `pending`，
 有因果缺口的投影不能被当作完整的肯定证据。项目并未声称实现论文中的完整 LDLf。
 
 ### 5. Capture 选择 occurrence，Replay 重算证据
 
-令 $A$ 为 state/transition/procedure 过滤器选出的 occurrence seed，
-$\operatorname{Pred}$ 为显式因果前驱，则基础因果闭包可写为最小不动点：
+令 $`A`$ 为 state/transition/procedure 过滤器选出的 occurrence seed，
+$`\operatorname{Pred}`$ 为显式因果前驱，则基础因果闭包可写为最小不动点：
 
-$$
+```math
 \operatorname{CausalClosure}(A)
 =\mu X.\left(A\cup\operatorname{Pred}(X)\right).
-$$
+```
 
 带 `eventually` 的捕获还保留从 anchor 到首个 witness 的时间区间。
 procedure 是可选分组，不自动把同一实例的无关 occurrence 全部纳入。
@@ -138,12 +138,12 @@ procedure 是可选分组，不自动把同一实例的无关 occurrence 全部�
 
 ### 6. 逻辑变化与物理副作用分离
 
-$$
+```math
 \operatorname{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
 A_r=\operatorname{Lower}(E_r,E_{r+1},\mathrm{bindings}).
-$$
+```
 
-该式描述接受的步骤：$A_r$ 是出站 ActionPlan，$H_r$ 是逻辑历史证据。
+该式描述接受的步骤：$`A_r`$ 是出站 ActionPlan，$`H_r`$ 是逻辑历史证据。
 核心生成计划但不调用外部 Provider。幂等、重试和 delivery 声明是宿主需要兑现的 contract；
 非确定性结果作为后续 typed input 进入，不能直接参与当前 after-state。
 Replay 重注记录的输入并重算计划，不重新执行物理副作用。
