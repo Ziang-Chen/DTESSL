@@ -1,5 +1,7 @@
 # DTESSL v0.4.8
 
+**中文** | [English](README.en.md)
+
 Licensed under [GNU AGPL version 3 only](LICENSE) (`AGPL-3.0-only`).
 Copyright (c) 2026 Ziang-Chen.
 
@@ -31,9 +33,127 @@ DTESSL（Discrete-Time Event System Simulation Language，戴特赛尔）是一�
 - [State case、有限域与 Delta](docs/STATE_CASE_AND_FINITE_DOMAINS.md)
 - [变更记录](CHANGELOG.md)
 
-## v0 的闭环
+## 设计思想与形式化语义
 
-一个程序的闭环由六类定义组成：
+DTESSL 将建模分为静态结构、动态状态、关系约束、逻辑转移、因果证据和外部动作计划。
+以下公式是对当前项目语义的说明性形式化，不是完整规范或形式化正确性证明。
+引用论文提供理论依据；DTESSL 特有的 round、合并、capture 与 ActionPlan 规则是项目设计。
+
+### 1. StateSchema 定义结构，Embedding 表示当前实例
+
+令 $S$ 为递归状态结构，$E_r=(C_r,V_r)$ 为第 $r$ 轮的 Embedding：
+$C_r$ 记录当前激活的控制分支，$V_r$ 是有类型的字段值。
+
+$$
+E_r\in\operatorname{Valid}(S),\qquad
+R_t(E_r,u,E')\in\{\mathrm{true},\mathrm{false}\}.
+$$
+
+$u$ 是有类型的输入 occurrence，$R_t$ 是 transition 的 before/after 关系。
+每个激活的 choice 轴选择一个合法分支；嵌套轴随祖先分支激活。
+命名 state relation 只匹配当前 $E_r$，不拥有隐藏的中间状态或副作用。
+例如两个命名模板的合取为 $P(E_r)\land Q(E_r)$，二者读取同一状态。
+
+### 2. 确定性来自显式选择与原子提交
+
+令 $K_t(E_r,u)$ 为通过控制状态匹配与 `where` 的候选集合。
+未声明优化时要求 $|K_t|=1$；声明精确数值目标 $s$ 时要求唯一最大值：
+
+$$
+k^*\in\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k),
+\qquad
+\left|\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k)\right|=1.
+$$
+
+无候选或最高分并列均拒绝；选中后仍须通过更新合并和不变量检查。
+不要与关系值的 `select ... by lex(...)` 混淆：后者按升序选择唯一最小 score tuple。
+
+对同一轮输入 bag $B_r$，所有候选读取同一个 before snapshot：
+
+$$
+E_{r+1}=\operatorname{Apply}\!\left(E_r,
+\operatorname{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
+$$
+
+仅在所有输入通过 admission、Merge 有定义且结果满足不变量时提交。
+重复字段写入默认拒绝；`merge equal` 要求值相等，`merge union` 在支持的集合类型上取并集。
+失败时保留 $E_r$，不返回已接受的动作计划；源码或哈希遍历顺序不用于决胜。
+
+### 3. 因果偏序与 round 不是物理时间
+
+Lamport 将 happened-before 建模为偏序，而非由物理时钟推导的一条必然全序。
+[Lamport, 1978](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/12/Time-Clocks-and-the-Ordering-of-Events-in-a-Distributed-System.pdf)。
+在 DTESSL 中，令 $D$ 为字段依赖与控制状态轴依赖的直接边，$D^+$ 为其传递闭包：
+
+$$
+a\prec b\iff(a,b)\in D^+,\qquad
+a\parallel b\iff\neg(a\prec b)\land\neg(b\prec a)\quad(a\ne b).
+$$
+
+`RoundId` 标记一次原子批次，同轮 decision 共享它；编号较小本身不能证明两事件存在因果关系。
+ActionPlan 内部的调用 DAG 另行描述串行和并行依赖，不应与 occurrence DAG 混为一谈。
+
+### 4. Claim 在执行图与监视器的乘积上检查
+
+自动机验证将性质检查联系到执行与性质自动机的组合；
+[Vardi–Wolper, 1986](https://www.cs.rice.edu/~vardi/papers/lics86.pdf)
+及 [SPIN 理论说明](https://spinroot.com/spin/theory.html) 提供这一方法的依据。
+DTESSL 的解释性模型为：
+
+$$
+\mathcal P=\mathrm{EmbeddingExpand}\times\mathrm{ClaimMonitor},\qquad
+(E,q)\longrightarrow(E',\delta(q,L(E,u,E'))).
+$$
+
+$q$ 是监视器状态，$L$ 是由当前逻辑步骤得到的观测；监视器状态不混入用户的 StateSchema。
+Solver 按需探索可达乘积节点，寻找有限前缀、死锁或 lasso 反例。
+无法编译的片段或耗尽的搜索预算不能当作证明成功，应保留 `inconclusive`。
+
+闭合有限 trace $\pi=E_0\ldots E_n$ 上的基本时序读法是：
+
+$$
+\pi,i\models\mathbf F p\iff\exists j\in[i,n]:\pi,j\models p,\qquad
+\pi,i\models\mathbf G p\iff\forall j\in[i,n]:\pi,j\models p.
+$$
+
+这里 $0\le i\le n$，初态也参与判断。有限 trace 的理论依据见
+[De Giacomo–Vardi, 2013](https://www.ijcai.org/Proceedings/13/Papers/132.pdf)。
+开放 trace 不凭有限前缀推断未来；尚无决定性证据时为 `pending`，
+有因果缺口的投影不能被当作完整的肯定证据。项目并未声称实现论文中的完整 LDLf。
+
+### 5. Capture 选择 occurrence，Replay 重算证据
+
+令 $A$ 为 state/transition/procedure 过滤器选出的 occurrence seed，
+$\operatorname{Pred}$ 为显式因果前驱，则基础因果闭包可写为最小不动点：
+
+$$
+\operatorname{CausalClosure}(A)
+=\mu X.\left(A\cup\operatorname{Pred}(X)\right).
+$$
+
+带 `eventually` 的捕获还保留从 anchor 到首个 witness 的时间区间。
+procedure 是可选分组，不自动把同一实例的无关 occurrence 全部纳入。
+可见闭包与重放输入不同：`TraceArtifact` 保存从初始状态到最后选中轮的 typed input 前缀，
+再由同一核心重算 path、Embedding、因果边及 ActionPlan。`capture projected` 不可重放。
+
+### 6. 逻辑变化与物理副作用分离
+
+$$
+\operatorname{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
+A_r=\operatorname{Lower}(E_r,E_{r+1},\mathrm{bindings}).
+$$
+
+该式描述接受的步骤：$A_r$ 是出站 ActionPlan，$H_r$ 是逻辑历史证据。
+核心生成计划但不调用外部 Provider。幂等、重试和 delivery 声明是宿主需要兑现的 contract；
+非确定性结果作为后续 typed input 进入，不能直接参与当前 after-state。
+Replay 重注记录的输入并重算计划，不重新执行物理副作用。
+
+完整依据与规划见 [研究依据](docs/REFERENCES.md)、[语言设计](docs/LANGUAGE_DESIGN.md)
+及 [路线图](docs/ROADMAP.md)。这些公式不表示外部适配器、字节码或完整 solver 插件已实现。
+
+## 语言组成
+
+一个程序主要由六类定义组成：
 
 - `record / variant / enum / newtype` 定义代数与名义领域类型；
 - `state` 以命名/匿名 `case`、`,`（合取）、`|`（互斥选择）和括号递归定义有类型状态空间；
@@ -668,16 +788,17 @@ ActionPlan。例子中的第四个 `After` 与前三次属于同一 procedure，
 选择按 score 升序；不同候选若完整 score 相同则拒绝整个 round，绝不以 hash/source
 顺序暗中决胜。无候选返回 `none`。稳定 ID 应作为 `lex` 最后一项明确写出。
 
-集合按字典序枚举，因此相同输入得到相同搜索、状态文本和动作 DAG。`exists` 当前只返回
-真假，不把候选绑定泄漏到 `do`；需要选择候选的动态搜索会在后续增加显式、可重放的
-`select`，而不会偷偷依赖哈希表顺序。
+集合按规范顺序枚举，因此相同输入得到相同搜索、状态文本和动作 DAG。`exists` 只返回
+真假，不把候选绑定泄漏到 `do`；需要选择候选时使用已实现的显式、可重放
+`select ... by lex(...)`，不依赖哈希表顺序。
 
 ## 确定性与错误边界
 
 - 每个 `@context` 状态轴必须且只能有一个 `initial` state；
 - 同名事件在所有 transition 上必须拥有相同参数表；
 - 字段、事件、赋值、谓词和动作实参在 `check` 时静态检查；
-- 同一事件若没有可用 path，或同时启用多个 `case` path，执行失败；
+- 同一事件若没有可用 path，或没有显式优化却启用多个 `case` path，执行失败；
+  显式优化也必须存在唯一最高分，否则拒绝；
 - 新状态违反 invariant 时不提交状态，也不产出外部调用计划；
 - 调用标签在一个 transition 内必须唯一；
 - 输出的 map/set、调用和依赖边都有规范顺序。
@@ -722,15 +843,6 @@ descriptor/source digest、coverage 与 gap 分类。生成的 operational mirro
 冒充 independently-authored assurance model。生成的 `do` 只能调用静态声明并检查过参数类型
 的 port，DTESSL 仍只返回 ActionPlan。
 
-## 有意留在 v0 之外
-
-为了逐层闭合语言核心，v0.4.8 仍不包含 matrix、概率或
-非确定性、连续时间、async/await、物理完成语义、权限系统、外部 solver
-插件协议、字节码和 JIT。内置 `Solver` 已作为 frontend/backend 之间的语义层：
-它按 transition 展开动态 `Embedding`，形成 `EmbeddingExpand`，再与有限
-`ClaimMonitor` 做按需 Product 并搜索 finite prefix / deadlock / lasso 反例；
-它不是 SMT/SAT 产品名称，也不执行 ActionPlan。
-下一个增量补 derived/shared state 与更丰富的值 pattern destructuring，随后才加入稀疏矩阵
-与可替换 solver backend。
-它们应继续服从同一条边界：
-transition 只计算逻辑变化和调用计划，宿主拥有物理副作用。
+当前实现为 C++20 参考解释器与内置 Solver，使用离散 round 和精确数值。
+模型检查受支持的时序片段及搜索预算限制；实际 I/O 和副作用由宿主处理。
+开发计划见 [路线图](docs/ROADMAP.md)。
