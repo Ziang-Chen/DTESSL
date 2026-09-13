@@ -2,6 +2,8 @@
 
 **中文** | [English](README.en.md)
 
+![DTESSL 技术概览：关系代数、类型与语法、搜索与选择、并发执行、模型检查及外部接入与重放](docs/images/dtessl-overview-zh.png)
+
 Licensed under [GNU AGPL version 3 only](LICENSE) (`AGPL-3.0-only`).
 Copyright (c) 2026 Ziang-Chen.
 

@@ -2,6 +2,8 @@
 
 [中文](README.md) | **English**
 
+![DTESSL technical overview: relational algebra, types and syntax, search and selection, concurrent execution, model checking, and integration and replay](docs/images/dtessl-overview-en.png)
+
 DTESSL (Discrete-Time Event System Simulation Language) models typed state,
 transitions, causal history, and temporal properties. Its reference implementation
 is a C++20 library and command-line tool with no third-party dependencies.
