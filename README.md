@@ -45,7 +45,7 @@ DTESSL 将建模分为静态结构、动态状态、关系约束、逻辑转移�
 $`C_r`$ 记录当前激活的控制分支，$`V_r`$ 是有类型的字段值。
 
 ```math
-E_r\in\operatorname{Valid}(S),\qquad
+E_r\in\mathrm{Valid}(S),\qquad
 R_t(E_r,u,E')\in\{\mathrm{true},\mathrm{false}\}.
 ```
 
@@ -60,9 +60,9 @@ $`u`$ 是有类型的输入 occurrence，$`R_t`$ 是 transition 的 before/after
 未声明优化时要求 $`|K_t|=1`$；声明精确数值目标 $`s`$ 时要求唯一最大值：
 
 ```math
-k^*\in\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k),
+k^*\in\underset{k\in K_t(E_r,u)}{\mathrm{arg\,max}}\ s(E'_k),
 \qquad
-\left|\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k)\right|=1.
+\left|\underset{k\in K_t(E_r,u)}{\mathrm{arg\,max}}\ s(E'_k)\right|=1.
 ```
 
 无候选或最高分并列均拒绝；选中后仍须通过更新合并和不变量检查。
@@ -71,8 +71,8 @@ k^*\in\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k),
 对同一轮输入 bag $`B_r`$，所有候选读取同一个 before snapshot：
 
 ```math
-E_{r+1}=\operatorname{Apply}\!\left(E_r,
-\operatorname{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
+E_{r+1}=\mathrm{Apply}\!\left(E_r,
+\mathrm{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
 ```
 
 仅在所有输入通过 admission、Merge 有定义且结果满足不变量时提交。
@@ -124,11 +124,11 @@ Solver 按需探索可达乘积节点，寻找有限前缀、死锁或 lasso 反
 ### 5. Capture 选择 occurrence，Replay 重算证据
 
 令 $`A`$ 为 state/transition/procedure 过滤器选出的 occurrence seed，
-$`\operatorname{Pred}`$ 为显式因果前驱，则基础因果闭包可写为最小不动点：
+$`\mathrm{Pred}`$ 为显式因果前驱，则基础因果闭包可写为最小不动点：
 
 ```math
-\operatorname{CausalClosure}(A)
-=\mu X.\left(A\cup\operatorname{Pred}(X)\right).
+\mathrm{CausalClosure}(A)
+=\mu X.\left(A\cup\mathrm{Pred}(X)\right).
 ```
 
 带 `eventually` 的捕获还保留从 anchor 到首个 witness 的时间区间。
@@ -139,8 +139,8 @@ procedure 是可选分组，不自动把同一实例的无关 occurrence 全部�
 ### 6. 逻辑变化与物理副作用分离
 
 ```math
-\operatorname{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
-A_r=\operatorname{Lower}(E_r,E_{r+1},\mathrm{bindings}).
+\mathrm{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
+A_r=\mathrm{Lower}(E_r,E_{r+1},\mathrm{bindings}).
 ```
 
 该式描述接受的步骤：$`A_r`$ 是出站 ActionPlan，$`H_r`$ 是逻辑历史证据。

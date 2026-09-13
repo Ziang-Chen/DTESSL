@@ -95,7 +95,7 @@ Let $`S`$ be a recursive state schema and $`E_r=(C_r,V_r)`$ the Embedding at rou
 $`C_r`$ records active control branches; $`V_r`$ contains typed field values.
 
 ```math
-E_r\in\operatorname{Valid}(S),\qquad
+E_r\in\mathrm{Valid}(S),\qquad
 R_t(E_r,u,E')\in\{\mathrm{true},\mathrm{false}\}.
 ```
 
@@ -112,9 +112,9 @@ Let $`K_t(E_r,u)`$ contain candidates admitted by control-state matching and
 exact-numeric score $`s`$, it requires a unique maximum:
 
 ```math
-k^*\in\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k),
+k^*\in\underset{k\in K_t(E_r,u)}{\mathrm{arg\,max}}\ s(E'_k),
 \qquad
-\left|\underset{k\in K_t(E_r,u)}{\operatorname{arg\,max}}\ s(E'_k)\right|=1.
+\left|\underset{k\in K_t(E_r,u)}{\mathrm{arg\,max}}\ s(E'_k)\right|=1.
 ```
 
 No candidate or a tied maximum rejects the input. Selection is followed by merge
@@ -124,8 +124,8 @@ direction: it chooses the unique smallest score tuple in ascending order.
 All inputs in a round's bag $`B_r`$ read the same before snapshot:
 
 ```math
-E_{r+1}=\operatorname{Apply}\!\left(E_r,
-\operatorname{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
+E_{r+1}=\mathrm{Apply}\!\left(E_r,
+\mathrm{Merge}\{\Delta_k(E_r,u):u\in B_r\}\right).
 ```
 
 Commit requires successful admission for every input, a defined merge, and valid
@@ -186,12 +186,12 @@ claim to implement the paper's full LDLf language.
 ### 5. Capture and replay
 
 Let $`A`$ be occurrence seeds selected by state, transition, or procedure filters.
-With $`\operatorname{Pred}`$ denoting explicit causal predecessors, the base
+With $`\mathrm{Pred}`$ denoting explicit causal predecessors, the base
 causal closure is the least fixed point:
 
 ```math
-\operatorname{CausalClosure}(A)
-=\mu X.\left(A\cup\operatorname{Pred}(X)\right).
+\mathrm{CausalClosure}(A)
+=\mu X.\left(A\cup\mathrm{Pred}(X)\right).
 ```
 
 An `eventually` capture also retains the interval from each anchor to its first
@@ -206,8 +206,8 @@ prefix. `capture projected` is observational and cannot be replayed.
 ### 6. Logical changes and external effects
 
 ```math
-\operatorname{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
-A_r=\operatorname{Lower}(E_r,E_{r+1},\mathrm{bindings}).
+\mathrm{Step}(E_r,B_r)=(E_{r+1},A_r,H_r),\qquad
+A_r=\mathrm{Lower}(E_r,E_{r+1},\mathrm{bindings}).
 ```
 
 This equation describes an accepted step: $`A_r`$ is the outbound ActionPlan and
